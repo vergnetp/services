@@ -1,0 +1,140 @@
+"""
+App-specific settings for deploy_api.
+
+Infrastructure config (database, auth, email, etc.) is in manifest.yaml.
+This file only contains app-specific settings not covered by the kernel.
+
+.env hierarchy (lowest → highest priority):
+  1. shared_libs/.env              (shared defaults)
+  2. shared_libs/services/.env     (all services)  
+  3. shared_libs/services/deploy_api/.env  (this service)
+  4. Environment variables         (always win)
+
+Note: Loaded here for worker.py, and also by create_service() for the API.
+      (load_env_hierarchy is idempotent - safe to call multiple times)
+"""
+
+import os
+from pathlib import Path
+from functools import lru_cache
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
+
+from shared_libs.backend.app_kernel import load_env_hierarchy
+
+
+# Service directory (where this file lives)
+SERVICE_DIR = Path(__file__).parent
+
+# Load .env hierarchy (for worker.py - API also loads via create_service)
+load_env_hierarchy(__file__)
+
+
+class AppSettings(BaseSettings):
+    """App-specific settings (not in manifest.yaml)."""
+    
+    model_config = SettingsConfigDict(
+        env_prefix="DEPLOY_",
+        extra="ignore",
+    )
+    
+    # Server (uvicorn)
+    host: str = "0.0.0.0"
+    port: int = 8000
+    
+    # App-specific
+    encryption_key: Optional[str] = None  # For credential encryption
+    
+    # Data directory (for ensuring it exists)
+    data_dir: str = str(SERVICE_DIR / "data")
+    
+    def ensure_data_dir(self):
+        """Create data directory if needed."""
+        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+
+@lru_cache
+def get_app_settings() -> AppSettings:
+    """Get cached app settings instance."""
+    return AppSettings()
+
+
+def get_manifest_path() -> str:
+    """Get path to manifest.yaml."""
+    return str(SERVICE_DIR / "manifest.yaml")
+
+
+# =============================================================================
+# Combined settings for worker (reads from manifest + env)
+# =============================================================================
+
+class Settings(BaseSettings):
+    """Combined settings from manifest.yaml and environment.
+    
+    Used by worker.py which needs database settings.
+    """
+    
+    model_config = SettingsConfigDict(
+        extra="ignore",
+    )
+    
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+    redis_key_prefix: str = "deploy:"
+    
+    # Database (from manifest or env)
+    database_path: str = str(SERVICE_DIR / "data" / "deploy.db")
+    database_type: str = "sqlite"
+    database_host: str = "localhost"
+    database_port: int = 5432
+    database_user: Optional[str] = None
+    database_password: Optional[str] = None
+    
+    # Data directory
+    data_dir: str = str(SERVICE_DIR / "data")
+    
+    def ensure_data_dir(self):
+        """Create data directory if needed."""
+        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Get settings, loading from manifest.yaml if available."""
+    import yaml
+    import re
+    
+    manifest_path = get_manifest_path()
+    
+    # Start with defaults
+    settings_dict = {}
+    
+    # Load from manifest if exists
+    if Path(manifest_path).exists():
+        with open(manifest_path) as f:
+            content = f.read()
+        
+        # Interpolate ${VAR} and ${VAR:-default}
+        def interpolate(match):
+            var_name = match.group(1)
+            default = match.group(2)
+            return os.environ.get(var_name, default if default is not None else "")
+        
+        content = re.sub(r'\$\{([^}:]+)(?::-([^}]*))?\}', interpolate, content)
+        manifest = yaml.safe_load(content)
+        
+        # Extract database settings
+        db = manifest.get("database", {})
+        settings_dict["database_type"] = db.get("type", "sqlite")
+        settings_dict["database_path"] = db.get("path", str(SERVICE_DIR / "data" / "deploy.db"))
+        settings_dict["database_host"] = db.get("host", "localhost")
+        settings_dict["database_port"] = db.get("port", 5432)
+        settings_dict["database_user"] = db.get("user")
+        settings_dict["database_password"] = db.get("password")
+        
+        # Extract redis settings
+        redis = manifest.get("redis", {})
+        settings_dict["redis_url"] = redis.get("url", "redis://localhost:6379/0")
+        settings_dict["redis_key_prefix"] = redis.get("key_prefix", "deploy:")
+    
+    return Settings(**settings_dict)

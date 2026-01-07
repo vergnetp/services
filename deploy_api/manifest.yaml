@@ -1,0 +1,202 @@
+name: deploy_api
+version: "0.1.0"
+description: |
+  Deployment Management Service - API wrapper for infra deployment system.
+  Provides REST endpoints for workspace, project, service, and deployment management.
+
+# =============================================================================
+# Infrastructure Config (kernel reads this)
+# =============================================================================
+
+# Database configuration
+database:
+  type: sqlite
+  path: ${DATABASE_PATH:-./data/deploy.db}
+
+# Redis (optional - for job queue)
+redis:
+  url: ${REDIS_URL:-redis://localhost:6379}
+  key_prefix: "deploy:"
+
+# Auth configuration
+auth:
+  jwt_secret: ${JWT_SECRET}
+  jwt_expiry_hours: 24
+  allow_self_signup: true  # For initial setup
+
+# SaaS (workspaces, members, invites)
+saas:
+  enabled: true
+  invite_base_url: ${SAAS_INVITE_BASE_URL}
+
+# Email (for invite notifications)
+email:
+  enabled: ${EMAIL_ENABLED:-false}
+  from: ${EMAIL_FROM:-noreply@example.com}
+  smtp_host: ${SMTP_HOST}
+  smtp_port: ${SMTP_PORT:-587}
+  smtp_user: ${SMTP_USER}
+  smtp_password: ${SMTP_PASSWORD}
+
+# Billing (subscription plans)
+billing:
+  stripe_secret_key: ${STRIPE_SECRET_KEY}
+  stripe_publishable_key: ${STRIPE_PUBLISHABLE_KEY}
+  stripe_webhook_secret: ${STRIPE_WEBHOOK_SECRET}
+  # Test mode auto-detected from key prefix (sk_test_*), or force it:
+  # test_mode: true
+  default_currency: usd
+  trial_days: 14
+  
+  products:
+    - slug: free
+      name: Free
+      type: subscription
+      description: Get started with basic deployments
+      features:
+        - 3 projects
+        - 5 deployments per month
+        - Community support
+      prices:
+        - amount: 0
+          interval: month
+    
+    - slug: pro
+      name: Pro
+      type: subscription
+      description: For growing teams and serious projects
+      features:
+        - Unlimited projects
+        - Unlimited deployments
+        - Priority support
+        - Custom domains
+        - Team collaboration
+      prices:
+        - amount: 1999
+          interval: month
+          nickname: monthly
+        - amount: 19900
+          interval: year
+          nickname: yearly
+    
+    - slug: enterprise
+      name: Enterprise
+      type: subscription
+      description: For large organizations
+      features:
+        - Everything in Pro
+        - SSO / SAML
+        - Dedicated support
+        - SLA guarantee
+        - Custom integrations
+      prices:
+        - amount: 9900
+          interval: month
+
+# CORS
+cors:
+  origins: ["*"]
+
+# Debug/logging
+debug: ${DEBUG:-false}
+log_level: ${LOG_LEVEL:-INFO}
+
+# =============================================================================
+# Entities (generates _gen/db_schema.py, _gen/schemas.py, _gen/crud.py)
+# =============================================================================
+
+entities:
+  # NOTE: Workspace and WorkspaceMember are now handled by kernel.saas
+  # when saas.enabled=true. Only app-specific entities below.
+
+  # Projects
+  - name: project
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: name
+        type: string
+        required: true
+      - name: docker_hub_user
+        type: string
+        required: true
+      - name: version
+        type: string
+        default: "latest"
+      - name: config_json
+        type: json
+      - name: created_by
+        type: string
+
+  # Credentials (encrypted)
+  - name: credential
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: project_name
+        type: string
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: encrypted_blob
+        type: text
+
+  # Deployment runs (history)
+  - name: deployment_run
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: job_id
+        type: string
+        required: true
+      - name: project_name
+        type: string
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: services
+        type: json
+      - name: status
+        type: string
+        default: "queued"
+      - name: triggered_by
+        type: string
+        required: true
+      - name: triggered_at
+        type: datetime
+      - name: started_at
+        type: datetime
+      - name: completed_at
+        type: datetime
+      - name: result_json
+        type: json
+      - name: error
+        type: text
+
+  # Deployment state (current state per project/env)
+  - name: deployment_state
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: project_name
+        type: string
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: state_json
+        type: json
+      - name: last_deployed_at
+        type: datetime
+      - name: last_deployed_by
+        type: string
+
+# =============================================================================
+# Custom routes (not auto-generated, live in src/routes/)
+# =============================================================================
+
+custom_routes:
+  - deployments  # Trigger deploy, status, rollback
+  - projects     # Extended project routes with services/credentials

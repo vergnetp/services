@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local data (don't include dev databases)
+*.db
+*.sqlite
+data/
+
+# Docs
+docs/
+*.md
+!README.md
+
+# Other services (only deploy_api needed)
+services/*/
+!services/deploy_api/
+
+# Temporary files
+*.log
+*.tmp
+.DS_Store
