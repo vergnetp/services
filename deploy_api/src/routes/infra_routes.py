@@ -48,8 +48,238 @@ def _get_do_token(do_token: str = None) -> str:
 def _get_node_agent_key(do_token: str, user_id) -> str:
     """Derive node agent API key from DO token and user ID."""
     from shared_libs.backend.infra.cloud import generate_node_agent_key
-    token = _get_do_token(do_token)
-    return generate_node_agent_key(token, str(user_id))
+    return generate_node_agent_key(do_token, str(user_id))
+
+
+def _build_deploy_env(
+    user_id: str,
+    project: str,
+    environment: str,
+    service: str,
+    depends_on: List[str],
+    base_env_vars: Dict[str, str],
+) -> Dict[str, str]:
+    """Build env vars with auto-injected service discovery."""
+    from shared_libs.backend.infra.deploy import DeployEnvBuilder, is_stateful_service
+    
+    # Check if this IS a stateful service (postgres, redis, etc.)
+    if is_stateful_service(service):
+        # Build env vars for the service itself (POSTGRES_USER, etc.)
+        builder = DeployEnvBuilder(
+            user=user_id,
+            project=project,
+            env=environment,
+            service=service,
+            base_env_vars=base_env_vars,
+        )
+        return builder.build_stateful_service_env()
+    
+    # Regular service - inject connection strings for dependencies
+    builder = DeployEnvBuilder(
+        user=user_id,
+        project=project,
+        env=environment,
+        service=service,
+        base_env_vars=base_env_vars,
+    )
+    
+    for dep in depends_on:
+        builder.add_dependency(dep)
+    
+    return builder.build_env_vars()
+
+
+def _build_deploy_volumes(
+    user_id: str,
+    project: str,
+    environment: str,
+    service: str,
+    persist_data: bool,
+    custom_volumes: List[str],
+) -> List[str]:
+    """Build volume mounts for deployment."""
+    volumes = list(custom_volumes)  # Start with custom volumes
+    
+    if persist_data:
+        from shared_libs.backend.infra.deploy import build_deploy_volumes
+        auto_volumes = build_deploy_volumes(user_id, project, environment, service)
+        volumes.extend(auto_volumes)
+    
+    return volumes
+
+
+async def _ensure_nginx_on_server(client, log_fn=None):
+    """
+    Ensure nginx is running on the server.
+    Thin wrapper around client.ensure_nginx_running().
+    """
+    try:
+        if log_fn:
+            log_fn("🔧 Setting up nginx on server...")
+        
+        result = await client.ensure_nginx_running()
+        
+        if result.success:
+            status = result.data.get("status", "started")
+            if status == "already_running":
+                if log_fn:
+                    log_fn("✅ Nginx already running")
+            else:
+                if log_fn:
+                    log_fn("✅ Nginx started on ports 80/443")
+            return True
+        else:
+            if log_fn:
+                log_fn(f"⚠️ Nginx setup failed: {result.error}")
+            return False
+            
+    except Exception as e:
+        if log_fn:
+            log_fn(f"⚠️ Nginx setup error: {e}")
+        return False
+
+
+async def _setup_service_nginx_config(
+    client,
+    user_id: str,
+    project: str,
+    environment: str,
+    service: str,
+    container_name: str,
+    container_port: int,
+    is_stateful: bool = False,
+    backends: List[Dict[str, Any]] = None,
+    mode: str = "single_server",
+    log_fn=None,
+):
+    """
+    Set up nginx sidecar config for a service.
+    Thin wrapper around NginxService.setup_service_sidecar().
+    """
+    from shared_libs.backend.infra.networking import NginxService
+    
+    nginx = NginxService(client, log=log_fn)
+    result = await nginx.setup_service_sidecar(
+        user_id=user_id,
+        project=project,
+        environment=environment,
+        service=service,
+        container_name=container_name,
+        container_port=container_port,
+        is_stateful=is_stateful,
+        backends=backends,
+        mode=mode,
+    )
+    
+    if result.success:
+        return result.data
+    return None
+
+
+async def _update_sidecar_backends(
+    client,
+    user_id: str,
+    project: str,
+    environment: str,
+    service: str,
+    backends: List[Dict[str, Any]],
+    log_fn=None,
+):
+    """
+    Update nginx sidecar config with new backends.
+    Thin wrapper around NginxService.update_sidecar_backends().
+    """
+    from shared_libs.backend.infra.networking import NginxService
+    
+    nginx = NginxService(client, log=log_fn)
+    result = await nginx.update_sidecar_backends(
+        user_id=user_id,
+        project=project,
+        environment=environment,
+        service=service,
+        backends=backends,
+    )
+    
+    if result.success:
+        return result.data
+    return None
+
+
+async def _ensure_data_directories(client, volumes: List[str], log_fn=None):
+    """
+    Create host directories for volume mounts.
+    Thin wrapper around NginxService.ensure_data_directories().
+    """
+    from shared_libs.backend.infra.networking import NginxService
+    
+    nginx = NginxService(client, log=log_fn)
+    await nginx.ensure_data_directories(volumes)
+
+
+async def _setup_nginx_http_lb(
+    client,
+    name: str,
+    backends: List[Dict[str, Any]],
+    listen_port: int = 80,
+    domain: str = None,
+    lb_method: str = "least_conn",
+    health_check: bool = True,
+    log_fn=None,
+):
+    """
+    Set up nginx HTTP load balancer.
+    Thin wrapper around NginxService.setup_http_lb().
+    """
+    from shared_libs.backend.infra.networking import NginxService
+    
+    nginx = NginxService(client, log=log_fn)
+    result = await nginx.setup_http_lb(
+        name=name,
+        backends=backends,
+        listen_port=listen_port,
+        domain=domain,
+        lb_method=lb_method,
+        health_check=health_check,
+    )
+    
+    if result.success:
+        return result.data
+    return None
+
+
+async def _remove_nginx_lb(client, name: str, log_fn=None):
+    """
+    Remove an nginx LB config.
+    Thin wrapper around NginxService.remove_http_lb().
+    """
+    from shared_libs.backend.infra.networking import NginxService
+    
+    nginx = NginxService(client, log=log_fn)
+    result = await nginx.remove_http_lb(name)
+    return result.success
+
+
+async def _update_nginx_lb_backends(
+    client,
+    name: str,
+    backends: List[Dict[str, Any]],
+    log_fn=None,
+):
+    """
+    Update backends for an existing nginx LB.
+    Thin wrapper around NginxService.update_http_lb_backends().
+    """
+    from shared_libs.backend.infra.networking import NginxService
+    
+    nginx = NginxService(client, log=log_fn)
+    result = await nginx.update_http_lb_backends(
+        name=name,
+        backends=backends,
+    )
+    
+    if result.success:
+        return result.data
+    return None
 
 
 # ==========================================
@@ -2125,6 +2355,17 @@ class UnifiedDeployRequest(BaseModel):
     env_vars: Dict[str, str] = {}
     environment: str = "prod"
     tags: List[str] = []
+    project: Optional[str] = None  # Project name (defaults to service name)
+    
+    # Service mesh / dependencies
+    depends_on: List[str] = []  # Services this depends on (e.g., ["postgres", "redis"])
+    setup_sidecar: bool = True  # Set up nginx sidecar after deploy
+    is_stateful: bool = False   # Is this a stateful service (auto-detected from name)
+    
+    # Domain config
+    setup_domain: bool = False  # Auto-provision domain
+    base_domain: str = "digitalpixo.com"  # Base domain for subdomains
+    domain_aliases: List[str] = []  # Custom domain aliases
     
     # Source: code, git, image, or image_file
     source_type: str  # "code", "git", "image", "image_file"
@@ -2156,6 +2397,7 @@ class UnifiedDeployRequest(BaseModel):
 async def deploy_unified(
     req: UnifiedDeployRequest,
     do_token: str = Query(..., description="DO token"),
+    cf_token: Optional[str] = Query(None, description="Cloudflare token (required if setup_domain=True)"),
     user: UserIdentity = Depends(get_current_user),
 ):
     """
@@ -2211,6 +2453,17 @@ async def deploy_unified(
                 region=req.region,
                 size=req.size,
                 dockerfile=req.dockerfile,
+                project=req.project,  # For container naming
+                workspace_id=str(user.id),  # For container naming
+                # Service mesh
+                depends_on=req.depends_on,
+                setup_sidecar=req.setup_sidecar,
+                is_stateful=req.is_stateful,
+                # Domain config
+                setup_domain=req.setup_domain,
+                cloudflare_token=cf_token,
+                base_domain=req.base_domain,
+                domain_aliases=req.domain_aliases,
             )
             
             # Decode code if provided (service handles zip→tar conversion)
@@ -2234,17 +2487,37 @@ async def deploy_unified(
             result = loop.run_until_complete(service.deploy(config))
             loop.close()
             
-            # Send done
+            # Send done with architecture info
             msg_queue.put({
                 "type": "done",
                 "success": result.success,
                 "servers": [
-                    {"ip": s.ip, "name": s.name, "success": s.success, "url": s.url, "error": s.error}
+                    {
+                        "ip": s.ip, 
+                        "name": s.name, 
+                        "success": s.success, 
+                        "url": s.url, 
+                        "error": s.error,
+                        "internal_port": s.internal_port,
+                        "sidecar_configured": s.sidecar_configured,
+                    }
                     for s in result.servers
                 ],
                 "successful_count": result.successful_count,
                 "failed_count": result.failed_count,
                 "error": result.error,
+                # Architecture info
+                "service_name": result.service_name,
+                "project": result.project,
+                "environment": result.environment,
+                "container_name": result.container_name,
+                "internal_port": result.internal_port,
+                "depends_on": result.depends_on,
+                # Dependent containers that were restarted
+                "restarted_dependents": result.restarted_dependents,
+                # Domain info
+                "domain": result.domain,
+                "domain_aliases": result.domain_aliases,
             })
             
         except Exception as e:
@@ -2294,10 +2567,17 @@ async def deploy_multipart(
     request: Request,
     # Query params (available immediately, before body is read)
     do_token: str = Query(..., description="DO token"),
+    cf_token: Optional[str] = Query(None, description="Cloudflare token"),
     snapshot_id: Optional[str] = Query(None),
     new_server_count: int = Query(0),
     region: str = Query("lon1"),
     size: str = Query("s-1vcpu-1gb"),
+    project_name: Optional[str] = Query(None, alias="project", description="Project name for tagging"),
+    env_name: str = Query("prod", alias="environment", description="Environment"),
+    # Domain config
+    setup_domain: bool = Query(False, description="Auto-provision domain"),
+    base_domain: str = Query("digitalpixo.com", description="Base domain for subdomains"),
+    domain_aliases: str = Query("[]", description="JSON array of domain aliases"),
     user: UserIdentity = Depends(get_current_user),
 ):
     """
@@ -2357,8 +2637,8 @@ async def deploy_multipart(
                         size=size,
                         image=snapshot_id,
                         tags=["deployed-via-api"],
-                        project=project,
-                        environment=environment,
+                        project=project_name,  # From query param
+                        environment=env_name,  # From query param
                         node_agent_api_key=api_key,  # Infra auto-generates cloud-init
                         wait=False,
                     )
@@ -2403,7 +2683,9 @@ async def deploy_multipart(
     container_port = int(form.get("container_port", 0)) or None
     host_port = int(form.get("host_port", 0)) or None
     env_vars = form.get("env_vars", "{}")
-    environment = form.get("environment", "prod")
+    # Use query param, fallback to form, then default
+    environment = env_name or form.get("environment", "prod")
+    project = project_name or form.get("project", name)  # Default to service name
     tags = form.get("tags", "[]")
     dockerfile = form.get("dockerfile")
     git_url = form.get("git_url")
@@ -2481,6 +2763,14 @@ async def deploy_multipart(
             # Combine existing + provisioned servers
             all_server_ips = server_ips_list + [s["ip"] for s in provisioned_servers]
             
+            # Parse domain aliases
+            import json as json_mod2
+            domain_aliases_list = []
+            try:
+                domain_aliases_list = json_mod2.loads(domain_aliases)
+            except:
+                pass
+            
             config = MultiDeployConfig(
                 name=name,
                 port=port,
@@ -2500,6 +2790,13 @@ async def deploy_multipart(
                 region=region,
                 size=size,
                 dockerfile=dockerfile,
+                project=project,  # For container naming
+                workspace_id=str(user.id),  # For container naming
+                # Domain config
+                setup_domain=setup_domain,
+                cloudflare_token=cf_token,
+                base_domain=base_domain,
+                domain_aliases=domain_aliases_list,
             )
             
             # Read file contents (from temp files, not memory)
@@ -2535,6 +2832,9 @@ async def deploy_multipart(
                 "successful_count": result.successful_count,
                 "failed_count": result.failed_count,
                 "error": result.error,
+                # Domain info
+                "domain": result.domain,
+                "domain_aliases": result.domain_aliases,
             })
             
         except Exception as e:
@@ -2731,6 +3031,12 @@ async def deploy_stream(
     size: str = Query("s-1vcpu-1gb"),
     # Two-phase: use session from /deploy/prepare
     session_id: Optional[str] = Query(None, description="Session from /deploy/prepare for true streaming"),
+    # NEW: Auto env var injection
+    auto_env: bool = Query(False, description="Auto-inject service discovery env vars (DB_HOST, REDIS_URL, etc.)"),
+    depends_on: str = Query("[]", description="JSON array of service dependencies (e.g., ['postgres', 'redis'])"),
+    # NEW: Volume mounts
+    volumes: str = Query("[]", description="JSON array of volume mounts (e.g., ['/host:/container'])"),
+    persist_data: bool = Query(False, description="Auto-mount /data volume for persistence"),
     user: UserIdentity = Depends(get_current_user),
 ):
     """
@@ -2741,6 +3047,12 @@ async def deploy_stream(
     TWO MODES:
     1. With session_id: Uses pre-prepared servers from /deploy/prepare (TRUE streaming)
     2. Without session_id: Legacy mode - provisions inline (upload buffers while provisioning)
+    
+    NEW FEATURES:
+    - auto_env=true: Auto-inject DATABASE_URL, REDIS_URL based on dependencies
+    - depends_on=["postgres","redis"]: Specify what services this container needs
+    - persist_data=true: Mount /data/{user}/{project}/{env}/{service}/data to /app/data
+    - volumes=["..."]: Custom volume mounts
     
     For best performance with new servers:
     1. Call POST /deploy/prepare first to provision
@@ -2757,10 +3069,57 @@ async def deploy_stream(
     except:
         env_vars_dict = {}
     
+    # Parse depends_on JSON
+    try:
+        depends_on_list = json_mod.loads(depends_on) if depends_on else []
+    except:
+        depends_on_list = []
+    
+    # Parse volumes JSON
+    try:
+        volumes_list = json_mod.loads(volumes) if volumes else []
+    except:
+        volumes_list = []
+    
+    # Build final env vars (with auto-injection if enabled)
+    project_name = project or name
+    service_name = name
+    workspace_id = str(user.id)
+    
+    if auto_env and depends_on_list:
+        final_env_vars = _build_deploy_env(
+            user_id=workspace_id,
+            project=project_name,
+            environment=environment,
+            service=service_name,
+            depends_on=depends_on_list,
+            base_env_vars=env_vars_dict,
+        )
+    else:
+        final_env_vars = env_vars_dict
+    
+    # Build final volumes (with auto data volume if enabled)
+    final_volumes = _build_deploy_volumes(
+        user_id=workspace_id,
+        project=project_name,
+        environment=environment,
+        service=service_name,
+        persist_data=persist_data,
+        custom_volumes=volumes_list,
+    )
+    
     msg_queue = queue.Queue()
     
     def log(msg: str):
         msg_queue.put({"type": "log", "message": msg})
+    
+    # Log auto-injection info (after log function is defined)
+    if auto_env and depends_on_list:
+        log(f"🔧 Auto-injecting env vars for dependencies: {depends_on_list}")
+    if persist_data:
+        log(f"💾 Auto-mounting data volume for persistence")
+    if final_volumes:
+        log(f"📁 Volumes: {len(final_volumes)} mount(s)")
     
     # Check for two-phase session
     session = None
@@ -2868,6 +3227,14 @@ async def deploy_stream(
             ip = ready_servers[0]
             agent = NodeAgentClient(ip, api_key)
             
+            # Ensure nginx is running (for service mesh)
+            if auto_env or depends_on_list:
+                await _ensure_nginx_on_server(agent, log)
+            
+            # Create data directories for volumes
+            if final_volumes:
+                await _ensure_data_directories(agent, final_volumes, log)
+            
             stream_start = time_mod.time()
             
             async def body_stream():
@@ -2887,7 +3254,8 @@ async def deploy_stream(
                     image=image,
                     name=container_name,
                     ports={str(actual_port): str(container_p)},
-                    env_vars=env_vars_dict,
+                    env_vars=final_env_vars,
+                    volumes=final_volumes if final_volumes else None,
                     replace_existing=True,  # Infra handles stop/remove
                 )
                 
@@ -2895,6 +3263,12 @@ async def deploy_stream(
                     url = f"http://{ip}:{actual_port}"
                     log(f"   [{ip}] ✅ Running at {url}")
                     results.append({"ip": ip, "name": container_name, "success": True, "url": url})
+                    
+                    # Setup nginx stream config for stateful services
+                    await _setup_service_nginx_config(
+                        agent, workspace_id, project_name, environment, service_name,
+                        container_name, container_p, log_fn=log
+                    )
                 else:
                     log(f"   [{ip}] ❌ Container failed: {run_result.error}")
                     # Try to get container logs for debugging
@@ -2917,6 +3291,19 @@ async def deploy_stream(
             import httpx
             
             log(f"🔀 Deploying {container_name} to {len(ready_servers)} servers (tee-streaming)...")
+            
+            # Pre-setup: ensure nginx and directories on all servers
+            if auto_env or depends_on_list or final_volumes:
+                log("🔧 Pre-configuring servers...")
+                for ip in ready_servers:
+                    try:
+                        agent = NodeAgentClient(ip, api_key)
+                        if auto_env or depends_on_list:
+                            await _ensure_nginx_on_server(agent)
+                        if final_volumes:
+                            await _ensure_data_directories(agent, final_volumes)
+                    except Exception as e:
+                        log(f"   [{ip}] ⚠️ Pre-config warning: {e}")
             
             stream_start = time_mod.time()
             total_size = 0
@@ -2951,7 +3338,8 @@ async def deploy_stream(
                             image=image,
                             name=container_name,
                             ports={str(actual_port): str(container_p)},
-                            env_vars=env_vars_dict,
+                            env_vars=final_env_vars,
+                            volumes=final_volumes if final_volumes else None,
                             replace_existing=True,  # Infra handles stop/remove
                         )
                         
@@ -2959,6 +3347,12 @@ async def deploy_stream(
                             url = f"http://{ip}:{actual_port}"
                             log(f"   [{ip}] ✅ Running at {url}")
                             results_dict[ip] = {"ip": ip, "name": container_name, "success": True, "url": url}
+                            
+                            # Setup nginx stream config for this server
+                            await _setup_service_nginx_config(
+                                agent, workspace_id, project_name, environment, service_name,
+                                container_name, container_p
+                            )
                         else:
                             log(f"   [{ip}] ❌ Container failed: {run_result.error}")
                             # Try to get container logs for debugging
@@ -3133,13 +3527,22 @@ async def deploy_stream(
         ip = ready_servers[0]
         log(f"🔨 Deploying {container_name} to {ip}...")
         
+        agent = NodeAgentClient(ip, api_key)
+        
+        # Ensure nginx is running (for service mesh)
+        if auto_env or depends_on_list:
+            await _ensure_nginx_on_server(agent, log)
+        
+        # Create data directories for volumes
+        if final_volumes:
+            await _ensure_data_directories(agent, final_volumes, log)
+        
         stream_start = time.time()
         
         async def body_stream():
             async for chunk in request.stream():
                 yield chunk
         
-        agent = NodeAgentClient(ip, api_key)
         load_result = await agent.load_image_stream(body_stream())
         
         stream_time = time.time() - stream_start
@@ -3153,7 +3556,8 @@ async def deploy_stream(
                 image=image,
                 name=container_name,
                 ports={str(actual_port): str(container_p)},
-                env_vars=env_vars_dict,
+                env_vars=final_env_vars,
+                volumes=final_volumes if final_volumes else None,
                 replace_existing=True,  # Infra handles stop/remove
             )
             
@@ -3161,6 +3565,12 @@ async def deploy_stream(
                 url = f"http://{ip}:{actual_port}"
                 log(f"   [{ip}] ✅ Running at {url}")
                 results.append({"ip": ip, "name": container_name, "success": True, "url": url})
+                
+                # Setup nginx stream config for stateful services
+                await _setup_service_nginx_config(
+                    agent, workspace_id, project_name, environment, service_name,
+                    container_name, container_p, log_fn=log
+                )
             else:
                 log(f"   [{ip}] ❌ Container failed: {run_result.error}")
                 # Try to get container logs for debugging
@@ -3180,6 +3590,19 @@ async def deploy_stream(
     else:
         # Multiple servers - TEE STREAMING (broadcast chunks to all simultaneously)
         log(f"🔀 Deploying {container_name} to {len(ready_servers)} servers (tee-streaming)...")
+        
+        # Pre-setup: ensure nginx and directories on all servers
+        if auto_env or depends_on_list or final_volumes:
+            log("🔧 Pre-configuring servers...")
+            for ip in ready_servers:
+                try:
+                    agent = NodeAgentClient(ip, api_key)
+                    if auto_env or depends_on_list:
+                        await _ensure_nginx_on_server(agent)
+                    if final_volumes:
+                        await _ensure_data_directories(agent, final_volumes)
+                except Exception as e:
+                    log(f"   [{ip}] ⚠️ Pre-config warning: {e}")
         
         stream_start = time.time()
         total_size = 0
@@ -3214,7 +3637,8 @@ async def deploy_stream(
                         image=image,
                         name=container_name,
                         ports={str(actual_port): str(container_p)},
-                        env_vars=env_vars_dict,
+                        env_vars=final_env_vars,
+                        volumes=final_volumes if final_volumes else None,
                         replace_existing=True,  # Infra handles stop/remove
                     )
                     
@@ -3222,6 +3646,12 @@ async def deploy_stream(
                         url = f"http://{ip}:{actual_port}"
                         log(f"   [{ip}] ✅ Running at {url}")
                         results_dict[ip] = {"ip": ip, "name": container_name, "success": True, "url": url}
+                        
+                        # Setup nginx stream config for this server
+                        await _setup_service_nginx_config(
+                            agent, workspace_id, project_name, environment, service_name,
+                            container_name, container_p
+                        )
                     else:
                         log(f"   [{ip}] ❌ Container failed: {run_result.error}")
                         # Try to get container logs for debugging
@@ -3303,3 +3733,1345 @@ async def deploy_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
+
+
+# ==========================================
+# Stateful Service Deployment
+# ==========================================
+
+class StatefulServiceRequest(BaseModel):
+    """Request to deploy a stateful service (postgres, redis, etc.)."""
+    service_type: str = Field(..., description="Service type: postgres, redis, mysql, mongo")
+    project: str = Field(..., description="Project name")
+    environment: str = Field("prod", description="Environment")
+    server_ip: str = Field(..., description="Target server IP")
+    do_token: str = Field(..., description="DigitalOcean token")
+    image_tag: Optional[str] = Field(None, description="Custom image tag (default: latest)")
+    extra_env_vars: Optional[Dict[str, str]] = Field(None, description="Additional env vars")
+
+
+STATEFUL_SERVICE_IMAGES = {
+    "postgres": "postgres:15-alpine",
+    "postgresql": "postgres:15-alpine",
+    "redis": "redis:7-alpine",
+    "mysql": "mysql:8",
+    "mariadb": "mariadb:11",
+    "mongo": "mongo:7",
+    "mongodb": "mongo:7",
+}
+
+STATEFUL_SERVICE_PORTS = {
+    "postgres": 5432,
+    "postgresql": 5432,
+    "redis": 6379,
+    "mysql": 3306,
+    "mariadb": 3306,
+    "mongo": 27017,
+    "mongodb": 27017,
+}
+
+
+@router.post("/deploy/stateful")
+async def deploy_stateful_service(
+    req: StatefulServiceRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Deploy a stateful service (postgres, redis, mysql, mongo).
+    
+    This endpoint:
+    1. Generates deterministic credentials
+    2. Creates data volumes for persistence
+    3. Deploys the container with proper env vars
+    4. Sets up nginx stream proxy for internal access
+    
+    Returns the internal port for other services to connect.
+    
+    Example:
+        POST /infra/deploy/stateful
+        {
+            "service_type": "postgres",
+            "project": "myapp",
+            "environment": "prod",
+            "server_ip": "1.2.3.4",
+            "do_token": "..."
+        }
+        
+        Response:
+        {
+            "success": true,
+            "container_name": "abc123_myapp_prod_postgres",
+            "internal_port": 5186,
+            "connection_info": {
+                "host": "localhost",
+                "port": 5186,
+                "database": "...",
+                "user": "...",
+                "password": "..."
+            }
+        }
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.deploy import build_stateful_service_env, is_stateful_service
+    from shared_libs.backend.infra.networking import DeploymentPortResolver
+    from shared_libs.backend.infra.storage import VolumeManager
+    from shared_libs.backend.infra.utils.naming import DeploymentNaming
+    
+    service_type = req.service_type.lower()
+    
+    if not is_stateful_service(service_type):
+        raise HTTPException(400, f"Unknown stateful service: {service_type}. Supported: postgres, redis, mysql, mongo")
+    
+    # Get image and port
+    image = req.image_tag or STATEFUL_SERVICE_IMAGES.get(service_type)
+    container_port = STATEFUL_SERVICE_PORTS.get(service_type)
+    
+    if not image or not container_port:
+        raise HTTPException(400, f"Unsupported service type: {service_type}")
+    
+    # Generate container name
+    workspace_id = str(user.id)
+    container_name = DeploymentNaming.get_container_name(
+        workspace_id=workspace_id,
+        project=req.project,
+        env=req.environment,
+        service_name=service_type,
+    )
+    
+    # Build env vars for the service
+    env_vars = build_stateful_service_env(
+        user=workspace_id,
+        project=req.project,
+        env=req.environment,
+        service=service_type,
+        base_env_vars=req.extra_env_vars,
+    )
+    
+    # Get volumes
+    vm = VolumeManager()
+    volumes = vm.get_standard_service_volumes(workspace_id, req.project, req.environment, service_type)
+    volume_strs = [v.to_docker() for v in volumes]
+    
+    # Get internal port
+    internal_port = DeploymentPortResolver.get_internal_port(
+        workspace_id, req.project, req.environment, service_type
+    )
+    
+    # Connect to agent
+    api_key = _get_node_agent_key(req.do_token, workspace_id)
+    client = NodeAgentClient(req.server_ip, api_key)
+    
+    try:
+        # Ensure nginx is running
+        await _ensure_nginx_on_server(client)
+        
+        # Create volume directories
+        for vol in volume_strs:
+            host_path = vol.split(":")[0]
+            await client.create_directory(host_path)
+        
+        # Pull image
+        pull_result = await client.pull_image(image)
+        if not pull_result.success:
+            raise HTTPException(500, f"Failed to pull image: {pull_result.error}")
+        
+        # Run container
+        run_result = await client.run_container(
+            image=image,
+            name=container_name,
+            ports=None,  # No host port mapping - use nginx
+            env_vars=env_vars,
+            volumes=volume_strs,
+            restart_policy="unless-stopped",
+            replace_existing=True,
+        )
+        
+        if not run_result.success:
+            raise HTTPException(500, f"Failed to start container: {run_result.error}")
+        
+        # Setup nginx stream config
+        await _setup_service_nginx_config(
+            client,
+            workspace_id,
+            req.project,
+            req.environment,
+            service_type,
+            container_name,
+            container_port,
+            is_stateful=True,
+        )
+        
+        # Build connection info
+        connection_info = {
+            "host": "localhost",
+            "port": internal_port,
+        }
+        
+        if service_type in ("postgres", "postgresql"):
+            connection_info["database"] = env_vars.get("POSTGRES_DB")
+            connection_info["user"] = env_vars.get("POSTGRES_USER")
+            connection_info["password"] = env_vars.get("POSTGRES_PASSWORD")
+            connection_info["url"] = f"postgresql://{connection_info['user']}:{connection_info['password']}@localhost:{internal_port}/{connection_info['database']}"
+        elif service_type == "redis":
+            connection_info["password"] = env_vars.get("REDIS_PASSWORD", "")
+            connection_info["url"] = f"redis://:{connection_info['password']}@localhost:{internal_port}/0"
+        elif service_type in ("mysql", "mariadb"):
+            connection_info["database"] = env_vars.get("MYSQL_DATABASE")
+            connection_info["user"] = env_vars.get("MYSQL_USER")
+            connection_info["password"] = env_vars.get("MYSQL_PASSWORD")
+            connection_info["url"] = f"mysql://{connection_info['user']}:{connection_info['password']}@localhost:{internal_port}/{connection_info['database']}"
+        elif service_type in ("mongo", "mongodb"):
+            connection_info["user"] = env_vars.get("MONGO_INITDB_ROOT_USERNAME")
+            connection_info["password"] = env_vars.get("MONGO_INITDB_ROOT_PASSWORD")
+            connection_info["url"] = f"mongodb://{connection_info['user']}:{connection_info['password']}@localhost:{internal_port}"
+        
+        return {
+            "success": True,
+            "container_name": container_name,
+            "internal_port": internal_port,
+            "connection_info": connection_info,
+            "message": f"Service {service_type} deployed. Other services can connect to localhost:{internal_port}",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Deployment failed: {str(e)}")
+
+
+# ==========================================
+# Cloudflare Domain & Load Balancer
+# ==========================================
+
+class DomainSetupRequest(BaseModel):
+    """Request to set up a domain with Cloudflare."""
+    domain: str = Field(..., description="Full domain name (e.g., api.example.com)")
+    server_ip: str = Field(..., description="Server IP address")
+    cloudflare_token: str = Field(..., description="Cloudflare API token")
+    proxied: bool = Field(True, description="Enable Cloudflare proxy (handles SSL)")
+
+
+class LoadBalancerSetupRequest(BaseModel):
+    """Request to set up load balancing via multiple A records (FREE)."""
+    domain: str = Field(..., description="Full domain name for the LB")
+    server_ips: List[str] = Field(..., description="List of server IP addresses")
+    cloudflare_token: str = Field(..., description="Cloudflare API token")
+    proxied: bool = Field(True, description="Enable Cloudflare proxy")
+
+
+class LoadBalancerUpdateRequest(BaseModel):
+    """Request to add/remove server from LB."""
+    domain: str = Field(..., description="Load balancer domain")
+    server_ip: str = Field(..., description="Server IP to add/remove")
+    cloudflare_token: str = Field(..., description="Cloudflare API token")
+
+
+@router.post("/cloudflare/domain")
+async def setup_domain(
+    req: DomainSetupRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Set up a domain to point to your server.
+    
+    Creates/updates an A record in Cloudflare.
+    
+    With proxied=True (default):
+    - Cloudflare handles SSL automatically (HTTPS works immediately)
+    - DDoS protection enabled
+    - Origin IP hidden
+    
+    Example:
+        POST /infra/cloudflare/domain
+        {
+            "domain": "api.myapp.com",
+            "server_ip": "1.2.3.4",
+            "cloudflare_token": "...",
+            "proxied": true
+        }
+        
+    After this, https://api.myapp.com will work immediately.
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    try:
+        cf = CloudflareClient(req.cloudflare_token)
+        record = cf.setup_domain(
+            domain=req.domain,
+            server_ip=req.server_ip,
+            proxied=req.proxied,
+        )
+        
+        return {
+            "success": True,
+            "domain": req.domain,
+            "server_ip": req.server_ip,
+            "proxied": req.proxied,
+            "record_id": record.id,
+            "message": f"Domain {req.domain} → {req.server_ip}" + 
+                      (" (SSL via Cloudflare)" if req.proxied else " (direct, need own SSL)"),
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to setup domain: {str(e)}")
+
+
+@router.delete("/cloudflare/domain")
+async def remove_domain(
+    domain: str = Query(..., description="Domain to remove"),
+    cloudflare_token: str = Query(..., description="Cloudflare API token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Remove a domain's DNS record.
+    
+    Call this when decommissioning a service.
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    try:
+        cf = CloudflareClient(cloudflare_token)
+        deleted = cf.remove_domain(domain)
+        
+        return {
+            "success": deleted,
+            "domain": domain,
+            "message": f"Domain {domain} removed" if deleted else f"Domain {domain} not found",
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to remove domain: {str(e)}")
+
+
+@router.post("/cloudflare/lb")
+async def setup_load_balancer(
+    req: LoadBalancerSetupRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Set up FREE load balancing for multiple servers.
+    
+    Creates multiple A records for the same domain.
+    Cloudflare automatically round-robins between them when proxied.
+    
+    This is FREE - no paid Cloudflare LB feature needed!
+    
+    Example:
+        POST /infra/cloudflare/lb
+        {
+            "domain": "api.myapp.com",
+            "server_ips": ["1.2.3.4", "5.6.7.8"],
+            "cloudflare_token": "...",
+            "proxied": true
+        }
+        
+    After this, https://api.myapp.com distributes traffic across both servers.
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    if len(req.server_ips) < 1:
+        raise HTTPException(400, "At least one server IP required")
+    
+    try:
+        cf = CloudflareClient(req.cloudflare_token)
+        records = cf.setup_multi_server(
+            domain=req.domain,
+            server_ips=req.server_ips,
+            proxied=req.proxied,
+        )
+        
+        return {
+            "success": True,
+            "domain": req.domain,
+            "server_ips": req.server_ips,
+            "record_count": len(records),
+            "proxied": req.proxied,
+            "message": f"Load balancing {req.domain} → {len(req.server_ips)} servers (FREE via multi-A records)" +
+                      (" + SSL via Cloudflare" if req.proxied else ""),
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to setup load balancing: {str(e)}")
+
+
+@router.post("/cloudflare/lb/add-server")
+async def add_server_to_lb(
+    req: LoadBalancerUpdateRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Add a server to an existing load-balanced domain.
+    
+    Creates an additional A record for the domain.
+    
+    Example:
+        POST /infra/cloudflare/lb/add-server
+        {
+            "domain": "api.myapp.com",
+            "server_ip": "9.10.11.12",
+            "cloudflare_token": "..."
+        }
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    try:
+        cf = CloudflareClient(req.cloudflare_token)
+        record = cf.add_server(
+            domain=req.domain,
+            server_ip=req.server_ip,
+        )
+        
+        # Get total count
+        all_ips = cf.list_servers(req.domain)
+        
+        return {
+            "success": True,
+            "domain": req.domain,
+            "added_ip": req.server_ip,
+            "total_servers": len(all_ips),
+            "all_ips": all_ips,
+            "message": f"Added {req.server_ip} to {req.domain} (now {len(all_ips)} servers)",
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to add server: {str(e)}")
+
+
+@router.post("/cloudflare/lb/remove-server")
+async def remove_server_from_lb(
+    req: LoadBalancerUpdateRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Remove a server from a load-balanced domain.
+    
+    Deletes the A record for that IP.
+    
+    Example:
+        POST /infra/cloudflare/lb/remove-server
+        {
+            "domain": "api.myapp.com",
+            "server_ip": "1.2.3.4",
+            "cloudflare_token": "..."
+        }
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    try:
+        cf = CloudflareClient(req.cloudflare_token)
+        deleted = cf.remove_server(
+            domain=req.domain,
+            server_ip=req.server_ip,
+        )
+        
+        # Get remaining count
+        all_ips = cf.list_servers(req.domain)
+        
+        return {
+            "success": deleted,
+            "domain": req.domain,
+            "removed_ip": req.server_ip,
+            "remaining_servers": len(all_ips),
+            "all_ips": all_ips,
+            "message": f"Removed {req.server_ip} from {req.domain} ({len(all_ips)} servers remaining)" if deleted else f"IP {req.server_ip} not found",
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to remove server: {str(e)}")
+
+
+@router.get("/cloudflare/lb/servers")
+async def list_lb_servers(
+    domain: str = Query(..., description="Domain to check"),
+    cloudflare_token: str = Query(..., description="Cloudflare API token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    List all servers (A records) for a domain.
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    try:
+        cf = CloudflareClient(cloudflare_token)
+        ips = cf.list_servers(domain)
+        
+        return {
+            "success": True,
+            "domain": domain,
+            "server_count": len(ips),
+            "server_ips": ips,
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list servers: {str(e)}")
+
+
+@router.get("/cloudflare/zones")
+async def list_cloudflare_zones(
+    cloudflare_token: str = Query(..., description="Cloudflare API token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    List available Cloudflare zones (domains).
+    
+    Use this to verify your token works and see which domains you can manage.
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    
+    try:
+        cf = CloudflareClient(cloudflare_token)
+        zones = cf.list_zones()
+        
+        return {
+            "success": True,
+            "zones": [
+                {
+                    "id": z.get("id"),
+                    "name": z.get("name"),
+                    "status": z.get("status"),
+                    "plan": z.get("plan", {}).get("name"),
+                }
+                for z in zones
+            ],
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list zones: {str(e)}")
+
+
+# ==========================================
+# Nginx Load Balancer (FREE, with health checks)
+# ==========================================
+
+class NginxLBSetupRequest(BaseModel):
+    """Request to set up nginx load balancer."""
+    name: str = Field(..., description="Unique name for this LB (e.g., 'myapp_prod_api')")
+    server_ip: str = Field(..., description="Server IP where nginx runs (the LB server)")
+    backends: List[Dict[str, Any]] = Field(..., description="List of backend servers: [{ip, port, weight}]")
+    do_token: str = Field(..., description="DigitalOcean API token")
+    listen_port: int = Field(80, description="Port nginx listens on")
+    domain: Optional[str] = Field(None, description="Optional domain for server_name")
+    lb_method: str = Field("least_conn", description="Load balancing method: least_conn, round_robin, ip_hash")
+
+
+class NginxLBUpdateRequest(BaseModel):
+    """Request to update nginx LB backends."""
+    name: str = Field(..., description="LB name")
+    server_ip: str = Field(..., description="Server IP where nginx runs")
+    backends: List[Dict[str, Any]] = Field(..., description="New list of backends")
+    do_token: str = Field(..., description="DigitalOcean API token")
+
+
+@router.post("/nginx/lb")
+async def setup_nginx_lb(
+    req: NginxLBSetupRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Set up nginx load balancer on a server.
+    
+    This creates an nginx upstream config that distributes traffic
+    across multiple backend servers. FREE and includes health checks.
+    
+    Features:
+    - Health checks (removes failed backends automatically)
+    - Multiple LB methods: least_conn, round_robin, ip_hash
+    - WebSocket support
+    - Automatic failover to next backend
+    
+    Example:
+        POST /infra/nginx/lb
+        {
+            "name": "myapp_prod_api",
+            "server_ip": "1.2.3.4",
+            "backends": [
+                {"ip": "10.0.0.1", "port": 8000},
+                {"ip": "10.0.0.2", "port": 8000},
+                {"ip": "10.0.0.3", "port": 8000}
+            ],
+            "do_token": "...",
+            "lb_method": "least_conn",
+            "domain": "api.myapp.com"
+        }
+    
+    After setup:
+    - Traffic to server_ip:80 is distributed across backends
+    - Failed backends are automatically removed
+    - Point your domain to server_ip (or use Cloudflare)
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    if not req.backends:
+        raise HTTPException(400, "At least one backend required")
+    
+    try:
+        # Connect to server
+        token = _get_do_token(req.do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        client = NodeAgentClient(req.server_ip, api_key)
+        
+        # Collect errors for debugging
+        errors = []
+        def log_error(msg):
+            errors.append(msg)
+            print(f"nginx/lb: {msg}")
+        
+        # Ensure nginx is running
+        nginx_ok = await _ensure_nginx_on_server(client, log_fn=log_error)
+        if not nginx_ok:
+            error_detail = "; ".join(errors) if errors else "Unknown error"
+            raise HTTPException(500, f"Failed to ensure nginx on server {req.server_ip}: {error_detail}")
+        
+        # Set up LB
+        result = await _setup_nginx_http_lb(
+            client=client,
+            name=req.name,
+            backends=req.backends,
+            listen_port=req.listen_port,
+            domain=req.domain,
+            lb_method=req.lb_method,
+            log_fn=log_error,
+        )
+        
+        if not result:
+            raise HTTPException(500, "Failed to configure nginx LB - check server logs")
+        
+        return {
+            "success": True,
+            "name": req.name,
+            "lb_server": req.server_ip,
+            "listen_port": req.listen_port,
+            "domain": req.domain,
+            "backends": req.backends,
+            "lb_method": req.lb_method,
+            "message": f"Nginx LB '{req.name}' configured with {len(req.backends)} backends",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"nginx/lb error: {traceback.format_exc()}")
+        raise HTTPException(500, f"Failed to setup nginx LB: {str(e)}")
+
+
+@router.put("/nginx/lb")
+async def update_nginx_lb(
+    req: NginxLBUpdateRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Update backends for an existing nginx LB.
+    
+    Use this to add/remove servers without recreating the LB.
+    
+    Example:
+        PUT /infra/nginx/lb
+        {
+            "name": "myapp_prod_api",
+            "server_ip": "1.2.3.4",
+            "backends": [
+                {"ip": "10.0.0.1", "port": 8000},
+                {"ip": "10.0.0.4", "port": 8000}
+            ],
+            "do_token": "..."
+        }
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    if not req.backends:
+        raise HTTPException(400, "At least one backend required")
+    
+    try:
+        token = _get_do_token(req.do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        client = NodeAgentClient(req.server_ip, api_key)
+        
+        result = await _update_nginx_lb_backends(
+            client=client,
+            name=req.name,
+            backends=req.backends,
+        )
+        
+        if not result:
+            raise HTTPException(500, "Failed to update nginx LB")
+        
+        return {
+            "success": True,
+            "name": req.name,
+            "backends": req.backends,
+            "message": f"Nginx LB '{req.name}' updated with {len(req.backends)} backends",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to update nginx LB: {str(e)}")
+
+
+@router.delete("/nginx/lb")
+async def delete_nginx_lb(
+    name: str = Query(..., description="LB name to delete"),
+    server_ip: str = Query(..., description="Server IP where nginx runs"),
+    do_token: str = Query(..., description="DigitalOcean API token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Delete an nginx LB configuration.
+    
+    Example:
+        DELETE /infra/nginx/lb?name=myapp_prod_api&server_ip=1.2.3.4&do_token=...
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    try:
+        token = _get_do_token(do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        client = NodeAgentClient(server_ip, api_key)
+        
+        success = await _remove_nginx_lb(client, name)
+        
+        return {
+            "success": success,
+            "name": name,
+            "message": f"Nginx LB '{name}' deleted" if success else f"Failed to delete '{name}'",
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete nginx LB: {str(e)}")
+
+
+# ==========================================
+# Nginx Sidecar (Service Mesh Pattern)
+# ==========================================
+
+class SidecarSetupRequest(BaseModel):
+    """Request to set up nginx sidecar for service discovery."""
+    server_ip: str = Field(..., description="Server IP where sidecar runs")
+    project: str = Field(..., description="Project name")
+    environment: str = Field(..., description="Environment")
+    service: str = Field(..., description="Service name")
+    container_name: str = Field(..., description="Container name (for single_server mode)")
+    container_port: int = Field(..., description="Container port (5432, 6379, etc.)")
+    do_token: str = Field(..., description="DigitalOcean API token")
+    backends: Optional[List[Dict[str, Any]]] = Field(None, description="Backends for multi_server: [{ip, port}]")
+    mode: str = Field("single_server", description="single_server (Docker DNS) or multi_server (IPs)")
+
+
+class SidecarUpdateRequest(BaseModel):
+    """Request to update sidecar backends."""
+    server_ips: List[str] = Field(..., description="Server IPs where sidecars run (update all)")
+    project: str = Field(..., description="Project name")
+    environment: str = Field(..., description="Environment")
+    service: str = Field(..., description="Service name")
+    backends: List[Dict[str, Any]] = Field(..., description="New backends: [{ip, port}]")
+    do_token: str = Field(..., description="DigitalOcean API token")
+
+
+@router.post("/nginx/sidecar")
+async def setup_sidecar(
+    req: SidecarSetupRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Set up nginx sidecar for service discovery on a server.
+    
+    SIDECAR PATTERN: Every server runs nginx that provides:
+    - Service discovery (apps connect to nginx:INTERNAL_PORT)
+    - Load balancing (multiple backends)
+    - Health checks (removes failed backends)
+    - Zero-downtime deploys (update backends without app changes)
+    
+    Apps use Docker DNS: connect to "nginx:5234" instead of "postgres:5432"
+    
+    Example (single server):
+        POST /infra/nginx/sidecar
+        {
+            "server_ip": "1.2.3.4",
+            "project": "myapp",
+            "environment": "prod", 
+            "service": "postgres",
+            "container_name": "abc123_myapp_prod_postgres",
+            "container_port": 5432,
+            "do_token": "...",
+            "mode": "single_server"
+        }
+        
+    Example (multi server):
+        POST /infra/nginx/sidecar
+        {
+            "server_ip": "1.2.3.4",
+            "project": "myapp",
+            "environment": "prod",
+            "service": "api",
+            "container_name": "abc123_myapp_prod_api",
+            "container_port": 8000,
+            "do_token": "...",
+            "mode": "multi_server",
+            "backends": [
+                {"ip": "10.0.0.1", "port": 8357},
+                {"ip": "10.0.0.2", "port": 8357}
+            ]
+        }
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    try:
+        token = _get_do_token(req.do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        client = NodeAgentClient(req.server_ip, api_key)
+        
+        # Ensure nginx is running
+        await _ensure_nginx_on_server(client)
+        
+        # Set up sidecar config
+        result = await _setup_service_nginx_config(
+            client=client,
+            user_id=str(user.id),
+            project=req.project,
+            environment=req.environment,
+            service=req.service,
+            container_name=req.container_name,
+            container_port=req.container_port,
+            backends=req.backends,
+            mode=req.mode,
+        )
+        
+        if not result:
+            raise HTTPException(500, "Failed to configure sidecar")
+        
+        return {
+            "success": True,
+            "server_ip": req.server_ip,
+            "project": req.project,
+            "environment": req.environment,
+            "service": req.service,
+            "internal_port": result.get("internal_port"),
+            "mode": req.mode,
+            "message": f"Sidecar configured. Apps connect to nginx:{result.get('internal_port')}",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to setup sidecar: {str(e)}")
+
+
+@router.put("/nginx/sidecar")
+async def update_sidecar(
+    req: SidecarUpdateRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Update sidecar backends on multiple servers.
+    
+    Use this for:
+    - Zero-downtime deploy: add new container to backends, remove old
+    - Scaling: add/remove servers from the backend pool
+    
+    Updates ALL specified servers' sidecar configs to use the same backends.
+    
+    Example:
+        PUT /infra/nginx/sidecar
+        {
+            "server_ips": ["1.2.3.4", "5.6.7.8"],
+            "project": "myapp",
+            "environment": "prod",
+            "service": "api",
+            "backends": [
+                {"ip": "10.0.0.1", "port": 8357},
+                {"ip": "10.0.0.2", "port": 8357},
+                {"ip": "10.0.0.3", "port": 8357}
+            ],
+            "do_token": "..."
+        }
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    if not req.backends:
+        raise HTTPException(400, "At least one backend required")
+    
+    try:
+        token = _get_do_token(req.do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        
+        results = []
+        errors = []
+        
+        for server_ip in req.server_ips:
+            try:
+                client = NodeAgentClient(server_ip, api_key)
+                
+                result = await _update_sidecar_backends(
+                    client=client,
+                    user_id=str(user.id),
+                    project=req.project,
+                    environment=req.environment,
+                    service=req.service,
+                    backends=req.backends,
+                )
+                
+                if result:
+                    results.append({"server_ip": server_ip, "success": True})
+                else:
+                    errors.append({"server_ip": server_ip, "error": "Failed to update"})
+                    
+            except Exception as e:
+                errors.append({"server_ip": server_ip, "error": str(e)})
+        
+        return {
+            "success": len(errors) == 0,
+            "updated": results,
+            "errors": errors,
+            "backends": req.backends,
+            "message": f"Updated {len(results)}/{len(req.server_ips)} servers",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to update sidecars: {str(e)}")
+
+
+# ==========================================
+# Nginx Ensure/Fix
+# ==========================================
+
+class NginxEnsureRequest(BaseModel):
+    """Request to ensure nginx is running on servers."""
+    server_ips: List[str] = Field(..., description="Server IPs to ensure nginx on")
+    do_token: str = Field(..., description="DO token")
+
+
+@router.post("/nginx/ensure")
+async def ensure_nginx_on_servers(
+    req: NginxEnsureRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Ensure nginx sidecar is running on specified servers.
+    
+    Use this to fix servers that are missing the nginx sidecar.
+    Creates nginx container if not exists, starts if stopped.
+    
+    Example:
+        POST /infra/nginx/ensure
+        {
+            "server_ips": ["1.2.3.4", "5.6.7.8"],
+            "do_token": "..."
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "results": [
+                {"ip": "1.2.3.4", "status": "started", "success": true},
+                {"ip": "5.6.7.8", "status": "already_running", "success": true}
+            ],
+            "fixed": 1,
+            "already_ok": 1,
+            "failed": 0
+        }
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    from shared_libs.backend.infra.networking import NginxService
+    
+    try:
+        token = _get_do_token(req.do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        
+        results = []
+        fixed = 0
+        already_ok = 0
+        failed = 0
+        
+        for ip in req.server_ips:
+            try:
+                client = NodeAgentClient(ip, api_key)
+                nginx = NginxService(client)
+                
+                result = await nginx.ensure_running()
+                
+                if result.success:
+                    status = result.data.get("status", "started") if result.data else "started"
+                    if status == "already_running":
+                        already_ok += 1
+                    else:
+                        fixed += 1
+                    results.append({
+                        "ip": ip,
+                        "status": status,
+                        "success": True,
+                    })
+                else:
+                    failed += 1
+                    results.append({
+                        "ip": ip,
+                        "status": "failed",
+                        "success": False,
+                        "error": result.error,
+                    })
+                    
+            except Exception as e:
+                failed += 1
+                results.append({
+                    "ip": ip,
+                    "status": "error",
+                    "success": False,
+                    "error": str(e),
+                })
+        
+        return {
+            "success": failed == 0,
+            "results": results,
+            "fixed": fixed,
+            "already_ok": already_ok,
+            "failed": failed,
+            "message": f"Fixed {fixed}, already OK {already_ok}, failed {failed}",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to ensure nginx: {str(e)}")
+
+
+# ==========================================
+# Architecture Topology
+# ==========================================
+
+class ArchitectureRequest(BaseModel):
+    """Request to get architecture topology."""
+    server_ips: Optional[List[str]] = Field(None, description="Server IPs to query (if empty, queries all user servers)")
+    project: Optional[str] = Field(None, description="Filter by project")
+    environment: Optional[str] = Field(None, description="Filter by environment")
+
+
+@router.post("/architecture")
+async def get_architecture(
+    req: ArchitectureRequest,
+    do_token: str = Query(..., description="DO token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Get architecture topology showing services and their connections.
+    
+    Returns a graph structure with:
+    - nodes: Services (containers) with their details
+    - edges: Dependencies between services
+    - servers: Server information
+    
+    Example response:
+    ```json
+    {
+        "nodes": [
+            {"id": "myapp_prod_api", "type": "service", "service": "api", "project": "myapp", "env": "prod", "servers": ["1.2.3.4"]},
+            {"id": "myapp_prod_postgres", "type": "stateful", "service": "postgres", "project": "myapp", "env": "prod", "servers": ["1.2.3.4"]}
+        ],
+        "edges": [
+            {"from": "myapp_prod_api", "to": "myapp_prod_postgres", "type": "depends_on"}
+        ],
+        "servers": [
+            {"ip": "1.2.3.4", "name": "server-1", "region": "lon1", "containers": 2}
+        ]
+    }
+    ```
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    from shared_libs.backend.infra.cloud.digitalocean import DOClient
+    
+    try:
+        token = _get_do_token(do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        
+        # Get server IPs
+        server_ips = req.server_ips
+        if not server_ips:
+            # Query all user's servers
+            do_client = DOClient(token)
+            droplets = do_client.list_droplets(tag="deployed-via-api")
+            server_ips = [d.ip for d in droplets if d.ip]
+        
+        if not server_ips:
+            return {"nodes": [], "edges": [], "servers": [], "infrastructure": [], "message": "No servers found"}
+        
+        # Collect container info from all servers
+        nodes = []
+        edges = []
+        servers_info = []
+        infrastructure = []  # nginx, node-agent, etc.
+        seen_services = set()
+        seen_infra = set()
+        
+        # Known stateful services for categorization
+        stateful_services = {"postgres", "postgresql", "mysql", "mariadb", "redis", "mongo", "mongodb", "opensearch", "elasticsearch"}
+        
+        # Infrastructure containers (not user-deployed services)
+        infra_containers = {"nginx", "node-agent", "node_agent", "traefik", "caddy", "haproxy"}
+        
+        for ip in server_ips:
+            try:
+                client = NodeAgentClient(ip, api_key)
+                
+                # Get containers
+                result = await client.list_containers()
+                if not result.success:
+                    servers_info.append({
+                        "ip": ip,
+                        "containers": 0,
+                        "status": "error",
+                        "error": result.error or "Failed to list containers",
+                        "nginx_status": "unknown",
+                        "agent_version": "unknown",
+                    })
+                    continue
+                
+                containers = result.data.get("containers", [])
+                server_container_count = 0
+                server_nginx_status = "not running"
+                
+                for container in containers:
+                    # Docker JSON format uses capital letters: Names, State, Ports, Image
+                    name = container.get("Names", container.get("name", ""))
+                    state = container.get("State", container.get("status", ""))
+                    
+                    # Skip non-running containers
+                    if state.lower() != "running":
+                        continue
+                    
+                    server_container_count += 1
+                    
+                    # Check if this is an infrastructure container
+                    name_lower = name.lower()
+                    is_infra = any(infra in name_lower for infra in infra_containers)
+                    
+                    if is_infra:
+                        # Track nginx status for this server
+                        if "nginx" in name_lower:
+                            server_nginx_status = "running"
+                        
+                        # Add to infrastructure list (dedupe by name)
+                        infra_key = f"{name}@{ip}"
+                        if infra_key not in seen_infra:
+                            seen_infra.add(infra_key)
+                            
+                            ports_str = container.get("Ports", container.get("ports", ""))
+                            port_info = []
+                            if ports_str:
+                                for port_mapping in str(ports_str).split(", "):
+                                    if port_mapping.strip():
+                                        port_info.append(port_mapping.strip())
+                            
+                            infrastructure.append({
+                                "name": name,
+                                "type": "nginx" if "nginx" in name_lower else "agent" if "agent" in name_lower else "proxy",
+                                "server_ip": ip,
+                                "status": "running",
+                                "ports": port_info,
+                                "image": container.get("Image", container.get("image", "")),
+                            })
+                        continue  # Don't add to main nodes
+                    
+                    # Parse container name: {workspace}_{project}_{env}_{service}
+                    parts = name.split("_")
+                    if len(parts) >= 4:
+                        workspace_id = parts[0]
+                        project = parts[1]
+                        env = parts[2]
+                        service = "_".join(parts[3:])  # Handle services with underscores
+                    else:
+                        # Unknown naming convention - use full name
+                        workspace_id = "unknown"
+                        project = name
+                        env = "unknown"
+                        service = name
+                    
+                    # Filter by project/environment if specified
+                    if req.project and project != req.project:
+                        continue
+                    if req.environment and env != req.environment:
+                        continue
+                    
+                    node_id = f"{project}_{env}_{service}"
+                    
+                    # Determine node type
+                    service_lower = service.lower()
+                    if service_lower in stateful_services:
+                        node_type = "stateful"
+                    elif service_lower == "nginx":
+                        node_type = "proxy"
+                    else:
+                        node_type = "service"
+                    
+                    # Add or update node
+                    if node_id not in seen_services:
+                        seen_services.add(node_id)
+                        
+                        # Get port info - Docker returns Ports as string like "0.0.0.0:8000->8000/tcp"
+                        ports_str = container.get("Ports", container.get("ports", ""))
+                        port_info = []
+                        if ports_str:
+                            # Parse port string
+                            for port_mapping in str(ports_str).split(", "):
+                                if port_mapping.strip():
+                                    port_info.append(port_mapping.strip())
+                        
+                        nodes.append({
+                            "id": node_id,
+                            "container_name": name,
+                            "type": node_type,
+                            "service": service,
+                            "project": project,
+                            "env": env,
+                            "status": "running",
+                            "ports": port_info,
+                            "servers": [ip],
+                            "image": container.get("Image", container.get("image", "")),
+                        })
+                    else:
+                        # Add server to existing node
+                        for node in nodes:
+                            if node["id"] == node_id and ip not in node["servers"]:
+                                node["servers"].append(ip)
+                
+                # Get agent version via ping
+                agent_version = "unknown"
+                try:
+                    ping_result = await client.ping()
+                    if ping_result.success:
+                        agent_version = ping_result.data.get("version", "unknown")
+                except:
+                    pass
+                
+                # Add server info with nginx status
+                servers_info.append({
+                    "ip": ip,
+                    "containers": server_container_count,
+                    "status": "online",
+                    "nginx_status": server_nginx_status,
+                    "agent_version": agent_version,
+                })
+                
+            except Exception as e:
+                servers_info.append({
+                    "ip": ip,
+                    "containers": 0,
+                    "status": "error",
+                    "error": str(e),
+                    "nginx_status": "unknown",
+                    "agent_version": "unknown",
+                })
+        
+        # Infer edges based on known patterns
+        # Services typically connect to stateful services (postgres, redis, etc.)
+        for node in nodes:
+            if node["type"] == "service":
+                # Check for potential dependencies
+                project = node["project"]
+                env = node["env"]
+                
+                for other_node in nodes:
+                    if other_node["type"] == "stateful" and \
+                       other_node["project"] == project and \
+                       other_node["env"] == env:
+                        edges.append({
+                            "from": node["id"],
+                            "to": other_node["id"],
+                            "type": "depends_on",
+                            "label": other_node["service"],
+                        })
+        
+        # Also check env vars for DATABASE_URL, REDIS_URL, etc. to infer connections
+        # (This would require querying container inspect, left as TODO)
+        
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "servers": servers_info,
+            "infrastructure": infrastructure,
+            "filters": {
+                "project": req.project,
+                "environment": req.environment,
+            },
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to get architecture: {str(e)}")
+
+
+@router.get("/architecture/projects")
+async def list_architecture_projects(
+    do_token: str = Query(..., description="DO token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    List all projects/environments visible across servers.
+    Useful for populating filter dropdowns.
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    from shared_libs.backend.infra.cloud.digitalocean import DOClient
+    
+    try:
+        token = _get_do_token(do_token)
+        api_key = generate_node_agent_key(token, str(user.id))
+        
+        # Get all servers
+        do_client = DOClient(token)
+        droplets = do_client.list_droplets(tag="deployed-via-api")
+        server_ips = [d.ip for d in droplets if d.ip]
+        
+        projects = set()
+        environments = set()
+        
+        for ip in server_ips:
+            try:
+                client = NodeAgentClient(ip, api_key)
+                result = await client.list_containers()
+                if not result.success:
+                    continue
+                
+                for container in result.data.get("containers", []):
+                    # Docker JSON uses "Names" (capital N)
+                    name = container.get("Names", container.get("name", ""))
+                    parts = name.split("_")
+                    if len(parts) >= 4:
+                        projects.add(parts[1])
+                        environments.add(parts[2])
+            except:
+                pass
+        
+        return {
+            "projects": sorted(list(projects)),
+            "environments": sorted(list(environments)),
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to list projects: {str(e)}")

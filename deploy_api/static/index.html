@@ -436,8 +436,10 @@
             <div class="tabs">
                 <button class="tab active" onclick="showTab('infra')">Infrastructure</button>
                 <button class="tab" onclick="showTab('deploy')">Deploy</button>
+                <button class="tab" onclick="showTab('architecture')">Architecture</button>
                 <button class="tab" onclick="showTab('logs')">Logs</button>
                 <button class="tab" onclick="showTab('snapshots')">Snapshots</button>
+                <button class="tab" onclick="showTab('services')">Services</button>
                 <button class="tab" onclick="showTab('settings')">Settings</button>
             </div>
             
@@ -697,6 +699,95 @@
                                 <small style="color: var(--text-muted);">One per line: KEY=value</small>
                             </div>
                             
+                            <!-- Service Discovery & Persistence -->
+                            <div id="deploy-service-config" style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
+                                    <span style="font-size: 1.1rem;">🔧</span>
+                                    <span style="font-weight: 600;">Service Configuration</span>
+                                </div>
+                                
+                                <div class="form-group" style="margin-bottom: 12px;">
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                        <input type="checkbox" id="deploy-auto-env" style="width: auto;">
+                                        <span>Auto-inject service discovery</span>
+                                    </label>
+                                    <small style="color: var(--text-muted); display: block; margin-left: 24px;">
+                                        Injects DATABASE_URL, REDIS_URL, etc. based on dependencies
+                                    </small>
+                                </div>
+                                
+                                <div id="deploy-dependencies-section" style="margin-bottom: 12px; padding: 12px; background: var(--bg-card); border-radius: 6px; display: none;">
+                                    <label style="font-size: 0.85rem; margin-bottom: 8px; display: block;">Dependencies (services this app needs)</label>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+                                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                            <input type="checkbox" class="deploy-dep" value="postgres" style="width: auto;">
+                                            <span>🐘 PostgreSQL</span>
+                                        </label>
+                                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                            <input type="checkbox" class="deploy-dep" value="redis" style="width: auto;">
+                                            <span>⚡ Redis</span>
+                                        </label>
+                                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                            <input type="checkbox" class="deploy-dep" value="mongo" style="width: auto;">
+                                            <span>🍃 MongoDB</span>
+                                        </label>
+                                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                            <input type="checkbox" class="deploy-dep" value="mysql" style="width: auto;">
+                                            <span>🐬 MySQL</span>
+                                        </label>
+                                    </div>
+                                    <small style="color: var(--text-muted); display: block; margin-top: 8px;">
+                                        Will inject: DB_HOST, DB_PORT, DATABASE_URL, REDIS_URL, etc.
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                        <input type="checkbox" id="deploy-persist-data" style="width: auto;">
+                                        <span>Persist data</span>
+                                    </label>
+                                    <small style="color: var(--text-muted); display: block; margin-left: 24px;">
+                                        Mounts /data volume for SQLite, uploads, etc. (survives redeploys)
+                                    </small>
+                                </div>
+                            </div>
+                            
+                            <!-- Domain Configuration -->
+                            <div id="deploy-domain-section" style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
+                                    <span style="font-size: 1.1rem;">🌐</span>
+                                    <span style="font-weight: 600;">Domain & Routing</span>
+                                </div>
+                                
+                                <div class="form-group" style="margin-bottom: 12px;">
+                                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                        <input type="checkbox" id="deploy-setup-domain" style="width: auto;" onchange="onSetupDomainChange()">
+                                        <span>Auto-provision domain</span>
+                                    </label>
+                                    <small style="color: var(--text-muted); display: block; margin-left: 24px;">
+                                        Creates DNS record and nginx routing (requires Cloudflare token in Settings)
+                                    </small>
+                                </div>
+                                
+                                <div id="deploy-domain-details" style="display: none; padding: 12px; background: var(--bg-card); border-radius: 6px;">
+                                    <div style="margin-bottom: 8px;">
+                                        <label style="font-size: 0.85rem;">Domain Preview:</label>
+                                        <div id="deploy-domain-preview" style="font-family: monospace; color: var(--primary); padding: 8px; background: var(--bg-input); border-radius: 4px; margin-top: 4px;">
+                                            {service}-{project}-{env}.digitalpixo.com
+                                        </div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label style="font-size: 0.85rem;">Base Domain</label>
+                                        <input type="text" id="deploy-base-domain" value="digitalpixo.com" onchange="updateDomainPreview()">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label style="font-size: 0.85rem;">Custom Aliases (optional)</label>
+                                        <input type="text" id="deploy-domain-aliases" placeholder="api.myclient.com, app.example.com">
+                                        <small style="color: var(--text-muted);">Comma-separated. Client domains need DNS pointed to your servers.</small>
+                                    </div>
+                                </div>
+                            </div>
+                            
                             <!-- Infrastructure: Snapshot, Region, Size, Servers -->
                             <div id="deploy-infra-section" style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
@@ -822,6 +913,116 @@
                 </div>
             </div>
             
+            <!-- Architecture Tab -->
+            <div id="tab-architecture" class="hidden">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">🏗️ Architecture View</span>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <select id="arch-project-filter" style="width: 140px; padding: 6px 10px;" onchange="loadArchitecture()">
+                                <option value="">All Projects</option>
+                            </select>
+                            <select id="arch-env-filter" style="width: 120px; padding: 6px 10px;" onchange="loadArchitecture()">
+                                <option value="">All Envs</option>
+                                <option value="prod">prod</option>
+                                <option value="staging">staging</option>
+                                <option value="dev">dev</option>
+                            </select>
+                            <button class="btn btn-primary btn-sm" onclick="loadArchitecture()">🔄 Refresh</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Legend -->
+                    <div style="display: flex; gap: 20px; margin-bottom: 16px; padding: 12px; background: var(--bg-input); border-radius: 8px; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <div style="width: 20px; height: 20px; background: #3b82f6; border-radius: 4px;"></div>
+                            <span style="font-size: 0.85rem;">Service</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <div style="width: 20px; height: 20px; background: #8b5cf6; border-radius: 4px;"></div>
+                            <span style="font-size: 0.85rem;">Stateful (DB/Cache)</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <div style="width: 20px; height: 20px; background: #10b981; border-radius: 4px;"></div>
+                            <span style="font-size: 0.85rem;">Proxy</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <svg width="40" height="20"><line x1="0" y1="10" x2="40" y2="10" stroke="#6b7280" stroke-width="2" stroke-dasharray="4"/></svg>
+                            <span style="font-size: 0.85rem;">Depends On</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted);">Drag nodes to rearrange</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Architecture Diagram -->
+                    <div id="architecture-container" style="position: relative; min-height: 400px; background: var(--bg-input); border-radius: 8px; overflow: hidden;">
+                        <svg id="architecture-svg" width="100%" height="500" style="display: block;">
+                            <!-- Edges will be rendered here -->
+                            <g id="arch-edges"></g>
+                            <!-- Nodes will be rendered here -->
+                            <g id="arch-nodes"></g>
+                        </svg>
+                        <div id="arch-empty" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: var(--text-muted);">
+                            <div style="font-size: 3rem; margin-bottom: 8px;">🏗️</div>
+                            <p>No services deployed yet</p>
+                            <p style="font-size: 0.85rem;">Deploy services to see your architecture</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Details Panel -->
+                <div class="grid grid-2" style="margin-top: 16px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">📊 Services</span>
+                        </div>
+                        <div id="arch-services-list" style="max-height: 300px; overflow-y: auto;">
+                            <div class="empty-state" style="padding: 20px; text-align: center;">
+                                <p style="color: var(--text-muted);">Click "Refresh" to load services</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">🖥️ Servers</span>
+                        </div>
+                        <div id="arch-servers-list" style="max-height: 300px; overflow-y: auto;">
+                            <div class="empty-state" style="padding: 20px; text-align: center;">
+                                <p style="color: var(--text-muted);">Server status will appear here</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Infrastructure Section -->
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">⚙️ Infrastructure</span>
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Nginx sidecar, agents, proxies</span>
+                    </div>
+                    <div id="arch-infrastructure" style="overflow-x: auto;">
+                        <div class="empty-state" style="padding: 20px; text-align: center;">
+                            <p style="color: var(--text-muted);">Infrastructure status will appear here</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Connection Matrix -->
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">🔗 Connection Matrix</span>
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Who talks to whom</span>
+                    </div>
+                    <div id="arch-matrix" style="overflow-x: auto;">
+                        <div class="empty-state" style="padding: 20px; text-align: center;">
+                            <p style="color: var(--text-muted);">Connection data will appear here</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Logs Tab -->
             <div id="tab-logs" class="hidden">
                 <div class="card">
@@ -922,6 +1123,107 @@
                 </div>
             </div>
             
+            <!-- Services Tab - Deploy stateful services -->
+            <div id="tab-services" class="hidden">
+                <div class="grid grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">🗄️ Deploy Database/Cache</span>
+                        </div>
+                        
+                        <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.875rem;">
+                            Deploy stateful services with automatic configuration, persistence, and service mesh.
+                        </p>
+                        
+                        <form id="stateful-service-form" onsubmit="deployStatefulService(event)">
+                            <div class="form-group">
+                                <label>Service Type</label>
+                                <select id="stateful-service-type" required>
+                                    <option value="">Select service...</option>
+                                    <option value="postgres">🐘 PostgreSQL</option>
+                                    <option value="redis">⚡ Redis</option>
+                                    <option value="mysql">🐬 MySQL</option>
+                                    <option value="mongo">🍃 MongoDB</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Project</label>
+                                <input type="text" id="stateful-project" placeholder="myapp" required>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Environment</label>
+                                <select id="stateful-environment">
+                                    <option value="prod">Production</option>
+                                    <option value="staging">Staging</option>
+                                    <option value="dev">Development</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Target Server</label>
+                                <select id="stateful-server" required>
+                                    <option value="">Select server...</option>
+                                </select>
+                                <small style="color: var(--text-muted);">Servers from Infrastructure tab</small>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-primary" style="width: 100%;">
+                                🚀 Deploy Service
+                            </button>
+                        </form>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">📋 Deployment Result</span>
+                        </div>
+                        
+                        <div id="stateful-result-empty" style="padding: 40px; text-align: center; color: var(--text-muted);">
+                            <div style="font-size: 2rem; margin-bottom: 8px;">🗄️</div>
+                            <div>Deploy a service to see connection details</div>
+                        </div>
+                        
+                        <div id="stateful-result" class="hidden">
+                            <div id="stateful-result-content"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">ℹ️ How It Works</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div style="padding: 12px; background: var(--bg-card); border-radius: 8px;">
+                            <strong>🔐 Auto Credentials</strong>
+                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
+                                Deterministic passwords generated from project/env. Same inputs = same password.
+                            </p>
+                        </div>
+                        <div style="padding: 12px; background: var(--bg-card); border-radius: 8px;">
+                            <strong>💾 Persistent Storage</strong>
+                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
+                                Data volumes mounted at /data. Survives container restarts and redeploys.
+                            </p>
+                        </div>
+                        <div style="padding: 12px; background: var(--bg-card); border-radius: 8px;">
+                            <strong>🔀 Service Mesh</strong>
+                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
+                                Nginx proxy on internal ports. Apps connect to localhost:PORT.
+                            </p>
+                        </div>
+                        <div style="padding: 12px; background: var(--bg-card); border-radius: 8px;">
+                            <strong>🔧 Auto-Inject</strong>
+                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
+                                Enable "Auto-inject" in Deploy tab to get DATABASE_URL automatically.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Settings Tab -->
             <div id="tab-settings" class="hidden">
                 <div class="card" style="max-width: 600px;">
@@ -966,6 +1268,230 @@
                     
                     <div id="token-status" style="margin-top: 16px;"></div>
                 </div>
+                
+                <!-- Cloudflare Settings -->
+                <div class="card" style="max-width: 600px; margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">☁️ Cloudflare (DNS & SSL)</span>
+                    </div>
+                    
+                    <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.875rem;">
+                        Get your token from 
+                        <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" style="color: var(--primary);">
+                            Cloudflare Dashboard
+                        </a>. Needs "Edit DNS" and "Edit Load Balancers" permissions.
+                    </p>
+                    
+                    <form onsubmit="saveCFToken(event)">
+                        <div class="form-group">
+                            <label>Cloudflare API Token</label>
+                            <input type="password" id="cf-token" placeholder="..." autocomplete="off">
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button type="submit" class="btn btn-primary">Save Token</button>
+                            <button type="button" class="btn btn-ghost" onclick="testCFToken()">Test</button>
+                            <button type="button" class="btn btn-danger" onclick="deleteCFToken()">Clear</button>
+                        </div>
+                    </form>
+                    
+                    <div id="cf-token-status" style="margin-top: 16px;"></div>
+                </div>
+                
+                <!-- Domain Setup -->
+                <div class="card" style="max-width: 600px; margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">🌐 Domain Setup</span>
+                    </div>
+                    
+                    <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.875rem;">
+                        Point a domain to your server. With "Proxied" enabled, HTTPS works automatically.
+                    </p>
+                    
+                    <form onsubmit="setupDomain(event)">
+                        <div class="form-group">
+                            <label>Domain</label>
+                            <input type="text" id="domain-name" placeholder="api.example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Server IP</label>
+                            <input type="text" id="domain-ip" placeholder="1.2.3.4" required>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="domain-proxied" checked style="width: auto;">
+                                <span>Proxied (Cloudflare handles SSL)</span>
+                            </label>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Setup Domain</button>
+                    </form>
+                    
+                    <div id="domain-result" style="margin-top: 16px;"></div>
+                </div>
+                
+                <!-- DNS Round-Robin (Cloudflare multi-A) -->
+                <div class="card" style="max-width: 600px; margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">🌐 DNS Round-Robin (Cloudflare)</span>
+                    </div>
+                    
+                    <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.875rem;">
+                        Simple load distribution via multiple A records. Cloudflare rotates between IPs at DNS level.
+                        <strong>FREE</strong>, but no health checks - all IPs receive traffic.
+                    </p>
+                    
+                    <form onsubmit="setupLoadBalancer(event)">
+                        <div class="form-group">
+                            <label>Domain</label>
+                            <input type="text" id="lb-domain" placeholder="api.example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Server IPs (comma-separated)</label>
+                            <input type="text" id="lb-ips" placeholder="1.2.3.4, 5.6.7.8" required>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="lb-proxied" checked style="width: auto;">
+                                <span>Proxied (SSL + CDN)</span>
+                            </label>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Setup DNS Round-Robin</button>
+                    </form>
+                    
+                    <div id="lb-result" style="margin-top: 16px;"></div>
+                    
+                    <!-- Add/Remove Server -->
+                    <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);">
+                        <div style="font-weight: 500; margin-bottom: 12px;">Manage Servers</div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                            <input type="text" id="lb-manage-domain" placeholder="Domain">
+                            <input type="text" id="lb-manage-ip" placeholder="Server IP">
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <button type="button" class="btn btn-ghost" onclick="addServerToLB()">➕ Add</button>
+                            <button type="button" class="btn btn-ghost" onclick="removeServerFromLB()">➖ Remove</button>
+                            <button type="button" class="btn btn-ghost" onclick="listLBServers()">📋 List</button>
+                        </div>
+                        <div id="lb-manage-result" style="margin-top: 12px;"></div>
+                    </div>
+                </div>
+                
+                <!-- Load Balancing Info -->
+                <div class="card" style="max-width: 700px; margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">⚖️ Load Balancing</span>
+                    </div>
+                    
+                    <!-- Sidecar explanation -->
+                    <div style="padding: 16px; background: rgba(16, 185, 129, 0.1); border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.3); margin-bottom: 16px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <span style="font-size: 1.2rem;">✅</span>
+                            <span style="font-weight: 600; color: var(--success);">Internal Load Balancing: Automatic</span>
+                        </div>
+                        <p style="margin: 0; font-size: 0.875rem; color: var(--text-muted);">
+                            The <strong>nginx sidecar</strong> is automatically deployed on each server and handles:
+                        </p>
+                        <ul style="margin: 8px 0 0 0; padding-left: 20px; font-size: 0.85rem; color: var(--text-muted);">
+                            <li><strong>Service discovery:</strong> Apps connect to <code>localhost:PORT</code> for databases/caches</li>
+                            <li><strong>Internal routing:</strong> Service-to-service communication within the same server</li>
+                            <li><strong>Multi-server:</strong> When a service runs on multiple servers, sidecar load-balances between them</li>
+                        </ul>
+                        <p style="margin: 8px 0 0 0; font-size: 0.8rem; color: var(--text-muted);">
+                            See the <a href="#" onclick="showTab('architecture'); return false;" style="color: var(--primary);">Architecture tab</a> for nginx sidecar status.
+                        </p>
+                    </div>
+                    
+                    <!-- External LB options -->
+                    <div style="font-weight: 600; margin-bottom: 12px;">🌐 External Load Balancing (Internet → Your App)</div>
+                    
+                    <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.875rem;">
+                        For exposing your app to the internet with high availability:
+                    </p>
+                    
+                    <div style="display: grid; gap: 12px; margin-bottom: 16px;">
+                        <!-- Option 1: Cloudflare -->
+                        <div style="padding: 12px; background: var(--bg-input); border-radius: 8px; border-left: 3px solid var(--primary);">
+                            <div style="font-weight: 500; margin-bottom: 4px;">1. Cloudflare DNS (Recommended)</div>
+                            <p style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">
+                                Add multiple A records for your domain pointing to each server IP. Cloudflare handles SSL, DDoS protection, and round-robin across servers.
+                            </p>
+                        </div>
+                        
+                        <!-- Option 2: DO LB -->
+                        <div style="padding: 12px; background: var(--bg-input); border-radius: 8px; border-left: 3px solid #6b7280;">
+                            <div style="font-weight: 500; margin-bottom: 4px;">2. DigitalOcean Load Balancer ($12/mo)</div>
+                            <p style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">
+                                Managed LB with health checks. Create via DO console and point to your droplet IPs.
+                            </p>
+                        </div>
+                        
+                        <!-- Option 3: Custom nginx LB -->
+                        <div style="padding: 12px; background: var(--bg-input); border-radius: 8px; border-left: 3px solid #6b7280;">
+                            <div style="font-weight: 500; margin-bottom: 4px;">3. Dedicated Nginx LB Server (Advanced)</div>
+                            <p style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">
+                                Run nginx on a separate server as an entry point. Use if you need custom routing rules or can't use Cloudflare/DO LB.
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <!-- Collapsible advanced Nginx LB setup -->
+                    <details style="margin-top: 16px;">
+                        <summary style="cursor: pointer; font-weight: 500; padding: 8px; background: var(--bg-input); border-radius: 6px;">
+                            🔧 Advanced: Custom Nginx Entry Point Setup
+                        </summary>
+                        
+                        <div style="padding: 16px; border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px;">
+                            <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.85rem;">
+                                <strong>⚠️ Note:</strong> Only use this if you need a dedicated entry-point server separate from your app servers.
+                                The automatic nginx sidecar already handles load balancing between app instances.
+                            </p>
+                            
+                            <form onsubmit="setupNginxLB(event)">
+                                <div class="form-group">
+                                    <label>LB Name</label>
+                                    <input type="text" id="nginx-lb-name" placeholder="myapp_prod_api" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Entry Point Server IP (dedicated LB server)</label>
+                                    <input type="text" id="nginx-lb-server" placeholder="1.2.3.4" required>
+                                    <small style="color: var(--text-muted);">This should be a different server from your app servers</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Backend App Servers (IP:port, comma-separated)</label>
+                                    <input type="text" id="nginx-lb-backends" placeholder="10.0.0.1:8000, 10.0.0.2:8000" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Domain (optional)</label>
+                                    <input type="text" id="nginx-lb-domain" placeholder="api.example.com">
+                                </div>
+                                <div class="form-group">
+                                    <label>Load Balancing Method</label>
+                                    <select id="nginx-lb-method">
+                                        <option value="least_conn">Least Connections (recommended)</option>
+                                        <option value="round_robin">Round Robin</option>
+                                        <option value="ip_hash">IP Hash (sticky sessions)</option>
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Setup Entry Point</button>
+                            </form>
+                            
+                            <div id="nginx-lb-result" style="margin-top: 16px;"></div>
+                            
+                            <!-- Manage existing -->
+                            <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);">
+                                <div style="font-weight: 500; margin-bottom: 12px;">Manage Existing Entry Point</div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                    <input type="text" id="nginx-lb-manage-name" placeholder="LB name">
+                                    <input type="text" id="nginx-lb-manage-server" placeholder="Entry point server IP">
+                                </div>
+                                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                    <button type="button" class="btn btn-ghost" onclick="updateNginxLB()">🔄 Update Backends</button>
+                                    <button type="button" class="btn btn-danger" onclick="deleteNginxLB()">🗑️ Delete</button>
+                                </div>
+                                <div id="nginx-lb-manage-result" style="margin-top: 12px;"></div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
             </div>
         </div>
     </div>
@@ -993,7 +1519,7 @@
         // State
         // =============================================================================
         
-        const EXPECTED_AGENT_VERSION = '1.6.0';  // Keep in sync with agent_code.py AGENT_VERSION
+        const EXPECTED_AGENT_VERSION = '1.8.3';  // Keep in sync with agent_code.py AGENT_VERSION
         
         const state = {
             token: getCookie('jwt_token'),
@@ -1136,7 +1662,7 @@
         // =============================================================================
         
         function showTab(tab) {
-            ['infra', 'deploy', 'logs', 'snapshots', 'settings'].forEach((t, i) => {
+            ['infra', 'deploy', 'architecture', 'logs', 'snapshots', 'services', 'settings'].forEach((t, i) => {
                 document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab);
                 document.querySelectorAll('.tabs .tab')[i].classList.toggle('active', t === tab);
             });
@@ -1146,7 +1672,569 @@
                 loadSnapshotsForDeploy();
                 loadServersForDeploy();  // Reload servers without project filter
             }
+            if (tab === 'services') loadServersForStateful();
             if (tab === 'logs') refreshLogsFilters();
+            if (tab === 'architecture') loadArchitecture();
+        }
+        
+        // =============================================================================
+        // Architecture Tab Functions
+        // =============================================================================
+        
+        let archState = {
+            nodes: [],
+            edges: [],
+            servers: [],
+            dragging: null,
+            nodePositions: {},  // Cache positions for drag & drop
+            infrastructure: [],  // nginx, agents, etc.
+        };
+        
+        async function loadArchitecture() {
+            const project = document.getElementById('arch-project-filter').value;
+            const env = document.getElementById('arch-env-filter').value;
+            
+            try {
+                const result = await api('POST', '/infra/architecture', {
+                    project: project || null,
+                    environment: env || null,
+                });
+                
+                archState.nodes = result.nodes || [];
+                archState.edges = result.edges || [];
+                archState.servers = result.servers || [];
+                archState.infrastructure = result.infrastructure || [];
+                
+                renderArchitecture();
+                renderServicesList();
+                renderServersList();
+                renderInfrastructure();
+                renderConnectionMatrix();
+                
+                // Also update filters
+                loadArchitectureProjects();
+                
+            } catch (e) {
+                console.error('Failed to load architecture:', e);
+                toast('Failed to load architecture: ' + e.message, 'error');
+            }
+        }
+        
+        async function loadArchitectureProjects() {
+            try {
+                const result = await api('GET', '/infra/architecture/projects');
+                const projectSelect = document.getElementById('arch-project-filter');
+                const currentProject = projectSelect.value;
+                projectSelect.innerHTML = '<option value="">All Projects</option>' + 
+                    (result.projects || []).map(p => `<option value="${p}"${p === currentProject ? ' selected' : ''}>${p}</option>`).join('');
+            } catch (e) {
+                console.error('Failed to load architecture projects:', e);
+            }
+        }
+        
+        function renderArchitecture() {
+            const svg = document.getElementById('architecture-svg');
+            const nodesG = document.getElementById('arch-nodes');
+            const edgesG = document.getElementById('arch-edges');
+            const emptyDiv = document.getElementById('arch-empty');
+            
+            nodesG.innerHTML = '';
+            edgesG.innerHTML = '';
+            
+            if (archState.nodes.length === 0) {
+                emptyDiv.style.display = 'block';
+                return;
+            }
+            emptyDiv.style.display = 'none';
+            
+            const svgRect = svg.getBoundingClientRect();
+            const width = svgRect.width || 800;
+            const height = 500;
+            
+            // Layout nodes in a force-directed-like pattern
+            const nodeRadius = 50;
+            const padding = 80;
+            
+            // Group by project for better layout
+            const projects = {};
+            archState.nodes.forEach(node => {
+                const key = `${node.project}_${node.env}`;
+                if (!projects[key]) projects[key] = [];
+                projects[key].push(node);
+            });
+            
+            // Calculate positions
+            const projectKeys = Object.keys(projects);
+            const projectWidth = (width - padding * 2) / Math.max(projectKeys.length, 1);
+            
+            projectKeys.forEach((key, pIdx) => {
+                const nodes = projects[key];
+                const baseX = padding + projectWidth * pIdx + projectWidth / 2;
+                
+                // Separate stateful (bottom) from services (top)
+                const stateful = nodes.filter(n => n.type === 'stateful');
+                const services = nodes.filter(n => n.type !== 'stateful');
+                
+                services.forEach((node, idx) => {
+                    const x = archState.nodePositions[node.id]?.x || baseX + (idx - services.length/2) * 120;
+                    const y = archState.nodePositions[node.id]?.y || 120 + (idx % 2) * 60;
+                    archState.nodePositions[node.id] = { x, y };
+                });
+                
+                stateful.forEach((node, idx) => {
+                    const x = archState.nodePositions[node.id]?.x || baseX + (idx - stateful.length/2) * 120;
+                    const y = archState.nodePositions[node.id]?.y || height - 120;
+                    archState.nodePositions[node.id] = { x, y };
+                });
+            });
+            
+            // Draw edges first (so they're behind nodes)
+            archState.edges.forEach(edge => {
+                const from = archState.nodePositions[edge.from];
+                const to = archState.nodePositions[edge.to];
+                if (!from || !to) return;
+                
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', from.x);
+                line.setAttribute('y1', from.y);
+                line.setAttribute('x2', to.x);
+                line.setAttribute('y2', to.y);
+                line.setAttribute('stroke', '#6b7280');
+                line.setAttribute('stroke-width', '2');
+                line.setAttribute('stroke-dasharray', '6,4');
+                line.setAttribute('marker-end', 'url(#arrowhead)');
+                edgesG.appendChild(line);
+                
+                // Label
+                const midX = (from.x + to.x) / 2;
+                const midY = (from.y + to.y) / 2;
+                const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                label.setAttribute('x', midX);
+                label.setAttribute('y', midY - 8);
+                label.setAttribute('text-anchor', 'middle');
+                label.setAttribute('fill', '#9ca3af');
+                label.setAttribute('font-size', '11');
+                label.textContent = edge.label || '';
+                edgesG.appendChild(label);
+            });
+            
+            // Draw nodes
+            archState.nodes.forEach(node => {
+                const pos = archState.nodePositions[node.id];
+                if (!pos) return;
+                
+                const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                g.setAttribute('transform', `translate(${pos.x}, ${pos.y})`);
+                g.setAttribute('cursor', 'move');
+                g.setAttribute('data-node-id', node.id);
+                
+                // Background
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', -nodeRadius);
+                rect.setAttribute('y', -30);
+                rect.setAttribute('width', nodeRadius * 2);
+                rect.setAttribute('height', 60);
+                rect.setAttribute('rx', '8');
+                rect.setAttribute('fill', getNodeColor(node.type));
+                rect.setAttribute('stroke', getNodeBorderColor(node.type));
+                rect.setAttribute('stroke-width', '2');
+                g.appendChild(rect);
+                
+                // Icon
+                const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                icon.setAttribute('x', '0');
+                icon.setAttribute('y', '-5');
+                icon.setAttribute('text-anchor', 'middle');
+                icon.setAttribute('font-size', '18');
+                icon.textContent = getNodeIcon(node);
+                g.appendChild(icon);
+                
+                // Service name
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', '0');
+                text.setAttribute('y', '16');
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('fill', 'white');
+                text.setAttribute('font-size', '12');
+                text.setAttribute('font-weight', '600');
+                text.textContent = node.service.length > 10 ? node.service.substring(0, 9) + '…' : node.service;
+                g.appendChild(text);
+                
+                // Server count badge
+                if (node.servers && node.servers.length > 1) {
+                    const badge = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    badge.setAttribute('cx', nodeRadius - 10);
+                    badge.setAttribute('cy', -20);
+                    badge.setAttribute('r', '12');
+                    badge.setAttribute('fill', '#10b981');
+                    g.appendChild(badge);
+                    
+                    const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    badgeText.setAttribute('x', nodeRadius - 10);
+                    badgeText.setAttribute('y', -16);
+                    badgeText.setAttribute('text-anchor', 'middle');
+                    badgeText.setAttribute('fill', 'white');
+                    badgeText.setAttribute('font-size', '10');
+                    badgeText.setAttribute('font-weight', 'bold');
+                    badgeText.textContent = node.servers.length;
+                    g.appendChild(badgeText);
+                }
+                
+                // Drag handlers
+                g.addEventListener('mousedown', startDrag);
+                g.addEventListener('click', () => showNodeDetails(node));
+                
+                nodesG.appendChild(g);
+            });
+            
+            // Add arrow marker definition if not exists
+            let defs = svg.querySelector('defs');
+            if (!defs) {
+                defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                svg.insertBefore(defs, svg.firstChild);
+            }
+            if (!defs.querySelector('#arrowhead')) {
+                const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+                marker.setAttribute('id', 'arrowhead');
+                marker.setAttribute('markerWidth', '10');
+                marker.setAttribute('markerHeight', '7');
+                marker.setAttribute('refX', '9');
+                marker.setAttribute('refY', '3.5');
+                marker.setAttribute('orient', 'auto');
+                const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                polygon.setAttribute('points', '0 0, 10 3.5, 0 7');
+                polygon.setAttribute('fill', '#6b7280');
+                marker.appendChild(polygon);
+                defs.appendChild(marker);
+            }
+        }
+        
+        function getNodeColor(type) {
+            switch(type) {
+                case 'stateful': return '#8b5cf6';
+                case 'proxy': return '#10b981';
+                default: return '#3b82f6';
+            }
+        }
+        
+        function getNodeBorderColor(type) {
+            switch(type) {
+                case 'stateful': return '#7c3aed';
+                case 'proxy': return '#059669';
+                default: return '#2563eb';
+            }
+        }
+        
+        function getNodeIcon(node) {
+            const service = node.service.toLowerCase();
+            if (service.includes('postgres')) return '🐘';
+            if (service.includes('mysql') || service.includes('mariadb')) return '🐬';
+            if (service.includes('redis')) return '⚡';
+            if (service.includes('mongo')) return '🍃';
+            if (service.includes('nginx')) return '🔀';
+            if (service.includes('api')) return '🔌';
+            if (service.includes('web') || service.includes('frontend')) return '🌐';
+            if (service.includes('worker')) return '⚙️';
+            return '📦';
+        }
+        
+        let dragState = { node: null, startX: 0, startY: 0 };
+        
+        function startDrag(e) {
+            const g = e.target.closest('g[data-node-id]');
+            if (!g) return;
+            
+            e.preventDefault();
+            dragState.node = g.getAttribute('data-node-id');
+            dragState.startX = e.clientX;
+            dragState.startY = e.clientY;
+            
+            document.addEventListener('mousemove', onDrag);
+            document.addEventListener('mouseup', stopDrag);
+        }
+        
+        function onDrag(e) {
+            if (!dragState.node) return;
+            
+            const dx = e.clientX - dragState.startX;
+            const dy = e.clientY - dragState.startY;
+            
+            const pos = archState.nodePositions[dragState.node];
+            if (pos) {
+                pos.x += dx;
+                pos.y += dy;
+            }
+            
+            dragState.startX = e.clientX;
+            dragState.startY = e.clientY;
+            
+            renderArchitecture();
+        }
+        
+        function stopDrag() {
+            dragState.node = null;
+            document.removeEventListener('mousemove', onDrag);
+            document.removeEventListener('mouseup', stopDrag);
+        }
+        
+        function showNodeDetails(node) {
+            toast(`${node.service} (${node.project}/${node.env})\n` +
+                  `Servers: ${node.servers.join(', ')}\n` +
+                  `Ports: ${node.ports.join(', ') || 'N/A'}`, 'info');
+        }
+        
+        function renderServicesList() {
+            const list = document.getElementById('arch-services-list');
+            if (archState.nodes.length === 0) {
+                list.innerHTML = '<div class="empty-state" style="padding: 20px; text-align: center;"><p style="color: var(--text-muted);">No services found</p></div>';
+                return;
+            }
+            
+            list.innerHTML = archState.nodes.map(node => `
+                <div style="display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border);">
+                    <div style="font-size: 1.5rem;">${getNodeIcon(node)}</div>
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600;">${node.service}</div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted);">${node.project} / ${node.env}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.85rem;">${node.servers.length} server${node.servers.length > 1 ? 's' : ''}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">${node.ports.join(', ') || '-'}</div>
+                    </div>
+                    <span class="badge badge-${node.type === 'stateful' ? 'warning' : 'info'}" style="font-size: 0.7rem;">
+                        ${node.type}
+                    </span>
+                </div>
+            `).join('');
+        }
+        
+        function renderServersList() {
+            const list = document.getElementById('arch-servers-list');
+            if (archState.servers.length === 0) {
+                list.innerHTML = '<div class="empty-state" style="padding: 20px; text-align: center;"><p style="color: var(--text-muted);">No servers found</p></div>';
+                return;
+            }
+            
+            list.innerHTML = archState.servers.map(server => `
+                <div style="display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border);">
+                    <div style="font-size: 1.2rem;">${server.status === 'online' ? '🟢' : '🔴'}</div>
+                    <div style="flex: 1;">
+                        <div style="font-family: monospace; font-size: 0.9rem;">${server.ip}</div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted);">
+                            ${server.containers} container${server.containers !== 1 ? 's' : ''}
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <span class="badge badge-${server.nginx_status === 'running' ? 'success' : 'warning'}" style="font-size: 0.7rem;">
+                            ${server.nginx_status === 'running' ? '🔀 nginx' : '⚠️ no nginx'}
+                        </span>
+                        <span class="badge badge-info" style="font-size: 0.7rem;">
+                            🤖 v${server.agent_version || '?'}
+                        </span>
+                    </div>
+                    ${server.error ? `<span style="color: var(--error); font-size: 0.8rem;">${server.error}</span>` : ''}
+                </div>
+            `).join('');
+        }
+        
+        function renderInfrastructure() {
+            const container = document.getElementById('arch-infrastructure');
+            
+            if (archState.infrastructure.length === 0 && archState.servers.length === 0) {
+                container.innerHTML = '<div class="empty-state" style="padding: 20px; text-align: center;"><p style="color: var(--text-muted);">No infrastructure found</p></div>';
+                return;
+            }
+            
+            // Count nginx instances
+            const nginxCount = archState.servers.filter(s => s.nginx_status === 'running').length;
+            const totalServers = archState.servers.length;
+            const missingNginx = archState.servers.filter(s => s.nginx_status !== 'running').map(s => s.ip);
+            
+            // Summary cards
+            let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; padding: 16px;">';
+            
+            // Nginx Sidecar Status
+            const nginxOk = nginxCount === totalServers;
+            html += `
+                <div style="padding: 16px; background: ${nginxOk ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)'}; border-radius: 8px; border: 1px solid ${nginxOk ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'};">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                        <span style="font-size: 1.5rem;">🔀</span>
+                        <span style="font-weight: 600;">Nginx Sidecar</span>
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: ${nginxOk ? 'var(--success)' : 'var(--warning)'};">
+                        ${nginxCount}/${totalServers}
+                    </div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">servers with nginx</div>
+                    ${!nginxOk ? `
+                        <button onclick="fixMissingNginx()" class="btn btn-warning btn-sm" style="margin-top: 12px; width: 100%;">
+                            🔧 Fix ${missingNginx.length} server${missingNginx.length > 1 ? 's' : ''}
+                        </button>
+                    ` : `
+                        <div style="margin-top: 8px; font-size: 0.75rem; color: var(--success);">
+                            ✅ All servers OK
+                        </div>
+                    `}
+                </div>
+            `;
+            
+            // Agent Status  
+            const agentVersions = {};
+            archState.servers.forEach(s => {
+                const v = s.agent_version || 'unknown';
+                agentVersions[v] = (agentVersions[v] || 0) + 1;
+            });
+            const versionList = Object.entries(agentVersions).map(([v, c]) => `v${v}: ${c}`).join(', ');
+            
+            html += `
+                <div style="padding: 16px; background: rgba(59, 130, 246, 0.1); border-radius: 8px; border: 1px solid rgba(59, 130, 246, 0.3);">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                        <span style="font-size: 1.5rem;">🤖</span>
+                        <span style="font-weight: 600;">Node Agents</span>
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">
+                        ${totalServers}
+                    </div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">agents running</div>
+                    <div style="margin-top: 8px; font-size: 0.75rem; color: var(--text-muted);">
+                        ${versionList}
+                    </div>
+                </div>
+            `;
+            
+            // Service Mesh info
+            const servicesOnMultipleServers = archState.nodes.filter(n => n.servers && n.servers.length > 1).length;
+            html += `
+                <div style="padding: 16px; background: rgba(139, 92, 246, 0.1); border-radius: 8px; border: 1px solid rgba(139, 92, 246, 0.3);">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                        <span style="font-size: 1.5rem;">🌐</span>
+                        <span style="font-weight: 600;">Load Balanced</span>
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: #8b5cf6;">
+                        ${servicesOnMultipleServers}
+                    </div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">services on 2+ servers</div>
+                    <div style="margin-top: 8px; font-size: 0.75rem; color: var(--text-muted);">
+                        Auto-balanced via nginx sidecar
+                    </div>
+                </div>
+            `;
+            
+            html += '</div>';
+            
+            // Warning banner if nginx missing
+            if (!nginxOk) {
+                html += `
+                    <div style="margin: 0 16px 16px; padding: 12px 16px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 1.2rem;">⚠️</span>
+                            <div style="flex: 1;">
+                                <div style="font-weight: 600; color: var(--warning);">Missing Nginx Sidecar</div>
+                                <div style="font-size: 0.85rem; color: var(--text-muted);">
+                                    Servers without nginx: ${missingNginx.join(', ')}
+                                </div>
+                            </div>
+                            <button onclick="fixMissingNginx()" class="btn btn-warning btn-sm">
+                                🔧 Fix All
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Individual infrastructure containers
+            if (archState.infrastructure.length > 0) {
+                html += '<div style="border-top: 1px solid var(--border); padding: 16px;">';
+                html += '<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">Infrastructure Containers:</div>';
+                html += '<div style="display: flex; flex-wrap: wrap; gap: 8px;">';
+                
+                archState.infrastructure.forEach(infra => {
+                    const icon = infra.type === 'nginx' ? '🔀' : infra.type === 'agent' ? '🤖' : '📦';
+                    html += `
+                        <div style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--bg-input); border-radius: 6px; font-size: 0.8rem;">
+                            ${icon}
+                            <span style="font-weight: 500;">${infra.name}</span>
+                            <span style="color: var(--text-muted);">@</span>
+                            <span style="font-family: monospace; font-size: 0.75rem;">${infra.server_ip}</span>
+                            ${infra.ports.length > 0 ? `<span style="color: var(--text-muted); font-size: 0.7rem;">${infra.ports[0]}</span>` : ''}
+                        </div>
+                    `;
+                });
+                
+                html += '</div></div>';
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        function renderConnectionMatrix() {
+            const container = document.getElementById('arch-matrix');
+            
+            if (archState.nodes.length === 0 || archState.edges.length === 0) {
+                container.innerHTML = '<div class="empty-state" style="padding: 20px; text-align: center;"><p style="color: var(--text-muted);">No connections detected yet</p></div>';
+                return;
+            }
+            
+            // Build matrix data
+            const services = archState.nodes.map(n => n.id);
+            const matrix = {};
+            services.forEach(s => { matrix[s] = {}; services.forEach(t => { matrix[s][t] = false; }); });
+            archState.edges.forEach(e => { matrix[e.from][e.to] = e.label || '→'; });
+            
+            let html = '<table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">';
+            html += '<tr><th style="padding: 8px; border: 1px solid var(--border);"></th>';
+            services.forEach(s => {
+                const node = archState.nodes.find(n => n.id === s);
+                html += `<th style="padding: 8px; border: 1px solid var(--border); writing-mode: vertical-rl; text-orientation: mixed; max-width: 40px;">${node?.service || s}</th>`;
+            });
+            html += '</tr>';
+            
+            services.forEach(from => {
+                const fromNode = archState.nodes.find(n => n.id === from);
+                html += `<tr><td style="padding: 8px; border: 1px solid var(--border); font-weight: 600;">${fromNode?.service || from}</td>`;
+                services.forEach(to => {
+                    const val = matrix[from][to];
+                    const bg = val ? 'rgba(59, 130, 246, 0.2)' : '';
+                    html += `<td style="padding: 8px; border: 1px solid var(--border); text-align: center; background: ${bg};">${val || ''}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</table>';
+            
+            container.innerHTML = html;
+        }
+        
+        async function fixMissingNginx() {
+            // Get servers missing nginx
+            const missingServers = archState.servers
+                .filter(s => s.nginx_status !== 'running')
+                .map(s => s.ip);
+            
+            if (missingServers.length === 0) {
+                toast('All servers already have nginx running', 'info');
+                return;
+            }
+            
+            toast(`Fixing ${missingServers.length} server${missingServers.length > 1 ? 's' : ''}...`, 'info');
+            
+            try {
+                const result = await api('POST', '/infra/nginx/ensure', {
+                    server_ips: missingServers,
+                    do_token: getCookie('do_token'),
+                });
+                
+                if (result.success) {
+                    toast(`✅ Fixed ${result.fixed} server${result.fixed !== 1 ? 's' : ''}, ${result.already_ok} already OK`, 'success');
+                } else {
+                    toast(`⚠️ ${result.message}`, 'warning');
+                }
+                
+                // Reload architecture to refresh status
+                await loadArchitecture();
+                
+            } catch (e) {
+                console.error('Failed to fix nginx:', e);
+                toast('Failed to fix nginx: ' + e.message, 'error');
+            }
         }
         
         // =============================================================================
@@ -1308,6 +2396,23 @@
             document.getElementById('deploy-app-port-section').style.display = (source === 'code' || source === 'git' || source === 'image') ? 'block' : 'none';
         }
         
+        // Toggle dependencies section based on auto-env checkbox
+        function toggleAutoEnvDeps() {
+            const autoEnv = document.getElementById('deploy-auto-env')?.checked;
+            const depsSection = document.getElementById('deploy-dependencies-section');
+            if (depsSection) {
+                depsSection.style.display = autoEnv ? 'block' : 'none';
+            }
+        }
+        
+        // Initialize auto-env toggle on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            const autoEnvCheckbox = document.getElementById('deploy-auto-env');
+            if (autoEnvCheckbox) {
+                autoEnvCheckbox.addEventListener('change', toggleAutoEnvDeps);
+            }
+        });
+        
         // Toggle server list collapsible
         function toggleServerList() {
             const content = document.getElementById('deploy-server-list');
@@ -1359,6 +2464,53 @@
             }
             return false;
         }
+        
+        // =============================================================================
+        // Domain Configuration
+        // =============================================================================
+        
+        function onSetupDomainChange() {
+            const setupDomain = document.getElementById('deploy-setup-domain').checked;
+            const details = document.getElementById('deploy-domain-details');
+            details.style.display = setupDomain ? 'block' : 'none';
+            
+            if (setupDomain) {
+                updateDomainPreview();
+                // Check for CF token
+                if (!getCFToken()) {
+                    showToast('Remember to save your Cloudflare token in Settings', 'warning');
+                }
+            }
+        }
+        
+        function updateDomainPreview() {
+            const name = document.getElementById('deploy-name').value || 'service';
+            const project = document.getElementById('deploy-project').value || name;
+            const env = document.getElementById('deploy-environment').value || 'prod';
+            const baseDomain = document.getElementById('deploy-base-domain').value || 'digitalpixo.com';
+            
+            // Get workspace ID (truncated user ID) - simulating what backend does
+            const workspaceId = state.user?.id?.toString().slice(0, 6) || 'user';
+            
+            // Convert to subdomain format (replace _ with -)
+            const subdomain = `${workspaceId}-${project}-${env}-${name}`.toLowerCase().replace(/_/g, '-');
+            
+            const preview = document.getElementById('deploy-domain-preview');
+            if (preview) {
+                preview.textContent = `${subdomain}.${baseDomain}`;
+            }
+        }
+        
+        // Update domain preview when relevant fields change
+        document.addEventListener('DOMContentLoaded', () => {
+            ['deploy-name', 'deploy-project', 'deploy-environment'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('input', updateDomainPreview);
+                    el.addEventListener('change', updateDomainPreview);
+                }
+            });
+        });
         
         // =============================================================================
         // Dockerfile Preview (before deploy)
@@ -2036,6 +3188,144 @@ CMD ["python", "main.py"]`;
             }
         }
         
+        // =============================================================================
+        // Services Tab Functions (Stateful Services)
+        // =============================================================================
+        
+        async function loadServersForStateful() {
+            const select = document.getElementById('stateful-server');
+            if (!select) return;
+            
+            if (!hasDoToken()) {
+                select.innerHTML = '<option value="">Configure DO token first</option>';
+                return;
+            }
+            
+            try {
+                const result = await api('GET', '/infra/servers?status=active&tag=all');
+                const servers = result.servers || [];
+                
+                select.innerHTML = '<option value="">Select server...</option>' + 
+                    servers.map(s => {
+                        const ip = s.ip || 'no-ip';
+                        return `<option value="${ip}">${s.name} (${ip})</option>`;
+                    }).join('');
+            } catch (e) {
+                select.innerHTML = '<option value="">Error loading servers</option>';
+            }
+        }
+        
+        async function deployStatefulService(event) {
+            event.preventDefault();
+            
+            const serviceType = document.getElementById('stateful-service-type').value;
+            const project = document.getElementById('stateful-project').value.trim();
+            const environment = document.getElementById('stateful-environment').value;
+            const serverIp = document.getElementById('stateful-server').value;
+            
+            if (!serviceType || !project || !serverIp) {
+                showToast('Please fill all required fields', 'warning');
+                return;
+            }
+            
+            const resultEmpty = document.getElementById('stateful-result-empty');
+            const resultDiv = document.getElementById('stateful-result');
+            const resultContent = document.getElementById('stateful-result-content');
+            
+            // Show loading
+            resultEmpty.style.display = 'none';
+            resultDiv.classList.remove('hidden');
+            resultContent.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <div class="spinner" style="margin: 0 auto 16px;"></div>
+                    <div>Deploying ${serviceType}...</div>
+                </div>
+            `;
+            
+            try {
+                const doToken = getLocalDoToken();
+                const response = await fetch(`${API_BASE}/infra/deploy/stateful`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        service_type: serviceType,
+                        project: project,
+                        environment: environment,
+                        server_ip: serverIp,
+                        do_token: doToken,
+                    }),
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Deployment failed');
+                }
+                
+                // Show success
+                const conn = data.connection_info || {};
+                resultContent.innerHTML = `
+                    <div style="padding: 8px;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+                            <span style="font-size: 1.5rem;">✅</span>
+                            <span style="font-weight: 600; font-size: 1.1rem;">Deployed Successfully</span>
+                        </div>
+                        
+                        <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                            <div style="font-weight: 500; margin-bottom: 8px;">Container</div>
+                            <code style="font-size: 0.85rem;">${data.container_name}</code>
+                        </div>
+                        
+                        <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                            <div style="font-weight: 500; margin-bottom: 8px;">Internal Port</div>
+                            <div style="font-family: monospace; font-size: 1.2rem; color: var(--primary);">
+                                localhost:${data.internal_port}
+                            </div>
+                            <small style="color: var(--text-muted);">Other containers connect to this port</small>
+                        </div>
+                        
+                        ${conn.url ? `
+                        <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                            <div style="font-weight: 500; margin-bottom: 8px;">Connection URL</div>
+                            <div style="background: var(--bg-input); padding: 8px; border-radius: 4px; overflow-x: auto;">
+                                <code style="font-size: 0.8rem; word-break: break-all;">${conn.url}</code>
+                            </div>
+                            <button class="btn btn-ghost btn-sm" style="margin-top: 8px;" onclick="navigator.clipboard.writeText('${conn.url}'); showToast('Copied!', 'success');">
+                                📋 Copy URL
+                            </button>
+                        </div>
+                        ` : ''}
+                        
+                        ${conn.password ? `
+                        <div style="background: var(--bg-card); border-radius: 8px; padding: 12px;">
+                            <div style="font-weight: 500; margin-bottom: 8px;">Credentials</div>
+                            <div style="display: grid; gap: 8px; font-size: 0.85rem;">
+                                ${conn.user ? `<div><span style="color: var(--text-muted);">User:</span> <code>${conn.user}</code></div>` : ''}
+                                <div><span style="color: var(--text-muted);">Password:</span> <code>${conn.password}</code></div>
+                                ${conn.database ? `<div><span style="color: var(--text-muted);">Database:</span> <code>${conn.database}</code></div>` : ''}
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+                
+                showToast(`${serviceType} deployed successfully`, 'success');
+                
+            } catch (e) {
+                resultContent.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: var(--danger);">
+                        <div style="font-size: 2rem; margin-bottom: 8px;">❌</div>
+                        <div style="font-weight: 500;">Deployment Failed</div>
+                        <div style="font-size: 0.85rem; margin-top: 8px;">${e.message}</div>
+                    </div>
+                `;
+                showToast(e.message, 'error');
+            }
+        }
+        
         // Track deployment state
         let deployInProgress = false;
         
@@ -2062,6 +3352,32 @@ CMD ["python", "main.py"]`;
             const environment = document.getElementById('deploy-environment').value;
             const tagsInput = document.getElementById('deploy-tags').value;
             const tags = tagsInput ? tagsInput.split(',').map(t => t.trim()).filter(t => t) : [];
+            
+            // Collect new service config options
+            const autoEnv = document.getElementById('deploy-auto-env')?.checked || false;
+            const persistData = document.getElementById('deploy-persist-data')?.checked || false;
+            const dependsOn = [];
+            document.querySelectorAll('.deploy-dep:checked').forEach(cb => {
+                dependsOn.push(cb.value);
+            });
+            
+            // Domain config
+            const setupDomain = document.getElementById('deploy-setup-domain')?.checked || false;
+            const baseDomain = document.getElementById('deploy-base-domain')?.value || 'digitalpixo.com';
+            const domainAliasesText = document.getElementById('deploy-domain-aliases')?.value || '';
+            const domainAliases = domainAliasesText ? domainAliasesText.split(',').map(a => a.trim()).filter(a => a) : [];
+            
+            // Check CF token if domain setup requested
+            if (setupDomain && !getCFToken()) {
+                alert('Please save your Cloudflare token in Settings before enabling domain setup');
+                deployInProgress = false;
+                const deployBtn = document.querySelector('#deploy-form button[type="submit"]');
+                if (deployBtn) {
+                    deployBtn.disabled = false;
+                    deployBtn.innerHTML = '🚀 Deploy';
+                }
+                return;
+            }
             
             // Parse env vars
             const env_vars = {};
@@ -2194,6 +3510,9 @@ CMD ["python", "main.py"]`;
                         environment,
                         project: project || '',
                         env_vars: JSON.stringify(env_vars),
+                        auto_env: autoEnv,
+                        depends_on: JSON.stringify(dependsOn),
+                        persist_data: persistData,
                     };
                     formData._streamingFile = file;
                 }
@@ -2223,14 +3542,19 @@ CMD ["python", "main.py"]`;
                 
                 // Use streaming endpoint for image_file (2x faster for existing servers)
                 if (formData._useStreamingEndpoint) {
+                    const cfToken = setupDomain ? getCFToken() : '';
                     const params = new URLSearchParams({
                         do_token: doToken,
+                        cf_token: cfToken,
                         ...formData._streamingParams,
                         server_ips: JSON.stringify(serverIps),
                         new_server_count: newServerCount.toString(),
                         snapshot_id: document.getElementById('deploy-snapshot').value || '',
                         region: document.getElementById('deploy-region').value || 'lon1',
                         size: document.getElementById('deploy-size').value || 's-1vcpu-1gb',
+                        setup_domain: setupDomain.toString(),
+                        base_domain: baseDomain,
+                        domain_aliases: JSON.stringify(domainAliases),
                     });
                     
                     // Two-phase for NEW servers (enables tee-streaming after provision)
@@ -2281,6 +3605,9 @@ CMD ["python", "main.py"]`;
                             environment,
                             project: project || '',
                             env_vars: formData._streamingParams.env_vars || '{}',
+                            auto_env: formData._streamingParams.auto_env || false,
+                            depends_on: formData._streamingParams.depends_on || '[]',
+                            persist_data: formData._streamingParams.persist_data || false,
                         });
                         
                         log(`🔨 Streaming image directly to ${prepareData.ready_ips.length} server(s)...`);
@@ -2310,7 +3637,10 @@ CMD ["python", "main.py"]`;
                     }
                 } else {
                     // Use multipart for code/git/image
-                    response = await fetch(`${API_BASE}/infra/deploy/multipart?do_token=${encodeURIComponent(doToken)}&snapshot_id=${encodeURIComponent(document.getElementById('deploy-snapshot').value || '')}&new_server_count=${newServerCount}&region=${encodeURIComponent(document.getElementById('deploy-region').value || 'lon1')}&size=${encodeURIComponent(document.getElementById('deploy-size').value || 's-1vcpu-1gb')}`, {
+                    const projectVal = document.getElementById('deploy-project').value.trim();
+                    const environmentVal = document.getElementById('deploy-environment').value;
+                    const cfToken = setupDomain ? getCFToken() : '';
+                    response = await fetch(`${API_BASE}/infra/deploy/multipart?do_token=${encodeURIComponent(doToken)}&cf_token=${encodeURIComponent(cfToken)}&snapshot_id=${encodeURIComponent(document.getElementById('deploy-snapshot').value || '')}&new_server_count=${newServerCount}&region=${encodeURIComponent(document.getElementById('deploy-region').value || 'lon1')}&size=${encodeURIComponent(document.getElementById('deploy-size').value || 's-1vcpu-1gb')}&project=${encodeURIComponent(projectVal)}&environment=${encodeURIComponent(environmentVal)}&setup_domain=${setupDomain}&base_domain=${encodeURIComponent(baseDomain)}&domain_aliases=${encodeURIComponent(JSON.stringify(domainAliases))}`, {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${state.token}`,
@@ -2391,12 +3721,26 @@ CMD ["python", "main.py"]`;
                         ? `⚠️ Partially Deployed (${successfulServers.length}/${successfulServers.length + failedServers.length} servers)`
                         : '✅ Deployment Successful!';
                     
+                    // Domain info (if provisioned)
+                    const domainInfo = result.domain ? `
+                        <div style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.15); border-radius: 6px;">
+                            <div style="font-weight: 600; margin-bottom: 4px;">🌐 Domain</div>
+                            <a href="https://${result.domain}" target="_blank" style="color: white; font-size: 1.1rem;">https://${result.domain}</a>
+                            ${result.domain_aliases?.length ? `
+                                <div style="margin-top: 6px; font-size: 0.85rem; color: rgba(255,255,255,0.8);">
+                                    Aliases: ${result.domain_aliases.map(a => `<a href="https://${a}" target="_blank" style="color: inherit;">${a}</a>`).join(', ')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    ` : '';
+                    
                     document.getElementById('deploy-result').style.display = 'block';
                     document.getElementById('deploy-result').innerHTML = `
                         <div style="background: ${statusBg}; color: white; padding: 16px; border-radius: 8px; margin-top: 16px;">
                             <strong>${statusText}</strong>
                             <span style="background: ${envColor}; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">${environment.toUpperCase()}</span>
                             ${tagsHtml}
+                            ${domainInfo}
                             ${successfulServers.map(s => `
                                 <div style="margin-top: 8px;">
                                     <a href="${s.url}" target="_blank" style="color: white;">${s.url}</a>
@@ -3633,6 +4977,494 @@ CMD ["python", "main.py"]`;
         }
         
         // =============================================================================
+        // Cloudflare Functions
+        // =============================================================================
+        
+        function getCFToken() {
+            return getCookie('cf_token');
+        }
+        
+        function saveCFToken(e) {
+            e.preventDefault();
+            const token = document.getElementById('cf-token').value.trim();
+            if (!token) {
+                showToast('Enter a token', 'error');
+                return;
+            }
+            setCookie('cf_token', token, 30);
+            showToast('Cloudflare token saved', 'success');
+            document.getElementById('cf-token').value = '';
+            checkCFToken();
+        }
+        
+        async function testCFToken() {
+            const token = getCFToken();
+            if (!token) {
+                showToast('Save Cloudflare token first', 'error');
+                return;
+            }
+            
+            const status = document.getElementById('cf-token-status');
+            status.innerHTML = '<span style="color: var(--text-muted);">Testing...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/cloudflare/zones?cloudflare_token=${encodeURIComponent(token)}`, {
+                    headers: { 'Authorization': `Bearer ${state.token}` }
+                });
+                const data = await response.json();
+                
+                if (data.success && data.zones) {
+                    const zoneList = data.zones.map(z => `<li>${z.name} (${z.status})</li>`).join('');
+                    status.innerHTML = `
+                        <div style="color: var(--success); margin-bottom: 8px;">✅ Token valid</div>
+                        <div style="font-size: 0.85rem;">
+                            <strong>Available zones:</strong>
+                            <ul style="margin: 4px 0 0 16px;">${zoneList || '<li>No zones found</li>'}</ul>
+                        </div>
+                    `;
+                } else {
+                    status.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Invalid token'}</span>`;
+                }
+            } catch (err) {
+                status.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        function deleteCFToken() {
+            if (!confirm('Clear Cloudflare token?')) return;
+            deleteCookie('cf_token');
+            showToast('Token cleared', 'success');
+            checkCFToken();
+        }
+        
+        function checkCFToken() {
+            const token = getCFToken();
+            const status = document.getElementById('cf-token-status');
+            if (token) {
+                status.innerHTML = '<span style="color: var(--success);">✓ Token saved</span>';
+            } else {
+                status.innerHTML = '<span style="color: var(--text-muted);">No token saved</span>';
+            }
+        }
+        
+        async function setupDomain(e) {
+            e.preventDefault();
+            const token = getCFToken();
+            if (!token) {
+                showToast('Save Cloudflare token first', 'error');
+                return;
+            }
+            
+            const domain = document.getElementById('domain-name').value.trim();
+            const ip = document.getElementById('domain-ip').value.trim();
+            const proxied = document.getElementById('domain-proxied').checked;
+            
+            if (!domain || !ip) {
+                showToast('Fill in domain and IP', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('domain-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Setting up...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/cloudflare/domain`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        domain,
+                        server_ip: ip,
+                        cloudflare_token: token,
+                        proxied,
+                    }),
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `
+                        <div style="color: var(--success);">✅ ${data.message}</div>
+                        ${proxied ? '<div style="font-size: 0.85rem; margin-top: 8px;">HTTPS ready at <a href="https://' + domain + '" target="_blank">https://' + domain + '</a></div>' : ''}
+                    `;
+                    showToast('Domain configured', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        async function setupLoadBalancer(e) {
+            e.preventDefault();
+            const token = getCFToken();
+            if (!token) {
+                showToast('Save Cloudflare token first', 'error');
+                return;
+            }
+            
+            const domain = document.getElementById('lb-domain').value.trim();
+            const ipsText = document.getElementById('lb-ips').value.trim();
+            const proxied = document.getElementById('lb-proxied').checked;
+            
+            if (!domain || !ipsText) {
+                showToast('Fill in domain and IPs', 'error');
+                return;
+            }
+            
+            const ips = ipsText.split(',').map(ip => ip.trim()).filter(ip => ip);
+            if (ips.length < 1) {
+                showToast('Enter at least one IP', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('lb-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Setting up load balancing...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/cloudflare/lb`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        domain,
+                        server_ips: ips,
+                        cloudflare_token: token,
+                        proxied,
+                    }),
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `
+                        <div style="color: var(--success);">✅ ${data.message}</div>
+                        <div style="font-size: 0.85rem; margin-top: 8px;">
+                            ${data.record_count} A record(s) created
+                        </div>
+                        ${proxied ? '<div style="margin-top: 8px;">HTTPS ready at <a href="https://' + domain + '" target="_blank">https://' + domain + '</a></div>' : ''}
+                    `;
+                    showToast('Load balancing configured', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        async function addServerToLB() {
+            const token = getCFToken();
+            if (!token) {
+                showToast('Save Cloudflare token first', 'error');
+                return;
+            }
+            
+            const domain = document.getElementById('lb-manage-domain').value.trim();
+            const ip = document.getElementById('lb-manage-ip').value.trim();
+            
+            if (!domain || !ip) {
+                showToast('Enter domain and IP', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('lb-manage-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Adding server...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/cloudflare/lb/add-server`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        domain,
+                        server_ip: ip,
+                        cloudflare_token: token,
+                    }),
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `<span style="color: var(--success);">✅ ${data.message}</span>`;
+                    showToast('Server added', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        async function removeServerFromLB() {
+            const token = getCFToken();
+            if (!token) {
+                showToast('Save Cloudflare token first', 'error');
+                return;
+            }
+            
+            const domain = document.getElementById('lb-manage-domain').value.trim();
+            const ip = document.getElementById('lb-manage-ip').value.trim();
+            
+            if (!domain || !ip) {
+                showToast('Enter domain and IP', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('lb-manage-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Removing server...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/cloudflare/lb/remove-server`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        domain,
+                        server_ip: ip,
+                        cloudflare_token: token,
+                    }),
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `<span style="color: var(--success);">✅ ${data.message}</span>`;
+                    showToast('Server removed', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        async function listLBServers() {
+            const token = getCFToken();
+            if (!token) {
+                showToast('Save Cloudflare token first', 'error');
+                return;
+            }
+            
+            const domain = document.getElementById('lb-manage-domain').value.trim();
+            if (!domain) {
+                showToast('Enter domain', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('lb-manage-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Loading...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/cloudflare/lb/servers?domain=${encodeURIComponent(domain)}&cloudflare_token=${encodeURIComponent(token)}`, {
+                    headers: { 'Authorization': `Bearer ${state.token}` }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    const ipList = data.server_ips.map(ip => `<li>${ip}</li>`).join('');
+                    result.innerHTML = `
+                        <div style="color: var(--success); margin-bottom: 8px;">
+                            ${data.server_count} server(s) for ${domain}
+                        </div>
+                        <ul style="margin: 0 0 0 16px; font-size: 0.9rem;">${ipList || '<li>No servers</li>'}</ul>
+                    `;
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        // =============================================================================
+        // Nginx Load Balancer Functions
+        // =============================================================================
+        
+        function parseBackends(text) {
+            // Parse "10.0.0.1:8000, 10.0.0.2:8000" into [{ip, port}]
+            return text.split(',')
+                .map(s => s.trim())
+                .filter(s => s)
+                .map(s => {
+                    const parts = s.split(':');
+                    return {
+                        ip: parts[0],
+                        port: parseInt(parts[1]) || 8000
+                    };
+                });
+        }
+        
+        async function setupNginxLB(e) {
+            e.preventDefault();
+            const doToken = getLocalDoToken();
+            if (!doToken) {
+                showToast('Save DO token first', 'error');
+                return;
+            }
+            
+            const name = document.getElementById('nginx-lb-name').value.trim();
+            const serverIp = document.getElementById('nginx-lb-server').value.trim();
+            const backendsText = document.getElementById('nginx-lb-backends').value.trim();
+            const domain = document.getElementById('nginx-lb-domain').value.trim();
+            const method = document.getElementById('nginx-lb-method').value;
+            
+            if (!name || !serverIp || !backendsText) {
+                showToast('Fill in required fields', 'error');
+                return;
+            }
+            
+            const backends = parseBackends(backendsText);
+            if (backends.length === 0) {
+                showToast('Enter at least one backend', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('nginx-lb-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Setting up nginx LB...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/nginx/lb`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        name,
+                        server_ip: serverIp,
+                        backends,
+                        do_token: doToken,
+                        listen_port: 80,
+                        domain: domain || null,
+                        lb_method: method,
+                    }),
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    const backendList = backends.map(b => `<li>${b.ip}:${b.port}</li>`).join('');
+                    result.innerHTML = `
+                        <div style="color: var(--success);">✅ ${data.message}</div>
+                        <div style="font-size: 0.85rem; margin-top: 8px;">
+                            <strong>Backends:</strong>
+                            <ul style="margin: 4px 0 0 16px;">${backendList}</ul>
+                        </div>
+                        <div style="margin-top: 8px; font-size: 0.85rem;">
+                            Point your domain to <code>${serverIp}</code> for traffic to be load-balanced.
+                        </div>
+                    `;
+                    showToast('Nginx LB configured', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        async function updateNginxLB() {
+            const doToken = getLocalDoToken();
+            if (!doToken) {
+                showToast('Save DO token first', 'error');
+                return;
+            }
+            
+            const name = document.getElementById('nginx-lb-manage-name').value.trim();
+            const serverIp = document.getElementById('nginx-lb-manage-server').value.trim();
+            
+            if (!name || !serverIp) {
+                showToast('Enter LB name and server IP', 'error');
+                return;
+            }
+            
+            // Prompt for new backends
+            const backendsText = prompt('Enter new backends (IP:port, comma-separated):', '');
+            if (!backendsText) return;
+            
+            const backends = parseBackends(backendsText);
+            if (backends.length === 0) {
+                showToast('Enter at least one backend', 'error');
+                return;
+            }
+            
+            const result = document.getElementById('nginx-lb-manage-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Updating...</span>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/infra/nginx/lb`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        name,
+                        server_ip: serverIp,
+                        backends,
+                        do_token: doToken,
+                    }),
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `<span style="color: var(--success);">✅ ${data.message}</span>`;
+                    showToast('Nginx LB updated', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        async function deleteNginxLB() {
+            const doToken = getLocalDoToken();
+            if (!doToken) {
+                showToast('Save DO token first', 'error');
+                return;
+            }
+            
+            const name = document.getElementById('nginx-lb-manage-name').value.trim();
+            const serverIp = document.getElementById('nginx-lb-manage-server').value.trim();
+            
+            if (!name || !serverIp) {
+                showToast('Enter LB name and server IP', 'error');
+                return;
+            }
+            
+            if (!confirm(`Delete nginx LB '${name}'?`)) return;
+            
+            const result = document.getElementById('nginx-lb-manage-result');
+            result.innerHTML = '<span style="color: var(--text-muted);">Deleting...</span>';
+            
+            try {
+                const response = await fetch(
+                    `${API_BASE}/infra/nginx/lb?name=${encodeURIComponent(name)}&server_ip=${encodeURIComponent(serverIp)}&do_token=${encodeURIComponent(doToken)}`,
+                    {
+                        method: 'DELETE',
+                        headers: { 'Authorization': `Bearer ${state.token}` },
+                    }
+                );
+                const data = await response.json();
+                
+                if (data.success) {
+                    result.innerHTML = `<span style="color: var(--success);">✅ ${data.message}</span>`;
+                    showToast('Nginx LB deleted', 'success');
+                } else {
+                    result.innerHTML = `<span style="color: var(--danger);">❌ ${data.detail || 'Failed'}</span>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<span style="color: var(--danger);">❌ ${err.message}</span>`;
+            }
+        }
+        
+        // =============================================================================
         // Modal & Toast
         // =============================================================================
         
@@ -3863,6 +5695,7 @@ CMD ["python", "main.py"]`;
                 document.getElementById('app-screen').classList.remove('hidden');
                 
                 checkDOToken();
+                checkCFToken();
                 await loadServers();
                 await loadSnapshots();
                 await loadProjectDropdowns();  // Populate project dropdowns
