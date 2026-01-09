@@ -27,21 +27,6 @@ from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
 
 
 # ==========================================
-# Origin Certificate Helpers
-# ==========================================
-
-def get_origin_cert() -> Optional[str]:
-    """Get Cloudflare Origin Certificate for HTTPS domains."""
-    from config import get_app_settings
-    return get_app_settings().get_origin_cert()
-
-def get_origin_key() -> Optional[str]:
-    """Get Cloudflare Origin Certificate private key."""
-    from config import get_app_settings
-    return get_app_settings().get_origin_key()
-
-
-# ==========================================
 # Credentials Helpers
 # ==========================================
 
@@ -2479,9 +2464,6 @@ async def deploy_unified(
                 cloudflare_token=cf_token,
                 base_domain=req.base_domain,
                 domain_aliases=req.domain_aliases,
-                # Origin certificate for HTTPS
-                origin_cert=get_origin_cert(),
-                origin_key=get_origin_key(),
             )
             
             # Decode code if provided (service handles zip→tar conversion)
@@ -2815,9 +2797,6 @@ async def deploy_multipart(
                 cloudflare_token=cf_token,
                 base_domain=base_domain,
                 domain_aliases=domain_aliases_list,
-                # Origin certificate for HTTPS
-                origin_cert=get_origin_cert(),
-                origin_key=get_origin_key(),
             )
             
             # Read file contents (from temp files, not memory)

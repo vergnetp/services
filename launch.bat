@@ -82,7 +82,7 @@ timeout /t 2 >nul
 
 REM ---- START API ----
 echo Starting API...
-start "%SERVICE_NAME%_api" cmd /k "cd /d %PROJECTS_ROOT% && uvicorn services.%SERVICE_NAME%.main:app --reload --host 0.0.0.0 --port 8000"
+start "%SERVICE_NAME%_api" cmd /k "cd /d %PROJECTS_ROOT% && python -m uvicorn services.%SERVICE_NAME%.main:app --reload --host 0.0.0.0 --port 8000"
 
 timeout /t 2 >nul
 

@@ -3745,7 +3745,7 @@ CMD ["python", "main.py"]`;
                                 <div style="margin-top: 8px;">
                                     <a href="${s.url}" target="_blank" style="color: white;">${s.url}</a>
                                     <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 8px;" 
-                                            onclick="viewContainerLogs('${s.ip}', '${s.name || name}')">📋 Logs</button>
+                                            onclick="viewContainerLogs('${s.ip}', '${result.container_name}')">📋 Logs</button>
                                 </div>
                             `).join('')}
                             ${failedServers.length > 0 ? `
@@ -3755,7 +3755,7 @@ CMD ["python", "main.py"]`;
                                         <div style="margin-top: 4px; color: #fef3c7;">
                                             ❌ ${s.ip}: ${s.error || 'Unknown error'}
                                             <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 8px;" 
-                                                    onclick="viewContainerLogs('${s.ip}', '${s.name || name}')">📋 Logs</button>
+                                                    onclick="viewContainerLogs('${s.ip}', '${result.container_name}')">📋 Logs</button>
                                         </div>
                                     `).join('')}
                                 </div>
@@ -3779,12 +3779,16 @@ CMD ["python", "main.py"]`;
                 log(`\n❌ Error: ${err.message}`);
                 
                 // Try to get server info for logs button
+                // Construct container name from form values (same pattern as backend)
                 const serverIps = getSelectedServers().map(s => s.ip);
+                const workspace = 'fc153d'; // TODO: get from auth
+                const containerNameGuess = `${workspace}_${project || 'default'}_${environment}_${name}`.replace(/-/g, '_').toLowerCase();
+                
                 const logsButtons = serverIps.length > 0 ? `
                     <div style="margin-top: 8px; font-size: 0.9rem;">
                         View container logs: ${serverIps.map(ip => `
                             <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 4px;" 
-                                    onclick="viewContainerLogs('${ip}', '${name}')">${ip}</button>
+                                    onclick="viewContainerLogs('${ip}', '${containerNameGuess}')">${ip}</button>
                         `).join('')}
                     </div>
                 ` : '';
