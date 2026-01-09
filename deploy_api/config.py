@@ -45,12 +45,43 @@ class AppSettings(BaseSettings):
     # App-specific
     encryption_key: Optional[str] = None  # For credential encryption
     
+    # Cloudflare Origin Certificate (for HTTPS domains)
+    # Can be set via env vars or loaded from files
+    origin_cert: Optional[str] = None  # PEM content
+    origin_key: Optional[str] = None   # PEM content
+    origin_cert_path: Optional[str] = None  # Path to cert file
+    origin_key_path: Optional[str] = None   # Path to key file
+    
     # Data directory (for ensuring it exists)
     data_dir: str = str(SERVICE_DIR / "data")
     
     def ensure_data_dir(self):
         """Create data directory if needed."""
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+    
+    def get_origin_cert(self) -> Optional[str]:
+        """Get origin certificate content (from env or file)."""
+        if self.origin_cert:
+            return self.origin_cert
+        if self.origin_cert_path and Path(self.origin_cert_path).exists():
+            return Path(self.origin_cert_path).read_text()
+        # Try default path relative to infra folder
+        default_path = SERVICE_DIR.parent / "infra" / "certificate.pem"
+        if default_path.exists():
+            return default_path.read_text()
+        return None
+    
+    def get_origin_key(self) -> Optional[str]:
+        """Get origin certificate key (from env or file)."""
+        if self.origin_key:
+            return self.origin_key
+        if self.origin_key_path and Path(self.origin_key_path).exists():
+            return Path(self.origin_key_path).read_text()
+        # Try default path relative to infra folder
+        default_path = SERVICE_DIR.parent / "infra" / "certificate.key"
+        if default_path.exists():
+            return default_path.read_text()
+        return None
 
 
 @lru_cache
