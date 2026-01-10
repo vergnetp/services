@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Tuple
 
 from fastapi import Depends
-from fastapi.staticfiles import StaticFiles
+from shared_libs.backend.app_kernel import CacheBustedStaticFiles
 
 from shared_libs.backend.app_kernel import (
     create_service,
@@ -249,7 +249,7 @@ def create_app():
     # Static files - must be last
     static_path = Path(__file__).parent / "static"
     if static_path.exists():
-        app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
+        app.mount("/", CacheBustedStaticFiles(directory=str(static_path), html=True), name="static")
     
     return app
 

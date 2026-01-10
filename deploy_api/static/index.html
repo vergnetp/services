@@ -504,15 +504,15 @@
                             <div style="display: flex; gap: 12px;">
                                 <div class="form-group" style="flex: 2;">
                                     <label>App Name *</label>
-                                    <input type="text" id="deploy-name" placeholder="my-app" required pattern="[a-z0-9-]+" title="Lowercase letters, numbers, hyphens only">
+                                    <input type="text" id="deploy-name" placeholder="my-app" required pattern="[a-z0-9-]+" title="Lowercase letters, numbers, hyphens only" onchange="refreshSavedFolders()">
                                 </div>
                                 <div class="form-group" style="flex: 1;">
                                     <label>Project</label>
-                                    <input type="text" id="deploy-project" placeholder="my-project" pattern="[a-z0-9-]*" title="Lowercase letters, numbers, hyphens only">
+                                    <input type="text" id="deploy-project" placeholder="my-project" pattern="[a-z0-9-]*" title="Lowercase letters, numbers, hyphens only" onchange="refreshSavedFolders()">
                                 </div>
                                 <div class="form-group" style="flex: 1;">
                                     <label>Environment</label>
-                                    <select id="deploy-environment">
+                                    <select id="deploy-environment" onchange="refreshSavedFolders()">
                                         <option value="dev">dev</option>
                                         <option value="test">test</option>
                                         <option value="staging">staging</option>
@@ -546,19 +546,24 @@
                             
                             <div id="deploy-source-code">
                                 <div class="form-group">
-                                    <label>Code *</label>
+                                    <label>Build Folders</label>
+                                    <div id="build-folders-list" style="margin-bottom: 8px;">
+                                        <!-- Folders/checklist will be added here dynamically -->
+                                    </div>
                                     <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-                                        <button type="button" class="btn btn-sm" id="btn-select-zip" onclick="selectCodeZip()" style="flex: 1;">
-                                            📦 Select ZIP/tar.gz
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-ghost" id="btn-select-folder" onclick="selectCodeFolder()" style="flex: 1;">
-                                            📁 Select Folder
+                                        <button type="button" class="btn btn-sm" onclick="addBuildFolderUI()" style="flex: 1;">
+                                            ➕ Add Folder
                                         </button>
                                     </div>
-                                    <input type="file" id="deploy-file" accept=".zip,.tar.gz,.tgz" style="display: none;" onchange="onCodeFileSelected(this)">
-                                    <input type="file" id="deploy-folder" webkitdirectory directory multiple style="display: none;" onchange="onCodeFolderSelected(this)">
+                                    <input type="file" id="deploy-folder-picker" webkitdirectory directory multiple style="display: none;">
                                     <div id="code-selection-info" style="padding: 8px; background: var(--bg-input); border-radius: 4px; font-size: 0.85rem; color: var(--text-muted);">
-                                        No code selected
+                                        No folders selected. Add your main service folder and any dependencies.
+                                    </div>
+                                    <div style="margin-top: 8px;">
+                                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.85rem;">
+                                            <input type="checkbox" id="remember-build-folders" checked style="width: auto;">
+                                            Remember folder configuration for this service
+                                        </label>
                                     </div>
                                 </div>
                                 
@@ -604,6 +609,21 @@
                                 <div class="form-group">
                                     <label>Branch</label>
                                     <input type="text" id="deploy-git-branch" value="main" placeholder="main">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label>Folders to Include</label>
+                                    <div id="git-folders-list" style="margin-bottom: 8px;">
+                                        <!-- Git folders will be added here -->
+                                    </div>
+                                    <div style="display: flex; gap: 8px;">
+                                        <input type="text" id="git-folder-input" placeholder="e.g. services/my_api" style="flex: 1;">
+                                        <button type="button" class="btn btn-sm" onclick="addGitFolder(true)">+ Main</button>
+                                        <button type="button" class="btn btn-sm btn-ghost" onclick="addGitFolder(false)">+ Dep</button>
+                                    </div>
+                                    <small style="color: var(--text-muted);">
+                                        Leave empty to use entire repo. Add paths for multi-folder builds (main folder contains Dockerfile).
+                                    </small>
                                 </div>
                                 
                                 <details style="margin-bottom: 16px;">
@@ -1544,7 +1564,7 @@
         // State
         // =============================================================================
         
-        const EXPECTED_AGENT_VERSION = '1.8.3';  // Keep in sync with agent_code.py AGENT_VERSION
+        const EXPECTED_AGENT_VERSION = '1.8.6';  // Keep in sync with agent_code.py AGENT_VERSION
         
         const state = {
             token: getCookie('jwt_token'),
@@ -2686,6 +2706,20 @@
                     el.addEventListener('change', updateDomainPreview);
                 }
             });
+            
+            // Show saved folders hint when service name/project changes
+            ['deploy-name', 'deploy-project'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('change', () => {
+                        const project = document.getElementById('deploy-project').value.trim();
+                        const service = document.getElementById('deploy-name').value.trim();
+                        if (project && service && buildFolders.length === 0) {
+                            showSavedFoldersHint(project, service);
+                        }
+                    });
+                }
+            });
         });
         
         // =============================================================================
@@ -2694,20 +2728,243 @@
         
         let pendingDockerfile = null;  // Stores dockerfile from preview
         let pendingCodeFile = null;    // Stores the file/blob to upload (zip or folder-zipped)
+        let buildFolders = [];         // Array of {name, fileContents, isMain}
+        let gitFolders = [];           // Array of {path, isMain} for git source
+        let pendingFolderCallback = null;  // Callback for folder picker
         
-        function selectCodeZip() {
-            // Reset to ensure onchange fires even for same file
-            document.getElementById('deploy-file').value = '';
-            document.getElementById('deploy-file').click();
+        // =============================================================================
+        // Git Folders Management
+        // =============================================================================
+        
+        function addGitFolder(isMain) {
+            const input = document.getElementById('git-folder-input');
+            const path = input.value.trim();
+            if (!path) {
+                alert('Please enter a folder path');
+                return;
+            }
+            
+            // If adding main and one exists, replace it
+            if (isMain && gitFolders.some(f => f.isMain)) {
+                gitFolders = gitFolders.filter(f => !f.isMain);
+            }
+            
+            // Check for duplicate
+            if (gitFolders.some(f => f.path === path)) {
+                alert('This folder is already added');
+                return;
+            }
+            
+            gitFolders.push({ path, isMain });
+            input.value = '';
+            renderGitFolders();
         }
         
+        function removeGitFolder(index) {
+            gitFolders.splice(index, 1);
+            renderGitFolders();
+        }
+        
+        function renderGitFolders() {
+            const container = document.getElementById('git-folders-list');
+            if (!gitFolders.length) {
+                container.innerHTML = '<div style="padding: 8px; color: var(--text-muted); font-size: 0.85rem;">Using entire repository</div>';
+                return;
+            }
+            
+            container.innerHTML = gitFolders.map((folder, idx) => `
+                <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: var(--bg-input); border-radius: 4px; margin-bottom: 4px;">
+                    <span style="flex: 1;">
+                        ${folder.isMain ? '📁' : '📂'} <strong>${folder.path}</strong>
+                        ${folder.isMain ? '<span class="badge badge-primary" style="margin-left: 8px; font-size: 0.7rem;">MAIN</span>' : '<span class="badge" style="margin-left: 8px; font-size: 0.7rem;">dependency</span>'}
+                    </span>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="removeGitFolder(${idx})" style="padding: 4px 8px;">✕</button>
+                </div>
+            `).join('');
+        }
+        
+        // Initialize git folders display
+        document.addEventListener('DOMContentLoaded', () => {
+            renderGitFolders();
+        });
+        
+        // =============================================================================
+        // Local Folder Selection
+        // =============================================================================
+        
+        function selectCodeZip() {
+            // For backwards compat - treat as single main folder via zip
+            alert('For multi-folder builds, use "Add Main Folder" and "Add Dependency" buttons.\n\nIf you have a pre-assembled zip, you can still deploy via the old method by refreshing the page.');
+        }
+        
+        async function onFolderPicked(input) {
+            const files = Array.from(input.files);
+            if (!files.length || !pendingFolderCallback) return;
+            
+            // Get folder name from first file's path
+            const firstPath = files[0].webkitRelativePath;
+            const folderName = firstPath.split('/')[0];
+            
+            await pendingFolderCallback(files, folderName);
+            pendingFolderCallback = null;
+        }
+        
+        function showDockerfilePreview(fileContents, existingDockerfile) {
+            const preview = document.getElementById('dockerfile-preview');
+            const editor = document.getElementById('dockerfile-editor-preview');
+            const badge = document.getElementById('dockerfile-preview-badge');
+            const mainPort = document.getElementById('deploy-port').value;
+            
+            preview.style.display = 'block';
+            
+            if (existingDockerfile) {
+                editor.value = existingDockerfile;
+                badge.textContent = 'from folder';
+                badge.className = 'badge badge-success';
+            } else {
+                // Use multi-folder generator if we have multiple folders
+                if (buildFolders.length > 1) {
+                    editor.value = generateMultiFolderDockerfile(mainPort);
+                    badge.textContent = 'multi-folder';
+                    badge.className = 'badge badge-info';
+                } else {
+                    const fileList = fileContents.map(f => f.path);
+                    editor.value = generateDockerfileTemplate(fileList, mainPort);
+                    badge.textContent = 'generated';
+                    badge.className = 'badge badge-warning';
+                }
+            }
+            pendingDockerfile = editor.value;
+            parseDockerfileToQuickFields();
+        }
+        
+        function regenerateDockerfile() {
+            // Regenerate Dockerfile based on current folders
+            const editor = document.getElementById('dockerfile-editor-preview');
+            const badge = document.getElementById('dockerfile-preview-badge');
+            const mainPort = document.getElementById('deploy-port').value;
+            
+            if (buildFolders.length > 1) {
+                editor.value = generateMultiFolderDockerfile(mainPort);
+                badge.textContent = 'multi-folder';
+                badge.className = 'badge badge-info';
+            } else if (buildFolders.length === 1) {
+                const mainFolder = buildFolders[0];
+                const fileList = mainFolder.fileContents.map(f => f.path);
+                editor.value = generateDockerfileTemplate(fileList, mainPort);
+                badge.textContent = 'generated';
+                badge.className = 'badge badge-warning';
+            }
+            pendingDockerfile = editor.value;
+            parseDockerfileToQuickFields();
+        }
+        
+        function removeBuildFolder(index) {
+            buildFolders.splice(index, 1);
+            renderBuildFolders();
+            updateCodeSelectionInfo();
+        }
+        
+        function renderBuildFolders() {
+            const container = document.getElementById('build-folders-list');
+            if (!buildFolders.length) {
+                container.innerHTML = '';
+                return;
+            }
+            
+            container.innerHTML = buildFolders.map((folder, idx) => `
+                <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: var(--bg-input); border-radius: 4px; margin-bottom: 4px;">
+                    <span style="flex: 1;">
+                        ${folder.isMain ? '📁' : '📂'} <strong>${folder.name}/</strong>
+                        ${folder.isMain ? '<span class="badge badge-primary" style="margin-left: 8px; font-size: 0.7rem;">MAIN</span>' : '<span class="badge" style="margin-left: 8px; font-size: 0.7rem;">dependency</span>'}
+                        <span style="color: var(--text-muted); font-size: 0.8rem; margin-left: 8px;">${folder.fileCount} files</span>
+                    </span>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="removeBuildFolder(${idx})" style="padding: 4px 8px;">✕</button>
+                </div>
+            `).join('');
+        }
+        
+        function updateCodeSelectionInfo() {
+            const info = document.getElementById('code-selection-info');
+            const hasMain = buildFolders.some(f => f.isMain);
+            const depCount = buildFolders.filter(f => !f.isMain).length;
+            
+            if (!buildFolders.length) {
+                info.innerHTML = 'No folders selected. Add your main service folder and any dependencies.';
+                info.style.color = 'var(--text-muted)';
+                pendingCodeFile = null;
+                return;
+            }
+            
+            if (!hasMain) {
+                info.innerHTML = '⚠️ No main folder selected. Add a main folder (contains Dockerfile).';
+                info.style.color = 'var(--warning)';
+                pendingCodeFile = null;
+                return;
+            }
+            
+            const mainFolder = buildFolders.find(f => f.isMain);
+            let msg = `✓ Main: <strong>${mainFolder.name}/</strong>`;
+            if (depCount > 0) {
+                msg += ` + ${depCount} dependenc${depCount === 1 ? 'y' : 'ies'}`;
+            }
+            info.innerHTML = msg;
+            info.style.color = 'var(--success)';
+        }
+        
+        async function zipBuildFolders() {
+            // Create combined zip with all folders side by side
+            // 
+            // Result:
+            //   /ai_agents_api/      ← main folder (contains Dockerfile)
+            //     requirements.txt
+            //     main.py
+            //   /shared_libs/        ← dependency subfolder
+            //
+            // The Dockerfile should use paths relative to its location.
+            // WORKDIR /app/ai_agents_api then COPY ../shared_libs /app/shared_libs
+            // Or WORKDIR /app and reference ai_agents_api/
+            //
+            const zip = new JSZip();
+            let totalFiles = 0;
+            
+            for (const folder of buildFolders) {
+                for (const {path, content} of folder.fileContents) {
+                    // All folders as subfolders
+                    const zipPath = `${folder.name}/${path}`;
+                    zip.file(zipPath, content);
+                    totalFiles++;
+                    
+                    // DEBUG: Check for version in HTML files
+                    if (path.endsWith('.html') && path.includes('index')) {
+                        const textContent = new TextDecoder().decode(content);
+                        const titleMatch = textContent.match(/<title>([^<]+)<\/title>/i);
+                        if (titleMatch) {
+                            console.log(`📦 ZIP: ${zipPath} has title: "${titleMatch[1]}"`);
+                            appendLog(`📦 Zipping ${path}: title="${titleMatch[1]}"`);
+                        }
+                    }
+                }
+            }
+            
+            // Generate zip blob
+            const zipBlob = await zip.generateAsync({ 
+                type: 'blob',
+                compression: 'DEFLATE',
+                compressionOptions: { level: 6 }
+            });
+            
+            const mainFolder = buildFolders.find(f => f.isMain);
+            return new File([zipBlob], `${mainFolder.name}.zip`, { type: 'application/zip' });
+        }
+        
+        // Legacy function for backwards compat
         function selectCodeFolder() {
-            // Reset to ensure onchange fires even for same folder
-            document.getElementById('deploy-folder').value = '';
-            document.getElementById('deploy-folder').click();
+            addBuildFolder(true);
         }
         
         async function onCodeFileSelected(input) {
+            // Legacy zip upload - treat as pre-assembled
             const file = input.files[0];
             const preview = document.getElementById('dockerfile-preview');
             const editor = document.getElementById('dockerfile-editor-preview');
@@ -2759,96 +3016,217 @@
             }
         }
         
+        // Keep old function name but redirect to new system
         async function onCodeFolderSelected(input) {
-            const files = Array.from(input.files);
-            const preview = document.getElementById('dockerfile-preview');
-            const editor = document.getElementById('dockerfile-editor-preview');
-            const badge = document.getElementById('dockerfile-preview-badge');
-            const info = document.getElementById('code-selection-info');
+            onFolderPicked(input);
+        }
+        
+        // Save build folder config to localStorage (names only, not file contents)
+        function saveBuildFolderConfig(project, service, folders) {
+            const key = `build_folders_${project}_${service}`;
+            const config = folders.map(f => ({ name: f.name, isMain: f.isMain }));
+            localStorage.setItem(key, JSON.stringify(config));
+            console.log('Saved build folder config:', key, config);
+        }
+        
+        // Load saved build folder config (just shows which folders were used before)
+        function loadBuildFolderConfig(project, service) {
+            const key = `build_folders_${project}_${service}`;
+            const saved = localStorage.getItem(key);
+            if (!saved) return null;
+            try {
+                return JSON.parse(saved);
+            } catch (e) {
+                return null;
+            }
+        }
+        
+        // Show hint about previously used folders
+        let savedFolderChecklist = [];  // Track which saved folders have been selected
+        let pendingExpectedFolder = null;  // Expected folder name when clicking checklist item
+        
+        function refreshSavedFolders() {
+            // Called when project/service/env changes - reload saved folder config
+            const project = document.getElementById('deploy-project').value.trim();
+            const service = document.getElementById('deploy-name').value.trim();
+            if (!project || !service) return;
             
-            if (!files.length) {
-                preview.style.display = 'none';
-                pendingDockerfile = null;
-                pendingCodeFile = null;
-                info.innerHTML = 'No code selected';
+            // Clear current state and reload
+            savedFolderChecklist = [];
+            showSavedFoldersHint(project, service);
+        }
+        
+        function showSavedFoldersHint(project, service) {
+            const saved = loadBuildFolderConfig(project, service);
+            if (!saved || !saved.length) {
+                savedFolderChecklist = [];
+                renderBuildFolders();
                 return;
             }
             
-            // Show loading state
-            info.innerHTML = `📁 Zipping ${files.length} files...`;
-            preview.style.display = 'block';
-            editor.value = 'Zipping folder...';
-            badge.textContent = 'zipping';
-            badge.className = 'badge badge-info';
+            // Initialize checklist state
+            savedFolderChecklist = saved.map(f => ({ ...f, selected: false }));
+            renderFolderChecklist();
+        }
+        
+        function renderFolderChecklist() {
+            const container = document.getElementById('build-folders-list');
+            const info = document.getElementById('code-selection-info');
             
-            try {
-                // Get folder name from first file's path
-                const firstPath = files[0].webkitRelativePath;
-                const folderName = firstPath.split('/')[0];
+            if (!savedFolderChecklist.length) {
+                renderBuildFolders();
+                return;
+            }
+            
+            // Check which saved folders have been selected
+            for (const item of savedFolderChecklist) {
+                item.selected = buildFolders.some(f => f.name === item.name);
+            }
+            
+            const allSelected = savedFolderChecklist.every(f => f.selected);
+            
+            if (allSelected && buildFolders.length > 0) {
+                // All done - show normal folder view
+                renderBuildFolders();
+                updateCodeSelectionInfo();
+                return;
+            }
+            
+            // Show checklist with clickable items
+            let html = '<div style="margin-bottom: 8px; font-size: 0.85rem; color: var(--text-muted);">📋 Previous deploy folders (click to select):</div>';
+            
+            for (const item of savedFolderChecklist) {
+                const icon = item.selected ? '✅' : '📁';
+                const selectedStyle = item.selected 
+                    ? 'opacity: 0.7;' 
+                    : 'cursor: pointer;';
+                const badge = item.isMain 
+                    ? '<span class="badge badge-primary" style="margin-left: 8px; font-size: 0.65rem;">MAIN</span>' 
+                    : '<span class="badge" style="margin-left: 8px; font-size: 0.65rem;">dep</span>';
                 
-                // Create zip from folder contents
-                const zip = new JSZip();
+                const onclick = item.selected ? '' : `onclick="selectExpectedFolder('${item.name}', ${item.isMain})"`;
+                const hoverClass = item.selected ? '' : 'class="folder-checklist-item"';
                 
-                // Track files for dockerfile detection
-                const fileList = [];
+                html += `<div ${hoverClass} style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-input); border-radius: 4px; margin-bottom: 4px; ${selectedStyle}" ${onclick}>
+                    <span>${icon}</span>
+                    <span style="flex: 1;"><strong>${item.name}/</strong>${badge}</span>
+                    ${item.selected ? '<span style="color: var(--success); font-size: 0.75rem;">✓ loaded</span>' : '<span style="font-size: 0.75rem; color: var(--primary);">click to select</span>'}
+                </div>`;
+            }
+            
+            // Add style for hover effect
+            if (!document.getElementById('folder-checklist-style')) {
+                const style = document.createElement('style');
+                style.id = 'folder-checklist-style';
+                style.textContent = '.folder-checklist-item:hover { background: var(--primary-light) !important; }';
+                document.head.appendChild(style);
+            }
+            
+            container.innerHTML = html;
+            
+            const remaining = savedFolderChecklist.filter(f => !f.selected).length;
+            if (remaining > 0) {
+                info.innerHTML = `<span style="color: var(--warning);">⚠️ ${remaining} folder${remaining > 1 ? 's' : ''} remaining</span>`;
+            } else {
+                updateCodeSelectionInfo();
+            }
+        }
+        
+        function selectExpectedFolder(expectedName, isMain) {
+            // Store expected folder and trigger picker
+            pendingExpectedFolder = { name: expectedName, isMain };
+            triggerFolderPicker(isMain);
+        }
+        
+        function addBuildFolderUI() {
+            // Generic add folder - first one is main, rest are deps
+            const isMain = !buildFolders.some(f => f.isMain);
+            pendingExpectedFolder = null;
+            triggerFolderPicker(isMain);
+        }
+        
+        function triggerFolderPicker(isMain) {
+            pendingFolderCallback = async (files, folderName) => {
+                // Check if we expected a specific folder
+                if (pendingExpectedFolder && folderName !== pendingExpectedFolder.name) {
+                    if (!confirm(`Expected "${pendingExpectedFolder.name}" but you selected "${folderName}".\n\nUse "${folderName}" instead?`)) {
+                        pendingExpectedFolder = null;
+                        return;
+                    }
+                    // User confirmed different folder - use its isMain based on expected
+                    isMain = pendingExpectedFolder.isMain;
+                }
+                pendingExpectedFolder = null;
+                
+                // Check if folder with same name exists - replace silently
+                const existing = buildFolders.findIndex(f => f.name === folderName);
+                if (existing >= 0) {
+                    buildFolders.splice(existing, 1);
+                }
+                
+                // If this is main and we already have one, replace it
+                if (isMain && buildFolders.some(f => f.isMain)) {
+                    buildFolders = buildFolders.filter(f => !f.isMain);
+                }
+                
+                // Read file contents immediately
+                const info = document.getElementById('code-selection-info');
+                info.innerHTML = `📁 Reading ${folderName}/...`;
+                
+                const fileContents = [];
                 let existingDockerfile = null;
                 
                 for (const file of files) {
-                    // Get path relative to selected folder (remove folder prefix)
                     const relativePath = file.webkitRelativePath.split('/').slice(1).join('/');
-                    if (!relativePath) continue;  // Skip root folder entry
-                    
-                    // Skip common ignore patterns
+                    if (!relativePath) continue;
                     if (shouldIgnoreFile(relativePath)) continue;
                     
-                    fileList.push(relativePath);
-                    
-                    // Check for Dockerfile
-                    if (relativePath === 'Dockerfile' || relativePath.toLowerCase() === 'dockerfile') {
-                        existingDockerfile = await file.text();
+                    try {
+                        const content = await file.arrayBuffer();
+                        fileContents.push({ path: relativePath, content });
+                        
+                        // DEBUG: Check for version in HTML files when reading
+                        if (relativePath.endsWith('.html') && relativePath.includes('index')) {
+                            const textContent = new TextDecoder().decode(content);
+                            const titleMatch = textContent.match(/<title>([^<]+)<\/title>/i);
+                            if (titleMatch) {
+                                console.log(`📂 READ: ${relativePath} has title: "${titleMatch[1]}"`);
+                                // Show in UI too
+                                info.innerHTML = `📂 Read ${relativePath}: title="${titleMatch[1]}"`;
+                            }
+                        }
+                        
+                        if (isMain && (relativePath === 'Dockerfile' || relativePath.toLowerCase() === 'dockerfile')) {
+                            existingDockerfile = await file.text();
+                        }
+                    } catch (e) {
+                        console.warn(`Failed to read ${relativePath}:`, e);
                     }
-                    
-                    // Add file to zip
-                    const content = await file.arrayBuffer();
-                    zip.file(relativePath, content);
                 }
                 
-                // Generate zip blob
-                const zipBlob = await zip.generateAsync({ 
-                    type: 'blob',
-                    compression: 'DEFLATE',
-                    compressionOptions: { level: 6 }
-                });
+                buildFolders.push({ name: folderName, fileContents, fileCount: fileContents.length, isMain });
                 
-                // Create a File object from blob (for form upload)
-                pendingCodeFile = new File([zipBlob], `${folderName}.zip`, { type: 'application/zip' });
-                
-                const sizeMB = (pendingCodeFile.size / 1024 / 1024).toFixed(2);
-                const fileCount = fileList.length;
-                info.innerHTML = `📁 <strong>${folderName}/</strong> → ${fileCount} files (${sizeMB} MB zipped)`;
-                
-                // Get port from main form
-                const mainPort = document.getElementById('deploy-port').value;
-                
-                // Set dockerfile
-                if (existingDockerfile) {
-                    editor.value = existingDockerfile;
-                    badge.textContent = 'from folder';
-                    badge.className = 'badge badge-success';
+                // Update UI
+                if (savedFolderChecklist.length > 0) {
+                    renderFolderChecklist();
                 } else {
-                    editor.value = generateDockerfileTemplate(fileList, mainPort);
-                    badge.textContent = 'generated';
-                    badge.className = 'badge badge-warning';
+                    renderBuildFolders();
                 }
-                pendingDockerfile = editor.value;
-                parseDockerfileToQuickFields();
+                updateCodeSelectionInfo();
                 
-            } catch (e) {
-                console.error('Error zipping folder:', e);
-                info.innerHTML = `❌ Error: ${e.message}`;
-                pendingCodeFile = null;
-                pendingDockerfile = null;
-            }
+                if (isMain) {
+                    // Main folder - show dockerfile (will use single or multi-folder based on count)
+                    showDockerfilePreview(fileContents, existingDockerfile);
+                } else if (buildFolders.length > 1) {
+                    // Dependency added - regenerate dockerfile to include its requirements
+                    regenerateDockerfile();
+                }
+            };
+            
+            const picker = document.getElementById('deploy-folder-picker');
+            picker.value = '';
+            picker.onchange = (e) => onFolderPicked(e.target);
+            picker.click();
         }
         
         function shouldIgnoreFile(path) {
@@ -3033,6 +3411,212 @@
         }
         
         function generateDockerfileTemplate(files, port = '8000') {
+            // For single folder uploads (legacy)
+            return generateDockerfileForFiles(files, null, port);
+        }
+        
+        function generateMultiFolderDockerfile(port = '8000') {
+            // Generate Dockerfile for multi-folder builds
+            // Scans all buildFolders to find dependencies and entry points
+            
+            if (!buildFolders.length) return generateDockerfileTemplate([], port);
+            
+            const mainFolder = buildFolders.find(f => f.isMain);
+            if (!mainFolder) return generateDockerfileTemplate([], port);
+            
+            // Collect all files with folder prefixes
+            const allFiles = [];
+            const folderDeps = {}; // { folderName: { hasRequirements, hasPackageJson, ... } }
+            
+            for (const folder of buildFolders) {
+                folderDeps[folder.name] = {
+                    hasRequirements: false,
+                    hasPackageJson: false,
+                    hasPyProject: false,
+                    hasGoMod: false
+                };
+                
+                for (const {path} of folder.fileContents) {
+                    allFiles.push(`${folder.name}/${path}`);
+                    const fileName = path.split('/').pop().toLowerCase();
+                    
+                    // Only check root-level dependency files
+                    if (!path.includes('/')) {
+                        if (fileName === 'requirements.txt') folderDeps[folder.name].hasRequirements = true;
+                        if (fileName === 'package.json') folderDeps[folder.name].hasPackageJson = true;
+                        if (fileName === 'pyproject.toml') folderDeps[folder.name].hasPyProject = true;
+                        if (fileName === 'go.mod') folderDeps[folder.name].hasGoMod = true;
+                    }
+                }
+            }
+            
+            // Detect primary language from main folder
+            const mainDeps = folderDeps[mainFolder.name];
+            const mainFiles = mainFolder.fileContents.map(f => f.path.toLowerCase());
+            const hasPythonFiles = mainFiles.some(f => f.endsWith('.py'));
+            const hasJsFiles = mainFiles.some(f => f.endsWith('.js') || f.endsWith('.ts'));
+            
+            // Find entry point in main folder
+            let entryPoint = `${mainFolder.name}.main:app`;
+            for (const {path} of mainFolder.fileContents) {
+                const fileName = path.split('/').pop().toLowerCase();
+                if (['main.py', 'app.py', 'api.py', 'server.py'].includes(fileName)) {
+                    entryPoint = `${mainFolder.name}.${fileName.replace('.py', '')}:app`;
+                    break;
+                }
+            }
+            
+            // === PYTHON ===
+            if (hasPythonFiles || mainDeps.hasRequirements || mainDeps.hasPyProject) {
+                // Get folders with requirements
+                const foldersWithReqs = Object.entries(folderDeps)
+                    .filter(([_, deps]) => deps.hasRequirements)
+                    .map(([name, _]) => name);
+                
+                let dockerfile = `FROM python:3.11-slim
+WORKDIR /app
+`;
+                
+                if (foldersWithReqs.length > 0) {
+                    // CACHE-FRIENDLY: Copy requirements.txt files FIRST
+                    dockerfile += `
+# Copy only requirements first (for Docker cache efficiency)`;
+                    for (const folderName of foldersWithReqs) {
+                        dockerfile += `
+COPY ${folderName}/requirements.txt /app/${folderName}/requirements.txt`;
+                    }
+                    
+                    // Install deps (cached layer if requirements unchanged)
+                    dockerfile += `
+
+# Install dependencies (cached if requirements unchanged)`;
+                    for (const folderName of foldersWithReqs) {
+                        dockerfile += `
+RUN pip install --no-cache-dir -r ${folderName}/requirements.txt`;
+                    }
+                    
+                    // NOW copy all code (only this layer busts on code changes)
+                    dockerfile += `
+
+# Copy all code (this layer rebuilds on code changes, but pip is cached)
+COPY . /app/`;
+                } else if (mainDeps.hasPyProject) {
+                    dockerfile += `
+# Copy all folders
+COPY . /app/
+
+# Install from pyproject.toml
+RUN pip install --no-cache-dir -e ${mainFolder.name}/`;
+                } else {
+                    dockerfile += `
+# Copy all folders
+COPY . /app/
+
+# No requirements.txt found - add: RUN pip install --no-cache-dir <packages>`;
+                }
+                
+                dockerfile += `
+
+# Set PYTHONPATH so imports work across folders
+ENV PYTHONPATH=/app
+
+EXPOSE ${port}
+CMD ["uvicorn", "${entryPoint}", "--host", "0.0.0.0", "--port", "${port}"]`;
+                return dockerfile;
+            }
+            
+            // === NODE.JS ===
+            if (hasJsFiles || mainDeps.hasPackageJson) {
+                const foldersWithPkg = Object.entries(folderDeps)
+                    .filter(([_, deps]) => deps.hasPackageJson)
+                    .map(([name, _]) => name);
+                
+                let dockerfile = `FROM node:20-alpine
+WORKDIR /app
+`;
+                
+                if (foldersWithPkg.length > 0) {
+                    // CACHE-FRIENDLY: Copy package.json files FIRST
+                    dockerfile += `
+# Copy only package.json files first (for Docker cache efficiency)`;
+                    for (const folderName of foldersWithPkg) {
+                        dockerfile += `
+COPY ${folderName}/package*.json /app/${folderName}/`;
+                    }
+                    
+                    // Install deps (cached layer if package.json unchanged)
+                    dockerfile += `
+
+# Install dependencies (cached if package.json unchanged)`;
+                    for (const folderName of foldersWithPkg) {
+                        dockerfile += `
+RUN cd /app/${folderName} && npm install --production`;
+                    }
+                    
+                    // NOW copy all code
+                    dockerfile += `
+
+# Copy all code (this layer rebuilds on code changes, but npm install is cached)
+COPY . /app/`;
+                } else {
+                    dockerfile += `
+# Copy all folders
+COPY . /app/
+
+# No package.json found - add: RUN npm install <packages>`;
+                }
+                
+                // Find start script or main file
+                let startCmd = 'npm start';
+                for (const {path} of mainFolder.fileContents) {
+                    const fileName = path.split('/').pop().toLowerCase();
+                    if (['index.js', 'server.js', 'app.js', 'main.js'].includes(fileName)) {
+                        startCmd = `node ${mainFolder.name}/${fileName}`;
+                        break;
+                    }
+                }
+                
+                dockerfile += `
+
+# Set NODE_PATH so requires work across folders
+ENV NODE_PATH=/app
+
+WORKDIR /app/${mainFolder.name}
+EXPOSE ${port}
+CMD ["${startCmd.split(' ')[0]}", "${startCmd.split(' ').slice(1).join('", "')}"]`;
+                return dockerfile;
+            }
+            
+            // === GO ===
+            if (mainDeps.hasGoMod) {
+                let dockerfile = `FROM golang:1.21-alpine
+WORKDIR /app
+
+# Copy all folders
+COPY . /app/
+
+# Download dependencies
+RUN cd ${mainFolder.name} && go mod download
+
+# Build
+RUN cd ${mainFolder.name} && go build -o /app/main .
+
+EXPOSE ${port}
+CMD ["/app/main"]`;
+                return dockerfile;
+            }
+            
+            // === DEFAULT ===
+            return `FROM python:3.11-slim
+WORKDIR /app
+COPY . /app/
+ENV PYTHONPATH=/app
+EXPOSE ${port}
+CMD ["python", "${mainFolder.name}/main.py"]`;
+        }
+        
+        function generateDockerfileForFiles(files, mainFolderName, port = '8000') {
+            // Original logic for single-folder or legacy uploads
             const fileNames = files.map(f => f.split('/').pop().toLowerCase());
             const filePaths = files.map(f => f.toLowerCase());
             
@@ -3780,8 +4364,22 @@ CMD ["python", "main.py"]`;
                 
                 // Source-specific data
                 if (sourceType === 'code') {
-                    // Use pendingCodeFile (from zip OR from folder-zipped)
-                    if (!pendingCodeFile) throw new Error('Please select a code file or folder');
+                    // If using multi-folder system, zip them together
+                    let codeFile = pendingCodeFile;
+                    if (!codeFile && buildFolders.length > 0) {
+                        if (!buildFolders.some(f => f.isMain)) {
+                            throw new Error('Please add a main folder (contains Dockerfile)');
+                        }
+                        log('📦 Zipping folders...');
+                        codeFile = await zipBuildFolders();
+                        
+                        // Save folder config if checkbox checked
+                        if (document.getElementById('remember-build-folders')?.checked) {
+                            saveBuildFolderConfig(project, name, buildFolders);
+                        }
+                    }
+                    
+                    if (!codeFile) throw new Error('Please select code folders');
                     
                     // Get dockerfile
                     const dockerfile = pendingDockerfile || document.getElementById('dockerfile-editor-preview')?.value;
@@ -3789,8 +4387,8 @@ CMD ["python", "main.py"]`;
                     formData.append('dockerfile', dockerfile);
                     
                     // Add file directly (no base64!)
-                    formData.append('code_tar', pendingCodeFile);
-                    uploadFile = pendingCodeFile;
+                    formData.append('code_tar', codeFile);
+                    uploadFile = codeFile;
                     
                 } else if (sourceType === 'git') {
                     formData.append('git_url', document.getElementById('deploy-git-url').value);
@@ -3798,6 +4396,11 @@ CMD ["python", "main.py"]`;
                     const gitToken = document.getElementById('deploy-git-token').value;
                     if (gitToken) formData.append('git_token', gitToken);
                     if (!document.getElementById('deploy-git-url').value) throw new Error('Please enter a Git repository URL');
+                    
+                    // Add git folders if specified
+                    if (gitFolders.length > 0) {
+                        formData.append('git_folders', JSON.stringify(gitFolders));
+                    }
                     
                 } else if (sourceType === 'image') {
                     formData.append('image', document.getElementById('deploy-image').value);

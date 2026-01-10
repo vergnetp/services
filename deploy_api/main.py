@@ -15,7 +15,7 @@ All infrastructure config is in manifest.yaml:
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from shared_libs.backend.app_kernel import CacheBustedStaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 
 from shared_libs.backend.app_kernel import (
@@ -111,7 +111,16 @@ def create_app() -> FastAPI:
     
     # Mount static files
     if STATIC_DIR.exists():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+        app.mount("/static", CacheBustedStaticFiles(directory=str(STATIC_DIR)), name="static")
+    
+    # Cache-busting headers for HTML responses
+    NO_CACHE_HEADERS = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'CDN-Cache-Control': 'no-store',
+        'Cloudflare-CDN-Cache-Control': 'no-store',
+    }
     
     # Serve UI at root
     @app.get("/", response_class=HTMLResponse)
@@ -119,7 +128,7 @@ def create_app() -> FastAPI:
         """Serve the deploy dashboard UI."""
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
-            return FileResponse(index_file)
+            return FileResponse(index_file, headers=NO_CACHE_HEADERS)
         return HTMLResponse("<h1>Deploy API</h1><p>UI not found. API available at /docs</p>")
     
     # Serve infra test page
@@ -128,7 +137,7 @@ def create_app() -> FastAPI:
         """Serve the infra test console."""
         test_file = STATIC_DIR / "infra-test.html"
         if test_file.exists():
-            return FileResponse(test_file)
+            return FileResponse(test_file, headers=NO_CACHE_HEADERS)
         return HTMLResponse("<h1>Infra Test</h1><p>Test page not found.</p>")
     
     return app

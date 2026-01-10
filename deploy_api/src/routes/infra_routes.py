@@ -2289,13 +2289,29 @@ async def upload_code(
         zip_buffer = io.BytesIO(content)
         tar_buffer = io.BytesIO()
         
+        # Use current time for all files so Docker detects changes
+        import time
+        current_time = time.time()
+        
         with zipfile.ZipFile(zip_buffer, 'r') as zf:
             with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tf:
                 for zip_info in zf.infolist():
                     name = zip_info.filename
                     
-                    # Create tar info
+                    # DEBUG: Check for version in HTML files
+                    if name.endswith('.html') and 'index' in name:
+                        try:
+                            html_content = zf.read(name).decode('utf-8', errors='ignore')
+                            import re
+                            title_match = re.search(r'<title>([^<]+)</title>', html_content, re.IGNORECASE)
+                            if title_match:
+                                print(f"[DEBUG] SERVER ZIP: {name} has title: {title_match.group(1)}")
+                        except:
+                            pass
+                    
+                    # Create tar info with CURRENT timestamp (critical for Docker cache busting)
                     tar_info = tarfile.TarInfo(name=name)
+                    tar_info.mtime = current_time  # Docker uses mtime to detect changes!
                     
                     if zip_info.is_dir():
                         # Directory entry
@@ -2378,6 +2394,7 @@ class UnifiedDeployRequest(BaseModel):
     git_url: Optional[str] = None
     git_branch: str = "main"
     git_token: Optional[str] = None
+    git_folders: Optional[List[Dict[str, Any]]] = None  # [{path: str, isMain: bool}]
     
     # For image source (registry pull)
     image: Optional[str] = None
@@ -2691,6 +2708,7 @@ async def deploy_multipart(
     git_url = form.get("git_url")
     git_branch = form.get("git_branch", "main")
     git_token = form.get("git_token")
+    git_folders_str = form.get("git_folders")
     image = form.get("image")
     server_ips = form.get("server_ips", "[]")
     
@@ -2699,6 +2717,7 @@ async def deploy_multipart(
         env_vars_dict = json_mod.loads(env_vars) if env_vars else {}
         tags_list = json_mod.loads(tags) if tags else []
         server_ips_list = json_mod.loads(server_ips) if server_ips else []
+        git_folders = json_mod.loads(git_folders_str) if git_folders_str else None
     except json_mod.JSONDecodeError as e:
         raise HTTPException(400, f"Invalid JSON in form field: {e}")
     
@@ -2783,6 +2802,7 @@ async def deploy_multipart(
                 git_url=git_url,
                 git_branch=git_branch,
                 git_token=git_token,
+                git_folders=git_folders,
                 image=image,
                 server_ips=all_server_ips,
                 new_server_count=0,  # Already provisioned above

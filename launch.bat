@@ -64,21 +64,21 @@ echo REDIS_URL=%REDIS_URL%
 echo.
 
 REM ---- START REDIS (Docker) ----
-echo Checking Redis...
-docker ps --filter "name=redis" --format "{{.Names}}" 2>nul | findstr redis >nul
-if %ERRORLEVEL% NEQ 0 (
-    docker ps -a --filter "name=redis" --format "{{.Names}}" 2>nul | findstr redis >nul
-    if %ERRORLEVEL% EQU 0 (
-        docker start redis
-    ) else (
-        docker run -d --name redis -p 6379:6379 redis:7
-    )
-) else (
-    echo Redis running.
-)
+REM echo Checking Redis...
+REM docker ps --filter "name=redis" --format "{{.Names}}" 2>nul | findstr redis >nul
+REM if %ERRORLEVEL% NEQ 0 (
+REM     docker ps -a --filter "name=redis" --format "{{.Names}}" 2>nul | findstr redis >nul
+REM     if %ERRORLEVEL% EQU 0 (
+REM         docker start redis
+REM     ) else (
+REM         docker run -d --name redis -p 6379:6379 redis:7
+REM     )
+REM ) else (
+REM     echo Redis running.
+REM )
 
-echo.
-timeout /t 2 >nul
+REM echo.
+REM timeout /t 2 >nul
 
 REM ---- START API ----
 echo Starting API...
