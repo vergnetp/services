@@ -546,8 +546,20 @@
                             
                             <div id="deploy-source-code">
                                 <div class="form-group">
-                                    <label>Code (zip or tar.gz) *</label>
-                                    <input type="file" id="deploy-file" accept=".zip,.tar.gz,.tgz" onchange="onCodeFileSelected(this)">
+                                    <label>Code *</label>
+                                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                                        <button type="button" class="btn btn-sm" id="btn-select-zip" onclick="selectCodeZip()" style="flex: 1;">
+                                            📦 Select ZIP/tar.gz
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-ghost" id="btn-select-folder" onclick="selectCodeFolder()" style="flex: 1;">
+                                            📁 Select Folder
+                                        </button>
+                                    </div>
+                                    <input type="file" id="deploy-file" accept=".zip,.tar.gz,.tgz" style="display: none;" onchange="onCodeFileSelected(this)">
+                                    <input type="file" id="deploy-folder" webkitdirectory directory multiple style="display: none;" onchange="onCodeFolderSelected(this)">
+                                    <div id="code-selection-info" style="padding: 8px; background: var(--bg-input); border-radius: 4px; font-size: 0.85rem; color: var(--text-muted);">
+                                        No code selected
+                                    </div>
                                 </div>
                                 
                                 <!-- Dockerfile Preview (shown after file selected) -->
@@ -1018,6 +1030,19 @@
                     <div id="arch-matrix" style="overflow-x: auto;">
                         <div class="empty-state" style="padding: 20px; text-align: center;">
                             <p style="color: var(--text-muted);">Connection data will appear here</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Traffic Flow Visualization -->
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">🚦 Traffic Flow</span>
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Request path from client to container</span>
+                    </div>
+                    <div id="arch-traffic-flow" style="padding: 16px;">
+                        <div class="empty-state" style="padding: 20px; text-align: center;">
+                            <p style="color: var(--text-muted);">Traffic flow will appear here</p>
                         </div>
                     </div>
                 </div>
@@ -1710,6 +1735,7 @@
                 renderServersList();
                 renderInfrastructure();
                 renderConnectionMatrix();
+                renderTrafficFlow();
                 
                 // Also update filters
                 loadArchitectureProjects();
@@ -2203,6 +2229,156 @@
             container.innerHTML = html;
         }
         
+        function renderTrafficFlow() {
+            const container = document.getElementById('arch-traffic-flow');
+            
+            if (archState.nodes.length === 0) {
+                container.innerHTML = '<div class="empty-state" style="padding: 20px; text-align: center;"><p style="color: var(--text-muted);">Deploy services to see traffic flow</p></div>';
+                return;
+            }
+            
+            // Group nodes by service for traffic flow display
+            let html = '';
+            
+            archState.nodes.forEach(node => {
+                const servers = node.servers || [];
+                const hasMultipleServers = servers.length > 1;
+                const hasDomain = node.domain;
+                
+                // Service card
+                html += `
+                <div style="margin-bottom: 24px; background: var(--bg-input); border-radius: 12px; padding: 16px; border: 1px solid var(--border);">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+                        <span style="font-size: 1.2rem;">${node.type === 'stateful' ? '🗄️' : '⚙️'}</span>
+                        <span style="font-weight: 600; font-size: 1.1rem;">${node.service}</span>
+                        <span class="badge" style="background: ${node.env === 'prod' ? 'var(--success)' : node.env === 'staging' ? 'var(--warning)' : 'var(--primary)'}; font-size: 0.7rem;">${node.env}</span>
+                        ${hasDomain ? `<span style="font-size: 0.8rem; color: var(--text-muted);">• ${node.domain}</span>` : ''}
+                    </div>
+                    
+                    <!-- Traffic Flow Diagram -->
+                    <div style="display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 8px 0;">
+                        
+                        <!-- Client -->
+                        <div style="display: flex; flex-direction: column; align-items: center; min-width: 80px;">
+                            <div style="width: 50px; height: 50px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.5rem;">
+                                👤
+                            </div>
+                            <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Client</span>
+                        </div>
+                        
+                        <!-- Arrow -->
+                        <div style="display: flex; align-items: center; padding: 0 8px;">
+                            <div style="width: 40px; height: 2px; background: linear-gradient(90deg, #6366f1, #f59e0b);"></div>
+                            <div style="width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid #f59e0b;"></div>
+                        </div>
+                        
+                        ${hasDomain ? `
+                        <!-- Cloudflare -->
+                        <div style="display: flex; flex-direction: column; align-items: center; min-width: 100px;">
+                            <div style="width: 50px; height: 50px; background: linear-gradient(135deg, #f59e0b, #f97316); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.2rem;">
+                                ☁️
+                            </div>
+                            <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Cloudflare</span>
+                            <span style="font-size: 0.65rem; color: var(--primary);">${node.domain}</span>
+                        </div>
+                        
+                        <!-- Arrow -->
+                        <div style="display: flex; align-items: center; padding: 0 8px;">
+                            <div style="width: 30px; height: 2px; background: linear-gradient(90deg, #f59e0b, #10b981);"></div>
+                            <div style="width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid #10b981;"></div>
+                        </div>
+                        ` : ''}
+                        
+                        <!-- Servers (Load Balanced if multiple) -->
+                        <div style="display: flex; flex-direction: column; align-items: center; ${hasMultipleServers ? 'min-width: 200px;' : 'min-width: 120px;'}">
+                            ${hasMultipleServers ? `
+                            <div style="font-size: 0.7rem; color: var(--success); margin-bottom: 4px;">⚖️ Load Balanced</div>
+                            ` : ''}
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+                                ${servers.map((server, idx) => `
+                                <div style="display: flex; flex-direction: column; align-items: center;">
+                                    <div style="width: 50px; height: 50px; background: linear-gradient(135deg, #10b981, #059669); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.2rem; position: relative;">
+                                        🖥️
+                                        ${server.nginx_status === 'running' ? `<div style="position: absolute; bottom: -4px; right: -4px; width: 14px; height: 14px; background: var(--success); border-radius: 50%; border: 2px solid var(--bg-card); font-size: 8px; display: flex; align-items: center; justify-content: center;">✓</div>` : ''}
+                                    </div>
+                                    <span style="font-size: 0.65rem; color: var(--text-muted); margin-top: 4px; font-family: monospace;">${server.ip}</span>
+                                    <span style="font-size: 0.6rem; color: var(--primary);">:443</span>
+                                </div>
+                                `).join('')}
+                            </div>
+                            <span style="font-size: 0.7rem; color: var(--text-muted); margin-top: 6px;">nginx vhost</span>
+                        </div>
+                        
+                        <!-- Arrow to containers -->
+                        <div style="display: flex; align-items: center; padding: 0 8px;">
+                            <div style="width: 30px; height: 2px; background: linear-gradient(90deg, #10b981, #3b82f6);"></div>
+                            <div style="width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid #3b82f6;"></div>
+                        </div>
+                        
+                        <!-- Containers -->
+                        <div style="display: flex; flex-direction: column; align-items: center; min-width: 140px;">
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+                                ${servers.map((server, idx) => `
+                                <div style="display: flex; flex-direction: column; align-items: center;">
+                                    <div style="width: 50px; height: 50px; background: linear-gradient(135deg, #3b82f6, #2563eb); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.2rem;">
+                                        🐳
+                                    </div>
+                                    <span style="font-size: 0.6rem; color: var(--text-muted); margin-top: 4px; font-family: monospace; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${node.container_name || node.id}</span>
+                                    <span style="font-size: 0.6rem; color: var(--primary);">:${server.container_port || node.host_port || '?'}</span>
+                                    ${node.container_port && node.host_port && node.container_port !== node.host_port ? `
+                                    <span style="font-size: 0.55rem; color: var(--text-muted);">→ app :${node.container_port}</span>
+                                    ` : ''}
+                                </div>
+                                `).join('')}
+                            </div>
+                            <span style="font-size: 0.7rem; color: var(--text-muted); margin-top: 6px;">Docker containers</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Connection details -->
+                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.8rem;">
+                        <div style="display: flex; flex-wrap: wrap; gap: 16px;">
+                            ${hasDomain ? `
+                            <div>
+                                <span style="color: var(--text-muted);">Domain:</span>
+                                <a href="https://${node.domain}" target="_blank" style="color: var(--primary); margin-left: 4px;">${node.domain}</a>
+                            </div>
+                            ` : ''}
+                            <div>
+                                <span style="color: var(--text-muted);">Sidecar port:</span>
+                                <code style="background: var(--bg-card); padding: 2px 6px; border-radius: 4px; margin-left: 4px;">localhost:${node.internal_port || '?'}</code>
+                            </div>
+                            ${node.host_port ? `
+                            <div>
+                                <span style="color: var(--text-muted);">Host port:</span>
+                                <code style="background: var(--bg-card); padding: 2px 6px; border-radius: 4px; margin-left: 4px;">${node.host_port}</code>
+                            </div>
+                            ` : ''}
+                            ${node.container_port ? `
+                            <div>
+                                <span style="color: var(--text-muted);">App port:</span>
+                                <code style="background: var(--bg-card); padding: 2px 6px; border-radius: 4px; margin-left: 4px;">${node.container_port}</code>
+                            </div>
+                            ` : ''}
+                            <div>
+                                <span style="color: var(--text-muted);">Container:</span>
+                                <code style="background: var(--bg-card); padding: 2px 6px; border-radius: 4px; margin-left: 4px;">${node.container_name || node.id}</code>
+                            </div>
+                            ${servers.length > 0 ? `
+                            <div>
+                                <span style="color: var(--text-muted);">Direct access:</span>
+                                ${servers.map(s => `<a href="http://${s.ip}:${s.container_port || node.host_port || 8000}" target="_blank" style="color: var(--text-muted); margin-left: 4px; font-family: monospace; font-size: 0.75rem;">${s.ip}:${s.container_port || node.host_port || '?'}</a>`).join(', ')}
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
+                `;
+            });
+            
+            container.innerHTML = html || '<div class="empty-state" style="padding: 20px; text-align: center;"><p style="color: var(--text-muted);">No services to display</p></div>';
+        }
+        
         async function fixMissingNginx() {
             // Get servers missing nginx
             const missingServers = archState.servers
@@ -2517,18 +2693,39 @@
         // =============================================================================
         
         let pendingDockerfile = null;  // Stores dockerfile from preview
+        let pendingCodeFile = null;    // Stores the file/blob to upload (zip or folder-zipped)
+        
+        function selectCodeZip() {
+            // Reset to ensure onchange fires even for same file
+            document.getElementById('deploy-file').value = '';
+            document.getElementById('deploy-file').click();
+        }
+        
+        function selectCodeFolder() {
+            // Reset to ensure onchange fires even for same folder
+            document.getElementById('deploy-folder').value = '';
+            document.getElementById('deploy-folder').click();
+        }
         
         async function onCodeFileSelected(input) {
             const file = input.files[0];
             const preview = document.getElementById('dockerfile-preview');
             const editor = document.getElementById('dockerfile-editor-preview');
             const badge = document.getElementById('dockerfile-preview-badge');
+            const info = document.getElementById('code-selection-info');
             
             if (!file) {
                 preview.style.display = 'none';
                 pendingDockerfile = null;
+                pendingCodeFile = null;
+                info.innerHTML = 'No code selected';
                 return;
             }
+            
+            // Store the file for upload
+            pendingCodeFile = file;
+            const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+            info.innerHTML = `📦 <strong>${file.name}</strong> (${sizeMB} MB)`;
             
             preview.style.display = 'block';
             editor.value = 'Reading archive...';
@@ -2560,6 +2757,127 @@
                 badge.className = 'badge badge-info';
                 pendingDockerfile = editor.value;
             }
+        }
+        
+        async function onCodeFolderSelected(input) {
+            const files = Array.from(input.files);
+            const preview = document.getElementById('dockerfile-preview');
+            const editor = document.getElementById('dockerfile-editor-preview');
+            const badge = document.getElementById('dockerfile-preview-badge');
+            const info = document.getElementById('code-selection-info');
+            
+            if (!files.length) {
+                preview.style.display = 'none';
+                pendingDockerfile = null;
+                pendingCodeFile = null;
+                info.innerHTML = 'No code selected';
+                return;
+            }
+            
+            // Show loading state
+            info.innerHTML = `📁 Zipping ${files.length} files...`;
+            preview.style.display = 'block';
+            editor.value = 'Zipping folder...';
+            badge.textContent = 'zipping';
+            badge.className = 'badge badge-info';
+            
+            try {
+                // Get folder name from first file's path
+                const firstPath = files[0].webkitRelativePath;
+                const folderName = firstPath.split('/')[0];
+                
+                // Create zip from folder contents
+                const zip = new JSZip();
+                
+                // Track files for dockerfile detection
+                const fileList = [];
+                let existingDockerfile = null;
+                
+                for (const file of files) {
+                    // Get path relative to selected folder (remove folder prefix)
+                    const relativePath = file.webkitRelativePath.split('/').slice(1).join('/');
+                    if (!relativePath) continue;  // Skip root folder entry
+                    
+                    // Skip common ignore patterns
+                    if (shouldIgnoreFile(relativePath)) continue;
+                    
+                    fileList.push(relativePath);
+                    
+                    // Check for Dockerfile
+                    if (relativePath === 'Dockerfile' || relativePath.toLowerCase() === 'dockerfile') {
+                        existingDockerfile = await file.text();
+                    }
+                    
+                    // Add file to zip
+                    const content = await file.arrayBuffer();
+                    zip.file(relativePath, content);
+                }
+                
+                // Generate zip blob
+                const zipBlob = await zip.generateAsync({ 
+                    type: 'blob',
+                    compression: 'DEFLATE',
+                    compressionOptions: { level: 6 }
+                });
+                
+                // Create a File object from blob (for form upload)
+                pendingCodeFile = new File([zipBlob], `${folderName}.zip`, { type: 'application/zip' });
+                
+                const sizeMB = (pendingCodeFile.size / 1024 / 1024).toFixed(2);
+                const fileCount = fileList.length;
+                info.innerHTML = `📁 <strong>${folderName}/</strong> → ${fileCount} files (${sizeMB} MB zipped)`;
+                
+                // Get port from main form
+                const mainPort = document.getElementById('deploy-port').value;
+                
+                // Set dockerfile
+                if (existingDockerfile) {
+                    editor.value = existingDockerfile;
+                    badge.textContent = 'from folder';
+                    badge.className = 'badge badge-success';
+                } else {
+                    editor.value = generateDockerfileTemplate(fileList, mainPort);
+                    badge.textContent = 'generated';
+                    badge.className = 'badge badge-warning';
+                }
+                pendingDockerfile = editor.value;
+                parseDockerfileToQuickFields();
+                
+            } catch (e) {
+                console.error('Error zipping folder:', e);
+                info.innerHTML = `❌ Error: ${e.message}`;
+                pendingCodeFile = null;
+                pendingDockerfile = null;
+            }
+        }
+        
+        function shouldIgnoreFile(path) {
+            // Common patterns to ignore when zipping folders
+            const ignorePatterns = [
+                /^\.git\//,
+                /^\.git$/,
+                /^node_modules\//,
+                /^__pycache__\//,
+                /\.pyc$/,
+                /^\.venv\//,
+                /^venv\//,
+                /^\.env$/,
+                /^\.DS_Store$/,
+                /^\.idea\//,
+                /^\.vscode\//,
+                /^dist\//,
+                /^build\//,
+                /^\.pytest_cache\//,
+                /^\.mypy_cache\//,
+                /^\.coverage$/,
+                /^coverage\//,
+                /^htmlcov\//,
+                /^\.tox\//,
+                /^\.eggs\//,
+                /\.egg-info\//,
+            ];
+            
+            return ignorePatterns.some(pattern => pattern.test(path));
         }
         
         async function onImageFileSelected(input) {
@@ -3462,8 +3780,8 @@ CMD ["python", "main.py"]`;
                 
                 // Source-specific data
                 if (sourceType === 'code') {
-                    const file = document.getElementById('deploy-file').files[0];
-                    if (!file) throw new Error('Please select a code file');
+                    // Use pendingCodeFile (from zip OR from folder-zipped)
+                    if (!pendingCodeFile) throw new Error('Please select a code file or folder');
                     
                     // Get dockerfile
                     const dockerfile = pendingDockerfile || document.getElementById('dockerfile-editor-preview')?.value;
@@ -3471,8 +3789,8 @@ CMD ["python", "main.py"]`;
                     formData.append('dockerfile', dockerfile);
                     
                     // Add file directly (no base64!)
-                    formData.append('code_tar', file);
-                    uploadFile = file;
+                    formData.append('code_tar', pendingCodeFile);
+                    uploadFile = pendingCodeFile;
                     
                 } else if (sourceType === 'git') {
                     formData.append('git_url', document.getElementById('deploy-git-url').value);

@@ -3184,6 +3184,12 @@ async def deploy_stream(
         service_name=service_name,
     )
     
+    # Calculate internal port for sidecar
+    from shared_libs.backend.infra.networking.ports import DeploymentPortResolver
+    internal_port = DeploymentPortResolver.get_internal_port(
+        workspace_id, project_name, environment, service_name
+    )
+    
     lock = lock_mgr.acquire(
         container_name=container_name,
         workspace_id=workspace_id,
@@ -3415,6 +3421,11 @@ async def deploy_stream(
             "servers": results,
             "successful_count": successful,
             "failed_count": failed,
+            "container_name": container_name,
+            "internal_port": internal_port,
+            "service_name": service_name,
+            "project": project_name,
+            "environment": environment,
         })
         
         async def event_stream():
@@ -4933,11 +4944,30 @@ async def get_architecture(
                         # Get port info - Docker returns Ports as string like "0.0.0.0:8000->8000/tcp"
                         ports_str = container.get("Ports", container.get("ports", ""))
                         port_info = []
+                        container_port = None
+                        host_port = None
                         if ports_str:
                             # Parse port string
                             for port_mapping in str(ports_str).split(", "):
                                 if port_mapping.strip():
                                     port_info.append(port_mapping.strip())
+                                    # Extract host:container ports from "0.0.0.0:18466->8000/tcp"
+                                    if "->" in port_mapping:
+                                        try:
+                                            left, right = port_mapping.split("->")
+                                            host_port = int(left.split(":")[-1])
+                                            container_port = int(right.split("/")[0])
+                                        except:
+                                            pass
+                        
+                        # Calculate internal port for sidecar
+                        from shared_libs.backend.infra.networking.ports import DeploymentPortResolver
+                        internal_port = DeploymentPortResolver.get_internal_port(
+                            workspace_id, project, env, service
+                        )
+                        
+                        # Generate domain name
+                        domain = f"{workspace_id}-{project}-{env}-{service}.digitalpixo.com".replace("_", "-")
                         
                         nodes.append({
                             "id": node_id,
@@ -4948,14 +4978,30 @@ async def get_architecture(
                             "env": env,
                             "status": "running",
                             "ports": port_info,
-                            "servers": [ip],
+                            "container_port": container_port,
+                            "host_port": host_port,
+                            "internal_port": internal_port,
+                            "domain": domain,
+                            "servers": [{"ip": ip, "container_port": host_port, "nginx_status": server_nginx_status}],
                             "image": container.get("Image", container.get("image", "")),
                         })
                     else:
                         # Add server to existing node
                         for node in nodes:
-                            if node["id"] == node_id and ip not in node["servers"]:
-                                node["servers"].append(ip)
+                            if node["id"] == node_id:
+                                # Check if IP already in servers
+                                existing_ips = [s["ip"] if isinstance(s, dict) else s for s in node["servers"]]
+                                if ip not in existing_ips:
+                                    # Get port from this container
+                                    ports_str = container.get("Ports", container.get("ports", ""))
+                                    host_port = None
+                                    if ports_str and "->" in str(ports_str):
+                                        try:
+                                            left = str(ports_str).split("->")[0]
+                                            host_port = int(left.split(":")[-1])
+                                        except:
+                                            pass
+                                    node["servers"].append({"ip": ip, "container_port": host_port, "nginx_status": server_nginx_status})
                 
                 # Get agent version via ping
                 agent_version = "unknown"
