@@ -4662,23 +4662,27 @@ CMD ["python", "main.py"]`;
                             <span style="background: ${envColor}; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">${environment.toUpperCase()}</span>
                             ${tagsHtml}
                             ${domainInfo}
-                            ${successfulServers.map(s => `
+                            ${successfulServers.map(s => {
+                                const containerName = s.container_name || result.container_name || 'unknown';
+                                return `
                                 <div style="margin-top: 8px;">
                                     <a href="${s.url}" target="_blank" style="color: white;">${s.url}</a>
                                     <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 8px;" 
-                                            onclick="viewContainerLogs('${s.ip}', '${result.container_name}')">📋 Logs</button>
+                                            onclick="viewContainerLogs('${s.ip}', '${containerName}')">📋 Logs</button>
                                 </div>
-                            `).join('')}
+                            `}).join('')}
                             ${failedServers.length > 0 ? `
                                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.3);">
                                     <strong style="color: #fef3c7;">Failed servers:</strong>
-                                    ${failedServers.map(s => `
+                                    ${failedServers.map(s => {
+                                        const containerName = s.container_name || result.container_name || 'unknown';
+                                        return `
                                         <div style="margin-top: 4px; color: #fef3c7;">
                                             ❌ ${s.ip}: ${s.error || 'Unknown error'}
                                             <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 8px;" 
-                                                    onclick="viewContainerLogs('${s.ip}', '${result.container_name}')">📋 Logs</button>
+                                                    onclick="viewContainerLogs('${s.ip}', '${containerName}')">📋 Logs</button>
                                         </div>
-                                    `).join('')}
+                                    `}).join('')}
                                 </div>
                             ` : ''}
                         </div>

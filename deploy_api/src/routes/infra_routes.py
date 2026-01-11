@@ -2515,6 +2515,7 @@ async def deploy_unified(
                         "success": s.success, 
                         "url": s.url, 
                         "error": s.error,
+                        "container_name": s.container_name,  # Actual container name (may have _secondary)
                         "internal_port": s.internal_port,
                         "sidecar_configured": s.sidecar_configured,
                     }
