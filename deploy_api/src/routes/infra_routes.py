@@ -1736,6 +1736,367 @@ async def get_service_logs(
         }
 
 
+@router.get("/agent/{server_ip}/metrics")
+async def get_server_metrics(
+    server_ip: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Get CPU, memory, disk metrics for a server."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.get_metrics()
+        if result.success:
+            return result.data
+        return {"error": result.error}
+
+
+@router.get("/agent/{server_ip}/health")
+async def get_server_health(
+    server_ip: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Get health status of all containers on a server."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.check_containers_health()
+        if result.success:
+            return result.data
+        return {"error": result.error, "summary": {"status": "error"}}
+
+
+@router.post("/agent/{server_ip}/containers/{container_name}/restart")
+async def restart_container(
+    server_ip: str,
+    container_name: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Restart a container on a server."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.restart_container(container_name)
+        if result.success:
+            return {"status": "restarted", "container": container_name, "server": server_ip}
+        raise HTTPException(500, result.error)
+
+
+@router.get("/fleet/health")
+async def get_fleet_health(
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Get health status of all servers in the fleet."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud.digitalocean import DOClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    import asyncio
+    
+    token = do_token or _get_do_token(user.id)
+    if not token:
+        raise HTTPException(400, "No DigitalOcean token available")
+    
+    api_key = generate_node_agent_key(token, str(user.id))
+    
+    # Get all servers from DO
+    try:
+        do_client = DOClient(token)
+        droplets = do_client.list_droplets(tag="deployed-via-api")
+        servers = [{"ip": d.ip, "name": d.name, "region": d.region} for d in droplets if d.ip]
+    except Exception as e:
+        return {"servers": [], "summary": {"total": 0, "healthy": 0, "unhealthy": 0, "unreachable": 0}, "error": str(e)}
+    
+    if not servers:
+        return {"servers": [], "summary": {"total": 0, "healthy": 0, "unhealthy": 0, "unreachable": 0}}
+    
+    async def check_server(server_info):
+        ip = server_info.get("ip")
+        try:
+            async with NodeAgentClient(ip, api_key, timeout=10) as client:
+                # Check agent is alive first
+                ping = await client.ping()
+                if not ping.success:
+                    return {"ip": ip, "name": server_info.get("name"), "region": server_info.get("region"), "status": "unreachable", "error": "Agent not responding"}
+                
+                agent_version = ping.data.get("version", "unknown") if ping.data else "unknown"
+                
+                # Get container health
+                result = await client.check_containers_health()
+                if result.success:
+                    summary = result.data.get("summary", {})
+                    return {
+                        "ip": ip,
+                        "name": server_info.get("name"),
+                        "region": server_info.get("region"),
+                        "status": "online",
+                        "agent_version": agent_version,
+                        "containers": summary.get("total", 0),
+                        "healthy": summary.get("healthy", 0),
+                        "unhealthy": summary.get("unhealthy", 0),
+                        "health_status": summary.get("status", "unknown"),
+                    }
+                else:
+                    return {"ip": ip, "name": server_info.get("name"), "region": server_info.get("region"), "status": "online", "agent_version": agent_version, "error": result.error}
+        except Exception as e:
+            return {"ip": ip, "name": server_info.get("name"), "region": server_info.get("region"), "status": "unreachable", "error": str(e)}
+    
+    # Check all servers in parallel
+    results = await asyncio.gather(*[check_server(s) for s in servers])
+    
+    # Summary
+    total = len(results)
+    online = sum(1 for r in results if r.get("status") == "online")
+    healthy = sum(1 for r in results if r.get("status") == "online" and r.get("health_status") in ("healthy", "empty"))
+    unhealthy = sum(1 for r in results if r.get("status") == "online" and r.get("health_status") == "unhealthy")
+    unreachable = sum(1 for r in results if r.get("status") == "unreachable")
+    
+    return {
+        "servers": results,
+        "summary": {
+            "total": total,
+            "online": online,
+            "healthy": healthy,
+            "unhealthy": unhealthy,
+            "unreachable": unreachable,
+            "status": "healthy" if unreachable == 0 and unhealthy == 0 else "degraded" if online > 0 else "down"
+        }
+    }
+
+
+# =============================================================================
+# Cron/Scheduler Management
+# =============================================================================
+
+@router.get("/agent/{server_ip}/cron/jobs")
+async def list_cron_jobs(
+    server_ip: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """List all managed cron jobs on a server."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.list_cron_jobs()
+        if result.success:
+            return result.data
+        raise HTTPException(500, result.error)
+
+
+@router.post("/agent/{server_ip}/cron/remove")
+async def remove_cron_job(
+    server_ip: str,
+    job_id: str = Query(..., description="Job ID to remove"),
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Remove a cron job from a server."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.remove_cron_job(job_id)
+        if result.success:
+            return result.data
+        raise HTTPException(500, result.error)
+
+
+class DockerCronRequest(BaseModel):
+    """Request to schedule a Docker container."""
+    id: str
+    schedule: str
+    image: str
+    container_name: str = ""
+    env: Dict[str, str] = {}
+    volumes: List[str] = []
+    network: str = ""
+    command: str = ""
+    description: str = ""
+
+
+@router.post("/agent/{server_ip}/cron/docker")
+async def schedule_docker_cron(
+    server_ip: str,
+    req: DockerCronRequest,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Schedule a Docker container to run on a cron schedule."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.schedule_docker_run(
+            job_id=req.id,
+            schedule=req.schedule,
+            image=req.image,
+            container_name=req.container_name,
+            env_vars=req.env,
+            volumes=req.volumes,
+            network=req.network,
+            command=req.command,
+            description=req.description,
+        )
+        if result.success:
+            return result.data
+        raise HTTPException(500, result.error)
+
+
+# =============================================================================
+# Secrets Rotation
+# =============================================================================
+
+class RotateSecretRequest(BaseModel):
+    """Request to rotate a secret."""
+    secret_name: str
+    new_value: Optional[str] = None  # Auto-generate if not provided
+    password_length: int = 32
+    containers: List[str] = []  # Container names to restart
+    server_ips: List[str] = []  # Servers where containers run
+    env_var_name: Optional[str] = None  # Defaults to secret_name
+
+
+@router.post("/secrets/rotate")
+async def rotate_secret(
+    req: RotateSecretRequest,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """
+    Rotate a secret and optionally restart containers.
+    
+    Requires INFISICAL_TOKEN and INFISICAL_PROJECT_ID env vars.
+    """
+    from shared_libs.backend.vault import SecretsRotator
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    token = do_token or _get_do_token(user.id)
+    node_agent_key = generate_node_agent_key(token, str(user.id)) if token else None
+    
+    rotator = SecretsRotator(node_agent_key=node_agent_key)
+    
+    if not rotator.vault:
+        raise HTTPException(400, "Vault not configured. Set INFISICAL_TOKEN and INFISICAL_PROJECT_ID.")
+    
+    result = await rotator.rotate_secret(
+        secret_name=req.secret_name,
+        new_value=req.new_value,
+        password_length=req.password_length,
+        containers=req.containers,
+        server_ips=req.server_ips,
+        env_var_name=req.env_var_name,
+    )
+    
+    if result.success:
+        return {
+            "status": "rotated",
+            "secret_name": result.secret_name,
+            "containers_updated": result.containers_updated,
+            # Don't return actual values in response for security
+        }
+    raise HTTPException(500, result.error)
+
+
+@router.post("/secrets/generate")
+async def generate_secret(
+    length: int = Query(32, ge=8, le=128),
+    include_special: bool = Query(True),
+    secret_type: str = Query("password", regex="^(password|api_key)$"),
+    prefix: str = Query("sk"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Generate a new random secret (does not store it)."""
+    from shared_libs.backend.vault import generate_password, generate_api_key
+    
+    if secret_type == "api_key":
+        value = generate_api_key(prefix=prefix)
+    else:
+        value = generate_password(length=length, include_special=include_special)
+    
+    return {"value": value, "type": secret_type}
+
+
+@router.get("/secrets/status")
+async def get_vault_status(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Check vault configuration status."""
+    from shared_libs.backend.vault import vault_status
+    
+    status = vault_status()
+    return {
+        "configured": status.get("infisical_configured", False),
+        "environment": status.get("infisical_env", "unknown"),
+    }
+
+
+@router.get("/costs")
+async def get_costs(
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Get cost summary by project/environment."""
+    from shared_libs.backend.infra.cloud.digitalocean.cost_tracker import CostTracker
+    
+    token = do_token or _get_do_token(user.id)
+    if not token:
+        raise HTTPException(400, "No DigitalOcean token available")
+    
+    tracker = CostTracker(token)
+    summary = await tracker.get_cost_summary()
+    
+    return {
+        "total_monthly": summary.total_monthly,
+        "total_hourly": summary.total_hourly,
+        "by_project": summary.by_project,
+        "by_environment": summary.by_environment,
+        "by_region": summary.by_region,
+        "droplet_count": len(summary.droplets),
+        "droplets": [
+            {
+                "id": d.id,
+                "name": d.name,
+                "size": d.size,
+                "monthly_cost": d.monthly_cost,
+                "project": d.project,
+                "environment": d.environment,
+                "region": d.region,
+            }
+            for d in summary.droplets
+        ],
+    }
+
+
+@router.get("/costs/balance")
+async def get_balance(
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Get current DO account balance."""
+    from shared_libs.backend.infra.cloud.digitalocean.cost_tracker import CostTracker
+    
+    token = do_token or _get_do_token(user.id)
+    if not token:
+        raise HTTPException(400, "No DigitalOcean token available")
+    
+    tracker = CostTracker(token)
+    return await tracker.get_balance()
+
+
 @router.post("/agent/{server_ip}/containers/{container_name}/remove")
 async def agent_remove_container(
     server_ip: str,
@@ -1750,6 +2111,54 @@ async def agent_remove_container(
     
     async with NodeAgentClient(server_ip, api_key) as client:
         return await client.remove_container(container_name)
+
+
+@router.post("/agent/{server_ip}/containers/{container_name}/restart")
+async def agent_restart_container(
+    server_ip: str,
+    container_name: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Restart container via node agent."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        return await client.restart_container(container_name)
+
+
+@router.post("/agent/{server_ip}/containers/{container_name}/start")
+async def agent_start_container(
+    server_ip: str,
+    container_name: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Start a stopped container via node agent."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        return await client.start_container(container_name)
+
+
+@router.post("/agent/{server_ip}/containers/{container_name}/stop")
+async def agent_stop_container(
+    server_ip: str,
+    container_name: str,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Stop a running container via node agent."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        return await client.stop_container(container_name)
 
 
 class AgentBuildRequest(BaseModel):
@@ -5171,3 +5580,197 @@ async def list_architecture_projects(
         
     except Exception as e:
         raise HTTPException(500, f"Failed to list projects: {str(e)}")
+
+
+# =============================================================================
+# Scheduler Routes
+# =============================================================================
+
+class ScheduleTaskRequest(BaseModel):
+    """Request to create a scheduled task."""
+    name: str
+    task_type: str  # health_check, auto_restart, backup
+    interval_minutes: int = 60
+    enabled: bool = True
+    config: Dict[str, Any] = {}
+
+
+# Global scheduler instance
+_task_scheduler = None
+
+
+def get_task_scheduler():
+    """Get or create the task scheduler."""
+    global _task_scheduler
+    if _task_scheduler is None:
+        from shared_libs.backend.infra.scheduling import TaskScheduler, register_all_handlers
+        _task_scheduler = TaskScheduler(check_interval=60)
+        register_all_handlers(_task_scheduler)
+    return _task_scheduler
+
+
+@router.get("/scheduler/status")
+async def get_scheduler_status(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get scheduler status and task summary."""
+    scheduler = get_task_scheduler()
+    status = scheduler.get_status()
+    tasks = scheduler.list_tasks(str(user.id))
+    
+    return {
+        **status,
+        "tasks": [t.to_dict() for t in tasks],
+    }
+
+
+@router.get("/scheduler/tasks")
+async def list_scheduled_tasks(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """List all scheduled tasks for the user."""
+    scheduler = get_task_scheduler()
+    tasks = scheduler.list_tasks(str(user.id))
+    return {"tasks": [t.to_dict() for t in tasks]}
+
+
+@router.post("/scheduler/tasks")
+async def create_scheduled_task(
+    req: ScheduleTaskRequest,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """Create a new scheduled task."""
+    from shared_libs.backend.infra.scheduling import CentralizedTask, TaskType
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    import uuid
+    
+    # Validate task type
+    try:
+        task_type = TaskType(req.task_type)
+    except ValueError:
+        raise HTTPException(400, f"Invalid task type: {req.task_type}. Valid: health_check, auto_restart, backup")
+    
+    # Generate API key for task
+    token = do_token or _get_do_token(user.id)
+    if token:
+        api_key = generate_node_agent_key(token, str(user.id))
+        req.config["api_key"] = api_key
+    
+    # Create task
+    task = CentralizedTask(
+        id=str(uuid.uuid4()),
+        name=req.name,
+        task_type=task_type,
+        interval_minutes=req.interval_minutes,
+        workspace_id=str(user.id),
+        enabled=req.enabled,
+        config=req.config,
+    )
+    
+    scheduler = get_task_scheduler()
+    scheduler.add_task(task)
+    
+    return {"task": task.to_dict()}
+
+
+@router.delete("/scheduler/tasks/{task_id}")
+async def delete_scheduled_task(
+    task_id: str,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Delete a scheduled task."""
+    scheduler = get_task_scheduler()
+    task = scheduler.get_task(task_id)
+    
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    if task.workspace_id != str(user.id):
+        raise HTTPException(403, "Not authorized to delete this task")
+    
+    scheduler.remove_task(task_id)
+    return {"deleted": task_id}
+
+
+@router.post("/scheduler/tasks/{task_id}/enable")
+async def enable_scheduled_task(
+    task_id: str,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Enable a scheduled task."""
+    scheduler = get_task_scheduler()
+    task = scheduler.get_task(task_id)
+    
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    if task.workspace_id != str(user.id):
+        raise HTTPException(403, "Not authorized")
+    
+    scheduler.enable_task(task_id)
+    return {"enabled": task_id}
+
+
+@router.post("/scheduler/tasks/{task_id}/disable")
+async def disable_scheduled_task(
+    task_id: str,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Disable a scheduled task."""
+    scheduler = get_task_scheduler()
+    task = scheduler.get_task(task_id)
+    
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    if task.workspace_id != str(user.id):
+        raise HTTPException(403, "Not authorized")
+    
+    scheduler.disable_task(task_id)
+    return {"disabled": task_id}
+
+
+@router.post("/scheduler/tasks/{task_id}/run")
+async def run_scheduled_task_now(
+    task_id: str,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Run a scheduled task immediately."""
+    scheduler = get_task_scheduler()
+    task = scheduler.get_task(task_id)
+    
+    if not task:
+        raise HTTPException(404, "Task not found")
+    
+    if task.workspace_id != str(user.id):
+        raise HTTPException(403, "Not authorized")
+    
+    success = await scheduler.run_task(task)
+    
+    return {
+        "task_id": task_id,
+        "success": success,
+        "result": task.last_result,
+        "status": task.last_status.value,
+    }
+
+
+@router.post("/scheduler/start")
+async def start_scheduler(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Start the scheduler background loop."""
+    scheduler = get_task_scheduler()
+    await scheduler.start()
+    return {"status": "started"}
+
+
+@router.post("/scheduler/stop")
+async def stop_scheduler(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Stop the scheduler background loop."""
+    scheduler = get_task_scheduler()
+    await scheduler.stop()
+    return {"status": "stopped"}

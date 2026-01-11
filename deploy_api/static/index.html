@@ -438,6 +438,7 @@
                 <button class="tab" onclick="showTab('deploy')">Deploy</button>
                 <button class="tab" onclick="showTab('architecture')">Architecture</button>
                 <button class="tab" onclick="showTab('logs')">Logs</button>
+                <button class="tab" onclick="showTab('metrics')">Metrics</button>
                 <button class="tab" onclick="showTab('snapshots')">Snapshots</button>
                 <button class="tab" onclick="showTab('services')">Services</button>
                 <button class="tab" onclick="showTab('settings')">Settings</button>
@@ -1117,6 +1118,73 @@
                 </div>
             </div>
             
+            <!-- Metrics Tab -->
+            <div id="tab-metrics" class="hidden">
+                <!-- Fleet Health Overview -->
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">🖥️ Fleet Health</span>
+                        <button class="btn btn-ghost btn-sm" onclick="loadFleetHealth()">↻ Refresh</button>
+                    </div>
+                    <div id="fleet-health" style="padding: 16px;">
+                        <div class="empty-state"><p>Click refresh to check fleet health</p></div>
+                    </div>
+                </div>
+                
+                <div class="grid grid-2">
+                    <!-- Costs Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">💰 Costs</span>
+                            <button class="btn btn-ghost btn-sm" onclick="loadCosts()">↻ Refresh</button>
+                        </div>
+                        <div id="costs-summary" style="padding: 16px;">
+                            <div class="empty-state"><p>Click refresh to load costs</p></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Server Metrics Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">📊 Server Metrics</span>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <select id="metrics-server-select" style="padding: 6px 10px;">
+                                    <option value="">Select Server</option>
+                                </select>
+                                <button class="btn btn-ghost btn-sm" onclick="loadServerMetrics()">↻ Refresh</button>
+                            </div>
+                        </div>
+                        <div id="server-metrics" style="padding: 16px;">
+                            <div class="empty-state"><p>Select a server to view metrics</p></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Container Metrics -->
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">🐳 Container Metrics</span>
+                    </div>
+                    <div id="container-metrics" style="padding: 16px;">
+                        <div class="empty-state"><p>Select a server above to view container metrics</p></div>
+                    </div>
+                </div>
+                
+                <!-- Scheduled Jobs -->
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">⏰ Scheduled Jobs</span>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <button class="btn btn-success btn-sm" onclick="showAddCronJobModal()">+ Add Job</button>
+                            <button class="btn btn-ghost btn-sm" onclick="loadCronJobs()">↻ Refresh</button>
+                        </div>
+                    </div>
+                    <div id="cron-jobs" style="padding: 16px;">
+                        <div class="empty-state"><p>Select a server above and click refresh to view scheduled jobs</p></div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Snapshots Tab -->
             <div id="tab-snapshots" class="hidden">
                 <div class="grid grid-2">
@@ -1537,7 +1605,80 @@
                         </div>
                     </details>
                 </div>
+                
+                <!-- Task Scheduler -->
+                <div class="card" style="max-width: 700px; margin-top: 16px;">
+                    <div class="card-header">
+                        <span class="card-title">⏰ Task Scheduler</span>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-ghost btn-sm" onclick="loadScheduledTasks()">↻ Refresh</button>
+                            <button class="btn btn-success btn-sm" onclick="showAddTaskModal()">+ Add Task</button>
+                        </div>
+                    </div>
+                    
+                    <div style="padding: 16px;">
+                        <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.875rem;">
+                            Schedule recurring tasks like health checks, auto-restart, and backups.
+                        </p>
+                        
+                        <div id="scheduler-status" style="margin-bottom: 16px;"></div>
+                        <div id="scheduled-tasks-list">
+                            <div class="empty-state"><p>Loading tasks...</p></div>
+                        </div>
+                    </div>
+                </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Add Task Modal -->
+    <div id="add-task-modal" class="modal hidden">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>➕ Add Scheduled Task</h3>
+                <button class="modal-close" onclick="closeModal('add-task-modal')">&times;</button>
+            </div>
+            <form onsubmit="createScheduledTask(event)">
+                <div class="form-group">
+                    <label>Task Name</label>
+                    <input type="text" id="task-name" placeholder="Health Check - All Servers" required>
+                </div>
+                <div class="form-group">
+                    <label>Task Type</label>
+                    <select id="task-type" onchange="updateTaskConfigFields()">
+                        <option value="health_check">Health Check</option>
+                        <option value="auto_restart">Auto-Restart Unhealthy</option>
+                        <option value="backup">Backup</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Interval (minutes)</label>
+                    <select id="task-interval">
+                        <option value="5">Every 5 minutes</option>
+                        <option value="15">Every 15 minutes</option>
+                        <option value="30" selected>Every 30 minutes</option>
+                        <option value="60">Every hour</option>
+                        <option value="360">Every 6 hours</option>
+                        <option value="1440">Daily</option>
+                    </select>
+                </div>
+                <div id="task-config-fields">
+                    <div class="form-group">
+                        <label>Server IPs (comma-separated, empty = all)</label>
+                        <input type="text" id="task-server-ips" placeholder="1.2.3.4, 5.6.7.8">
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="task-auto-restart" style="width: auto;">
+                            <span>Auto-restart unhealthy containers</span>
+                        </label>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                    <button type="button" class="btn btn-ghost" onclick="closeModal('add-task-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create Task</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -1707,7 +1848,7 @@
         // =============================================================================
         
         function showTab(tab) {
-            ['infra', 'deploy', 'architecture', 'logs', 'snapshots', 'services', 'settings'].forEach((t, i) => {
+            ['infra', 'deploy', 'architecture', 'logs', 'metrics', 'snapshots', 'services', 'settings'].forEach((t, i) => {
                 document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab);
                 document.querySelectorAll('.tabs .tab')[i].classList.toggle('active', t === tab);
             });
@@ -1720,6 +1861,8 @@
             if (tab === 'services') loadServersForStateful();
             if (tab === 'logs') refreshLogsFilters();
             if (tab === 'architecture') loadArchitecture();
+            if (tab === 'metrics') loadMetricsTab();
+            if (tab === 'settings') loadScheduledTasks();
         }
         
         // =============================================================================
@@ -2430,6 +2573,690 @@
             } catch (e) {
                 console.error('Failed to fix nginx:', e);
                 toast('Failed to fix nginx: ' + e.message, 'error');
+            }
+        }
+        
+        // =============================================================================
+        // Metrics Tab Functions
+        // =============================================================================
+        
+        async function loadMetricsTab() {
+            // Populate server dropdown from architecture servers
+            const select = document.getElementById('metrics-server-select');
+            try {
+                const result = await api('POST', '/infra/architecture', {});
+                const servers = result.servers || [];
+                select.innerHTML = '<option value="">Select Server</option>' + 
+                    servers.map(s => `<option value="${s.ip}">${s.ip} (${s.containers} containers)</option>`).join('');
+            } catch (e) {
+                console.error('Failed to load servers for metrics:', e);
+            }
+            // Auto-load fleet health
+            loadFleetHealth();
+        }
+        
+        async function loadFleetHealth() {
+            const container = document.getElementById('fleet-health');
+            container.innerHTML = '<div class="empty-state"><p>⏳ Checking servers...</p></div>';
+            
+            try {
+                const result = await api('GET', '/infra/fleet/health');
+                const summary = result.summary || {};
+                const servers = result.servers || [];
+                
+                // Status colors
+                const statusColor = summary.status === 'healthy' ? 'var(--success)' : 
+                                    summary.status === 'degraded' ? 'var(--warning)' : 'var(--error)';
+                const statusIcon = summary.status === 'healthy' ? '✅' : 
+                                   summary.status === 'degraded' ? '⚠️' : '❌';
+                
+                let html = `
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 16px;">
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700;">${statusIcon}</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Fleet Status</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700;">${summary.total || 0}</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Total Servers</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700; color: var(--success);">${summary.online || 0}</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Online</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: 700; color: ${summary.unreachable > 0 ? 'var(--error)' : 'var(--text-muted)'};">${summary.unreachable || 0}</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Unreachable</div>
+                        </div>
+                    </div>
+                `;
+                
+                if (servers.length > 0) {
+                    html += `
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid var(--border);">
+                                    <th style="text-align: left; padding: 8px;">Server</th>
+                                    <th style="text-align: center; padding: 8px;">Status</th>
+                                    <th style="text-align: center; padding: 8px;">Containers</th>
+                                    <th style="text-align: center; padding: 8px;">Health</th>
+                                    <th style="text-align: left; padding: 8px;">Agent</th>
+                                    <th style="text-align: right; padding: 8px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${servers.map(s => {
+                                    const statusIcon = s.status === 'online' ? '🟢' : '🔴';
+                                    const healthIcon = s.health_status === 'healthy' ? '✅' : 
+                                                       s.health_status === 'unhealthy' ? '❌' : 
+                                                       s.health_status === 'empty' ? '⚪' : '❓';
+                                    return `
+                                    <tr style="border-bottom: 1px solid var(--border);">
+                                        <td style="padding: 8px;">
+                                            <div style="font-family: monospace;">${s.ip}</div>
+                                            <div style="font-size: 0.75rem; color: var(--text-muted);">${s.name || ''} ${s.region ? '• ' + s.region : ''}</div>
+                                        </td>
+                                        <td style="padding: 8px; text-align: center;">${statusIcon}</td>
+                                        <td style="padding: 8px; text-align: center;">${s.containers ?? '-'}</td>
+                                        <td style="padding: 8px; text-align: center;" title="${s.healthy || 0} healthy, ${s.unhealthy || 0} unhealthy">${healthIcon}</td>
+                                        <td style="padding: 8px; font-size: 0.75rem;">${s.agent_version || '-'}</td>
+                                        <td style="padding: 8px; text-align: right;">
+                                            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('metrics-server-select').value='${s.ip}'; loadServerMetrics();" title="View metrics">📊</button>
+                                        </td>
+                                    </tr>
+                                `}).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                }
+                
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = `<div class="empty-state" style="color: var(--error);"><p>❌ ${e.message}</p></div>`;
+            }
+        }
+        
+        async function restartContainer(serverIp, containerName) {
+            if (!confirm(`Restart container ${containerName} on ${serverIp}?`)) return;
+            
+            try {
+                await api('POST', `/infra/agent/${serverIp}/containers/${containerName}/restart`);
+                showToast(`Container ${containerName} restarted`, 'success');
+                // Refresh metrics
+                loadServerMetrics();
+            } catch (e) {
+                showToast(`Failed to restart: ${e.message}`, 'error');
+            }
+        }
+        
+        // =============================================================================
+        // Cron/Scheduled Jobs Functions
+        // =============================================================================
+        
+        async function loadCronJobs() {
+            const serverIp = document.getElementById('metrics-server-select').value;
+            const container = document.getElementById('cron-jobs');
+            
+            if (!serverIp) {
+                container.innerHTML = '<div class="empty-state"><p>Select a server first</p></div>';
+                return;
+            }
+            
+            container.innerHTML = '<div class="empty-state"><p>⏳ Loading scheduled jobs...</p></div>';
+            
+            try {
+                const result = await api('GET', `/infra/agent/${serverIp}/cron/jobs`);
+                const jobs = result.jobs || [];
+                
+                if (jobs.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><p>No scheduled jobs on this server</p></div>';
+                    return;
+                }
+                
+                container.innerHTML = `
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--border);">
+                                <th style="text-align: left; padding: 8px;">ID</th>
+                                <th style="text-align: left; padding: 8px;">Schedule</th>
+                                <th style="text-align: left; padding: 8px;">Description</th>
+                                <th style="text-align: left; padding: 8px;">Command</th>
+                                <th style="text-align: right; padding: 8px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${jobs.map(j => `
+                                <tr style="border-bottom: 1px solid var(--border);">
+                                    <td style="padding: 8px; font-family: monospace;">${j.id}</td>
+                                    <td style="padding: 8px; font-family: monospace;" title="${describeCronSchedule(j.schedule)}">${j.schedule}</td>
+                                    <td style="padding: 8px;">${j.description || '-'}</td>
+                                    <td style="padding: 8px; font-size: 0.75rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(j.command)}">${escapeHtml(j.command.substring(0, 50))}${j.command.length > 50 ? '...' : ''}</td>
+                                    <td style="padding: 8px; text-align: right;">
+                                        <button class="btn btn-ghost btn-sm" onclick="removeCronJob('${serverIp}', '${j.id}')" title="Remove">🗑️</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (e) {
+                container.innerHTML = `<div class="empty-state" style="color: var(--error);"><p>❌ ${e.message}</p></div>`;
+            }
+        }
+        
+        function describeCronSchedule(schedule) {
+            const parts = schedule.split(' ');
+            if (parts.length !== 5) return schedule;
+            const [min, hour, day, month, weekday] = parts;
+            
+            if (min === '0' && hour !== '*' && day === '*' && month === '*' && weekday === '*') {
+                return `Daily at ${hour}:00`;
+            }
+            if (min !== '*' && hour !== '*' && day === '*' && month === '*' && weekday === '*') {
+                return `Daily at ${hour}:${min.padStart(2, '0')}`;
+            }
+            if (weekday !== '*' && day === '*') {
+                const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                return `${days[weekday] || weekday} at ${hour}:${min.padStart(2, '0')}`;
+            }
+            return schedule;
+        }
+        
+        function escapeHtml(str) {
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        
+        async function removeCronJob(serverIp, jobId) {
+            if (!confirm(`Remove scheduled job "${jobId}" from ${serverIp}?`)) return;
+            
+            try {
+                await api('POST', `/infra/agent/${serverIp}/cron/remove?job_id=${encodeURIComponent(jobId)}`);
+                showToast(`Job "${jobId}" removed`, 'success');
+                loadCronJobs();
+            } catch (e) {
+                showToast(`Failed to remove job: ${e.message}`, 'error');
+            }
+        }
+        
+        function showAddCronJobModal() {
+            const serverIp = document.getElementById('metrics-server-select').value;
+            if (!serverIp) {
+                showToast('Select a server first', 'error');
+                return;
+            }
+            
+            showModal('⏰ Schedule Docker Container', `
+                <form onsubmit="addCronJob(event, '${serverIp}')">
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Job ID *</label>
+                        <input type="text" id="cron-job-id" placeholder="backup-postgres" required 
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Schedule (cron format) *</label>
+                        <input type="text" id="cron-schedule" placeholder="0 2 * * *" required
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                        <small style="color: var(--text-muted);">minute hour day month weekday (e.g., "0 2 * * *" = daily at 2am)</small>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Docker Image *</label>
+                        <input type="text" id="cron-image" placeholder="postgres:15" required
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Command (optional)</label>
+                        <input type="text" id="cron-docker-command" placeholder="pg_dump -h localhost mydb"
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Network (optional)</label>
+                        <input type="text" id="cron-network" placeholder="my_network"
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Description</label>
+                        <input type="text" id="cron-description" placeholder="Daily database backup"
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
+                    </div>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+                        <button type="submit" class="btn btn-success">Schedule</button>
+                    </div>
+                </form>
+                <div style="margin-top: 12px; padding: 8px; background: var(--bg-input); border-radius: 4px; font-size: 0.8rem; color: var(--text-muted);">
+                    🔒 Jobs run in isolated Docker containers for security
+                </div>
+            `, { width: '500px' });
+        }
+        
+        async function addCronJob(event, serverIp) {
+            event.preventDefault();
+            
+            const jobId = document.getElementById('cron-job-id').value.trim();
+            const schedule = document.getElementById('cron-schedule').value.trim();
+            const image = document.getElementById('cron-image').value.trim();
+            const command = document.getElementById('cron-docker-command').value.trim();
+            const network = document.getElementById('cron-network').value.trim();
+            const description = document.getElementById('cron-description').value.trim();
+            
+            try {
+                await api('POST', `/infra/agent/${serverIp}/cron/docker`, {
+                    id: jobId,
+                    schedule: schedule,
+                    image: image,
+                    command: command,
+                    network: network,
+                    description: description,
+                });
+                
+                showToast(`Job "${jobId}" scheduled`, 'success');
+                closeModal();
+                loadCronJobs();
+            } catch (e) {
+                showToast(`Failed to add job: ${e.message}`, 'error');
+            }
+        }
+        
+        async function loadCosts() {
+            const container = document.getElementById('costs-summary');
+            container.innerHTML = '<div class="empty-state"><p>⏳ Loading costs...</p></div>';
+            
+            try {
+                const result = await api('GET', '/infra/costs');
+                
+                let html = `
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-bottom: 20px;">
+                        <div style="background: var(--bg-input); padding: 16px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 2rem; font-weight: 700; color: var(--primary);">$${result.total_monthly}</div>
+                            <div style="font-size: 0.85rem; color: var(--text-muted);">Monthly Est.</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 16px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 2rem; font-weight: 700; color: var(--success);">${result.droplet_count}</div>
+                            <div style="font-size: 0.85rem; color: var(--text-muted);">Droplets</div>
+                        </div>
+                    </div>
+                `;
+                
+                // By Project
+                if (Object.keys(result.by_project).length > 0) {
+                    html += `<div style="margin-bottom: 16px;">
+                        <div style="font-weight: 600; margin-bottom: 8px;">By Project</div>
+                        ${Object.entries(result.by_project).map(([k, v]) => `
+                            <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border);">
+                                <span>${k}</span>
+                                <span style="font-weight: 500;">$${v}/mo</span>
+                            </div>
+                        `).join('')}
+                    </div>`;
+                }
+                
+                // By Environment
+                if (Object.keys(result.by_environment).length > 0) {
+                    html += `<div style="margin-bottom: 16px;">
+                        <div style="font-weight: 600; margin-bottom: 8px;">By Environment</div>
+                        ${Object.entries(result.by_environment).map(([k, v]) => `
+                            <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border);">
+                                <span class="badge badge-${k === 'prod' ? 'danger' : k === 'staging' ? 'warning' : 'info'}">${k}</span>
+                                <span style="font-weight: 500;">$${v}/mo</span>
+                            </div>
+                        `).join('')}
+                    </div>`;
+                }
+                
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = `<div class="empty-state" style="color: var(--error);"><p>❌ ${e.message}</p></div>`;
+            }
+        }
+        
+        async function loadServerMetrics() {
+            const serverIp = document.getElementById('metrics-server-select').value;
+            const metricsContainer = document.getElementById('server-metrics');
+            const containerMetrics = document.getElementById('container-metrics');
+            
+            if (!serverIp) {
+                metricsContainer.innerHTML = '<div class="empty-state"><p>Select a server</p></div>';
+                containerMetrics.innerHTML = '<div class="empty-state"><p>Select a server above</p></div>';
+                return;
+            }
+            
+            metricsContainer.innerHTML = '<div class="empty-state"><p>⏳ Loading...</p></div>';
+            containerMetrics.innerHTML = '<div class="empty-state"><p>⏳ Loading...</p></div>';
+            
+            try {
+                // Fetch both metrics and health in parallel
+                const [metricsResult, healthResult] = await Promise.all([
+                    api('GET', `/infra/agent/${serverIp}/metrics`),
+                    api('GET', `/infra/agent/${serverIp}/health`),
+                ]);
+                
+                const sys = metricsResult.system || {};
+                const healthSummary = healthResult.summary || {};
+                
+                // Format bytes
+                const formatBytes = (bytes) => {
+                    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+                    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+                    return (bytes / 1024).toFixed(1) + ' KB';
+                };
+                
+                // Health status color
+                const healthColor = healthSummary.status === 'healthy' ? 'var(--success)' : 
+                                    healthSummary.status === 'unhealthy' ? 'var(--error)' : 'var(--warning)';
+                const healthIcon = healthSummary.status === 'healthy' ? '✅' : 
+                                   healthSummary.status === 'unhealthy' ? '❌' : '⚠️';
+                
+                // System metrics with health
+                metricsContainer.innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Health</div>
+                            <div style="font-size: 1.5rem; font-weight: 700; color: ${healthColor};">${healthIcon}</div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted);">${healthSummary.healthy || 0}/${healthSummary.total || 0} healthy</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">CPU Load (1m)</div>
+                            <div style="font-size: 1.5rem; font-weight: 700;">${sys.load_1m || 0}</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Memory</div>
+                            <div style="font-size: 1.5rem; font-weight: 700; color: ${sys.mem_percent > 80 ? 'var(--error)' : 'var(--success)'};">${sys.mem_percent || 0}%</div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted);">${formatBytes(sys.mem_used)} / ${formatBytes(sys.mem_total)}</div>
+                        </div>
+                        <div style="background: var(--bg-input); padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Disk</div>
+                            <div style="font-size: 1.5rem; font-weight: 700; color: ${sys.disk_percent > 80 ? 'var(--error)' : 'var(--success)'};">${sys.disk_percent || 0}%</div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted);">${formatBytes(sys.disk_used)} / ${formatBytes(sys.disk_total)}</div>
+                        </div>
+                    </div>
+                `;
+                
+                // Container metrics with health status
+                const containers = metricsResult.containers || [];
+                const healthContainers = healthResult.containers || [];
+                
+                // Merge health info into metrics
+                const healthMap = {};
+                healthContainers.forEach(h => { healthMap[h.name] = h; });
+                
+                if (containers.length === 0) {
+                    containerMetrics.innerHTML = '<div class="empty-state"><p>No running containers</p></div>';
+                } else {
+                    containerMetrics.innerHTML = `
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid var(--border);">
+                                    <th style="text-align: left; padding: 8px;">Container</th>
+                                    <th style="text-align: center; padding: 8px;">Health</th>
+                                    <th style="text-align: right; padding: 8px;">CPU</th>
+                                    <th style="text-align: right; padding: 8px;">Memory</th>
+                                    <th style="text-align: right; padding: 8px;">Net I/O</th>
+                                    <th style="text-align: right; padding: 8px;">Uptime</th>
+                                    <th style="text-align: right; padding: 8px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${containers.map(c => {
+                                    const h = healthMap[c.name] || {};
+                                    const hStatus = h.health || 'unknown';
+                                    const hIcon = hStatus === 'healthy' ? '🟢' : 
+                                                  hStatus === 'running' ? '🟢' :
+                                                  hStatus === 'unhealthy' ? '🔴' : 
+                                                  hStatus === 'starting' ? '🟡' : '⚪';
+                                    return `
+                                    <tr style="border-bottom: 1px solid var(--border);">
+                                        <td style="padding: 8px; font-family: monospace;">${c.name}</td>
+                                        <td style="padding: 8px; text-align: center;" title="${hStatus}">${hIcon}</td>
+                                        <td style="padding: 8px; text-align: right;">${c.cpu}</td>
+                                        <td style="padding: 8px; text-align: right;">${c.memory}</td>
+                                        <td style="padding: 8px; text-align: right; font-size: 0.75rem;">${c.net}</td>
+                                        <td style="padding: 8px; text-align: right; font-size: 0.75rem;">${h.uptime || '-'}</td>
+                                        <td style="padding: 8px; text-align: right;">
+                                            <button class="btn btn-ghost btn-sm" onclick="restartContainer('${serverIp}', '${c.name}')" title="Restart">🔄</button>
+                                            <button class="btn btn-ghost btn-sm" onclick="viewContainerLogs('${serverIp}', '${c.name}')" title="Logs">📋</button>
+                                        </td>
+                                    </tr>
+                                `}).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                }
+            } catch (e) {
+                metricsContainer.innerHTML = `<div class="empty-state" style="color: var(--error);"><p>❌ ${e.message}</p></div>`;
+                containerMetrics.innerHTML = '';
+            }
+        }
+        
+        // =============================================================================
+        // Scheduler Functions
+        // =============================================================================
+        
+        async function loadScheduledTasks() {
+            const container = document.getElementById('scheduled-tasks-list');
+            const statusDiv = document.getElementById('scheduler-status');
+            
+            try {
+                const result = await api('GET', '/infra/scheduler/status');
+                
+                // Status
+                const running = result.running;
+                statusDiv.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--bg-input); border-radius: 8px;">
+                        <span style="font-size: 1.2rem;">${running ? '🟢' : '🔴'}</span>
+                        <div>
+                            <div style="font-weight: 500;">Scheduler ${running ? 'Running' : 'Stopped'}</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">${result.enabled_count || 0} enabled tasks</div>
+                        </div>
+                        <div style="margin-left: auto;">
+                            ${running 
+                                ? '<button class="btn btn-ghost btn-sm" onclick="stopScheduler()">⏹️ Stop</button>'
+                                : '<button class="btn btn-success btn-sm" onclick="startScheduler()">▶️ Start</button>'
+                            }
+                        </div>
+                    </div>
+                `;
+                
+                // Tasks
+                const tasks = result.tasks || [];
+                if (tasks.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><p>No scheduled tasks. Click "+ Add Task" to create one.</p></div>';
+                    return;
+                }
+                
+                container.innerHTML = `
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--border);">
+                                <th style="text-align: left; padding: 8px;">Task</th>
+                                <th style="text-align: center; padding: 8px;">Type</th>
+                                <th style="text-align: center; padding: 8px;">Interval</th>
+                                <th style="text-align: center; padding: 8px;">Status</th>
+                                <th style="text-align: center; padding: 8px;">Last Run</th>
+                                <th style="text-align: right; padding: 8px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${tasks.map(t => {
+                                const typeIcon = t.task_type === 'health_check' ? '🏥' : 
+                                                 t.task_type === 'auto_restart' ? '🔄' : 
+                                                 t.task_type === 'backup' ? '💾' : '📋';
+                                const statusIcon = t.last_status === 'success' ? '✅' : 
+                                                   t.last_status === 'failed' ? '❌' : 
+                                                   t.last_status === 'running' ? '⏳' : '⚪';
+                                const lastRun = t.last_run ? new Date(t.last_run).toLocaleString() : 'Never';
+                                return `
+                                <tr style="border-bottom: 1px solid var(--border); opacity: ${t.enabled ? 1 : 0.5};">
+                                    <td style="padding: 8px;">
+                                        <div style="font-weight: 500;">${t.name}</div>
+                                        <div style="font-size: 0.75rem; color: var(--text-muted);">${t.run_count} runs, ${t.error_count} errors</div>
+                                    </td>
+                                    <td style="padding: 8px; text-align: center;">${typeIcon}</td>
+                                    <td style="padding: 8px; text-align: center;">${t.interval_minutes}m</td>
+                                    <td style="padding: 8px; text-align: center;" title="${t.last_result || ''}">${statusIcon}</td>
+                                    <td style="padding: 8px; text-align: center; font-size: 0.75rem;">${lastRun}</td>
+                                    <td style="padding: 8px; text-align: right;">
+                                        <button class="btn btn-ghost btn-sm" onclick="runTaskNow('${t.id}')" title="Run now">▶️</button>
+                                        ${t.enabled 
+                                            ? `<button class="btn btn-ghost btn-sm" onclick="disableTask('${t.id}')" title="Disable">⏸️</button>`
+                                            : `<button class="btn btn-ghost btn-sm" onclick="enableTask('${t.id}')" title="Enable">▶️</button>`
+                                        }
+                                        <button class="btn btn-ghost btn-sm" onclick="deleteTask('${t.id}')" title="Delete">🗑️</button>
+                                    </td>
+                                </tr>
+                            `}).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (e) {
+                container.innerHTML = `<div class="empty-state" style="color: var(--error);"><p>❌ ${e.message}</p></div>`;
+            }
+        }
+        
+        function showAddTaskModal() {
+            document.getElementById('add-task-modal').classList.remove('hidden');
+            updateTaskConfigFields();
+        }
+        
+        function updateTaskConfigFields() {
+            const taskType = document.getElementById('task-type').value;
+            const configDiv = document.getElementById('task-config-fields');
+            
+            if (taskType === 'health_check') {
+                configDiv.innerHTML = `
+                    <div class="form-group">
+                        <label>Server IPs (comma-separated, empty = all)</label>
+                        <input type="text" id="task-server-ips" placeholder="1.2.3.4, 5.6.7.8">
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="task-auto-restart" style="width: auto;">
+                            <span>Auto-restart unhealthy containers</span>
+                        </label>
+                    </div>
+                `;
+            } else if (taskType === 'auto_restart') {
+                configDiv.innerHTML = `
+                    <div class="form-group">
+                        <label>Server IPs (comma-separated, empty = all)</label>
+                        <input type="text" id="task-server-ips" placeholder="1.2.3.4, 5.6.7.8">
+                    </div>
+                `;
+            } else if (taskType === 'backup') {
+                configDiv.innerHTML = `
+                    <div class="form-group">
+                        <label>Server IP</label>
+                        <input type="text" id="task-server-ip" placeholder="1.2.3.4" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Container Name</label>
+                        <input type="text" id="task-container-name" placeholder="myapp_prod_postgres" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Backup Type</label>
+                        <select id="task-backup-type">
+                            <option value="postgres">PostgreSQL</option>
+                            <option value="redis">Redis</option>
+                            <option value="files">Files (tar)</option>
+                        </select>
+                    </div>
+                `;
+            }
+        }
+        
+        async function createScheduledTask(e) {
+            e.preventDefault();
+            
+            const taskType = document.getElementById('task-type').value;
+            const config = {};
+            
+            // Build config based on task type
+            if (taskType === 'health_check' || taskType === 'auto_restart') {
+                const serverIps = document.getElementById('task-server-ips')?.value;
+                if (serverIps) {
+                    config.server_ips = serverIps.split(',').map(s => s.trim()).filter(s => s);
+                }
+                if (taskType === 'health_check') {
+                    config.auto_restart = document.getElementById('task-auto-restart')?.checked || false;
+                }
+            } else if (taskType === 'backup') {
+                config.server_ip = document.getElementById('task-server-ip')?.value;
+                config.container_name = document.getElementById('task-container-name')?.value;
+                config.backup_type = document.getElementById('task-backup-type')?.value;
+            }
+            
+            try {
+                await api('POST', '/infra/scheduler/tasks', {
+                    name: document.getElementById('task-name').value,
+                    task_type: taskType,
+                    interval_minutes: parseInt(document.getElementById('task-interval').value),
+                    enabled: true,
+                    config: config,
+                });
+                
+                closeModal('add-task-modal');
+                showToast('Task created', 'success');
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
+            }
+        }
+        
+        async function runTaskNow(taskId) {
+            try {
+                const result = await api('POST', `/infra/scheduler/tasks/${taskId}/run`);
+                showToast(result.success ? 'Task completed' : 'Task failed: ' + result.result, result.success ? 'success' : 'error');
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
+            }
+        }
+        
+        async function enableTask(taskId) {
+            try {
+                await api('POST', `/infra/scheduler/tasks/${taskId}/enable`);
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
+            }
+        }
+        
+        async function disableTask(taskId) {
+            try {
+                await api('POST', `/infra/scheduler/tasks/${taskId}/disable`);
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
+            }
+        }
+        
+        async function deleteTask(taskId) {
+            if (!confirm('Delete this scheduled task?')) return;
+            try {
+                await api('DELETE', `/infra/scheduler/tasks/${taskId}`);
+                showToast('Task deleted', 'success');
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
+            }
+        }
+        
+        async function startScheduler() {
+            try {
+                await api('POST', '/infra/scheduler/start');
+                showToast('Scheduler started', 'success');
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
+            }
+        }
+        
+        async function stopScheduler() {
+            try {
+                await api('POST', '/infra/scheduler/stop');
+                showToast('Scheduler stopped', 'success');
+                loadScheduledTasks();
+            } catch (e) {
+                showToast('Failed: ' + e.message, 'error');
             }
         }
         
