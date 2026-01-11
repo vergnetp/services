@@ -4624,9 +4624,10 @@ CMD ["python", "main.py"]`;
                     // Track last deploy to prevent accidental re-deploys
                     lastDeploySignature = getDeploySignature();
                     
+                    // Store deployment info for logs function
                     window.lastDeployment = { 
                         serverIps: successfulServers.map(s => s.ip), 
-                        name, port, environment, tags 
+                        name, project, port, environment, tags 
                     };
                     
                     const envColor = environment === 'prod' ? '#dc2626' : 
@@ -4663,24 +4664,25 @@ CMD ["python", "main.py"]`;
                             ${tagsHtml}
                             ${domainInfo}
                             ${successfulServers.map(s => {
-                                const containerName = s.container_name || result.container_name || 'unknown';
+                                // Use container_name from response, or fall back to service endpoint
+                                const containerName = s.container_name || result.container_name || '';
                                 return `
                                 <div style="margin-top: 8px;">
                                     <a href="${s.url}" target="_blank" style="color: white;">${s.url}</a>
                                     <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 8px;" 
-                                            onclick="viewContainerLogs('${s.ip}', '${containerName}')">📋 Logs</button>
+                                            onclick="viewContainerLogs('${s.ip}', '${containerName}', {project: '${project}', environment: '${environment}', service: '${name}'})">📋 Logs</button>
                                 </div>
                             `}).join('')}
                             ${failedServers.length > 0 ? `
                                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.3);">
                                     <strong style="color: #fef3c7;">Failed servers:</strong>
                                     ${failedServers.map(s => {
-                                        const containerName = s.container_name || result.container_name || 'unknown';
+                                        const containerName = s.container_name || result.container_name || '';
                                         return `
                                         <div style="margin-top: 4px; color: #fef3c7;">
                                             ❌ ${s.ip}: ${s.error || 'Unknown error'}
                                             <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); color: white; border: none; margin-left: 8px;" 
-                                                    onclick="viewContainerLogs('${s.ip}', '${containerName}')">📋 Logs</button>
+                                                    onclick="viewContainerLogs('${s.ip}', '${containerName}', {project: '${project}', environment: '${environment}', service: '${name}'})">📋 Logs</button>
                                         </div>
                                     `}).join('')}
                                 </div>
@@ -4759,20 +4761,39 @@ CMD ["python", "main.py"]`;
             throw new Error('Node agent not responding');
         }
         
-        async function viewContainerLogs(serverIp, containerName) {
+        async function viewContainerLogs(serverIp, containerName, options = {}) {
             try {
-                const result = await api('GET', `/infra/agent/${serverIp}/containers/${containerName}/logs?lines=200`);
-                
-                // Handle various response formats
                 let logs = 'No logs available';
-                if (typeof result === 'string') {
-                    logs = result;
-                } else if (result?.logs) {
-                    logs = result.logs;
-                } else if (result?.data?.logs) {
-                    logs = result.data.logs;
-                } else if (result) {
-                    logs = JSON.stringify(result, null, 2);
+                let resolvedContainerName = containerName;
+                
+                // If container name is unknown, use the service logs endpoint
+                if (!containerName || containerName === 'unknown' || containerName === 'undefined' || containerName === 'null') {
+                    // Get service info from options or window.lastDeployment
+                    const project = options.project || window.lastDeployment?.project || document.getElementById('deploy-project')?.value?.trim();
+                    const environment = options.environment || window.lastDeployment?.environment || document.getElementById('deploy-environment')?.value;
+                    const service = options.service || window.lastDeployment?.name || document.getElementById('deploy-name')?.value;
+                    
+                    if (!project || !environment || !service) {
+                        showToast('Missing project/environment/service info for logs', 'error');
+                        return;
+                    }
+                    
+                    const result = await api('GET', `/infra/service/${serverIp}/logs?project=${encodeURIComponent(project)}&environment=${encodeURIComponent(environment)}&service=${encodeURIComponent(service)}&lines=200`);
+                    logs = result.logs || 'No logs available';
+                    resolvedContainerName = result.container_name || `${project}_${environment}_${service}`;
+                } else {
+                    const result = await api('GET', `/infra/agent/${serverIp}/containers/${containerName}/logs?lines=200`);
+                    
+                    // Handle various response formats
+                    if (typeof result === 'string') {
+                        logs = result;
+                    } else if (result?.logs) {
+                        logs = result.logs;
+                    } else if (result?.data?.logs) {
+                        logs = result.data.logs;
+                    } else if (result) {
+                        logs = JSON.stringify(result, null, 2);
+                    }
                 }
                 
                 // Remove existing log modals
@@ -4787,7 +4808,7 @@ CMD ["python", "main.py"]`;
                 overlay.innerHTML = `
                     <div style="background: var(--bg-card); border-radius: 12px; width: 90%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
                         <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-weight: 600;">📋 Container Logs: ${containerName} @ ${serverIp}</span>
+                            <span style="font-weight: 600;">📋 Container Logs: ${resolvedContainerName} @ ${serverIp}</span>
                             <button class="btn btn-ghost btn-sm" onclick="this.closest('.log-modal-overlay').remove()">✕</button>
                         </div>
                         <div style="flex: 1; overflow: auto; padding: 0;">
@@ -4795,7 +4816,7 @@ CMD ["python", "main.py"]`;
                                         min-height: 300px; max-height: 60vh; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word;"></pre>
                         </div>
                         <div style="padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px;">
-                            <button class="btn btn-primary btn-sm" onclick="viewContainerLogs('${serverIp}', '${containerName}')">↻ Refresh</button>
+                            <button class="btn btn-primary btn-sm" onclick="viewContainerLogs('${serverIp}', '${resolvedContainerName}')">↻ Refresh</button>
                             <button class="btn btn-ghost btn-sm" onclick="this.closest('.log-modal-overlay').remove()">Close</button>
                         </div>
                     </div>

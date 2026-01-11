@@ -1707,6 +1707,35 @@ async def agent_container_logs(
         return await client.container_logs(container_name, lines)
 
 
+@router.get("/service/{server_ip}/logs")
+async def get_service_logs(
+    server_ip: str,
+    project: str = Query(..., description="Project name"),
+    environment: str = Query(..., description="Environment (prod, staging, dev)"),
+    service: str = Query(..., description="Service name"),
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+    lines: int = Query(200),
+):
+    """Get logs for a service by project/env/service identifiers."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    async with NodeAgentClient(server_ip, api_key) as client:
+        result = await client.get_service_logs(
+            workspace_id=str(user.id),
+            project=project,
+            environment=environment,
+            service=service,
+            lines=lines,
+        )
+        return {
+            "container_name": result.data.get('container_name', ''),
+            "logs": result.data.get('logs', '') if result.success else result.error,
+        }
+
+
 @router.post("/agent/{server_ip}/containers/{container_name}/remove")
 async def agent_remove_container(
     server_ip: str,
