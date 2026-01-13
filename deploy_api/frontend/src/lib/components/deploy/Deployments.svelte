@@ -344,6 +344,13 @@
                   value={dep.id}
                   disabled={rollbackInProgress}
                 >
+                <div class="deploy-version">
+                  {#if dep.version}
+                    <span class="version-badge">v{dep.version}</span>
+                  {:else}
+                    <span class="version-badge muted">{dep.id.substring(0, 8)}</span>
+                  {/if}
+                </div>
                 <div class="deploy-info">
                   <div class="deploy-date">{formatDate(dep.deployed_at || dep.created_at)}</div>
                   <div class="deploy-by">by {dep.deployed_by || dep.user || 'unknown'}</div>
@@ -696,6 +703,22 @@
   
   .deployment-option input {
     width: auto;
+  }
+  
+  .deploy-version {
+    min-width: 50px;
+  }
+  
+  .version-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--purple);
+  }
+  
+  .version-badge.muted {
+    color: var(--text-muted);
+    font-size: 0.75rem;
   }
   
   .deploy-info {

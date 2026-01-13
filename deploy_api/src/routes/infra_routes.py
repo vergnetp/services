@@ -6636,6 +6636,8 @@ async def rollback_deployment(
             })
             
             # Record this rollback as a new deployment
+            # Use source_version from target - rollback runs the same code version
+            source_version_label = f"v{target.version}" if target.version else target.id[:8]
             rollback_record = await deployment_store.record_deployment(
                 workspace_id=str(user.id),
                 project=project,
@@ -6652,9 +6654,10 @@ async def rollback_deployment(
                 env_vars=target.env_vars,
                 deployed_by=str(user.id),
                 
-                comment=req.comment or f"Rollback to {target.id}",
+                comment=req.comment or f"Rollback to {source_version_label}",
                 is_rollback=True,
                 rollback_from_id=target.id,
+                source_version=target.version,  # Use same version as target
                 config_snapshot=target.config_snapshot,
             )
             
@@ -6735,12 +6738,8 @@ async def rollback_deployment(
                     completed_at=completed_at,
                 )
                 
-                # Mark the current deployment as rolled back
-                if current_deployments:
-                    await deployment_store.update_deployment(
-                        current_deployments[0].id,
-                        status="rolled_back",
-                    )
+                # Note: We don't mark the previous deployment as "rolled_back"
+                # All successful deployments stay "success" and remain rollback candidates
                 
                 successful_count = len([s for s in result.servers if s.success])
                 yield emit("complete", {

@@ -105,6 +105,7 @@ async def init_schema(db: Any) -> None:
             comment TEXT,
             is_rollback INTEGER DEFAULT 0,
             rollback_from_id TEXT,
+            source_version INTEGER,
             config_snapshot TEXT,
             started_at TEXT,
             completed_at TEXT,

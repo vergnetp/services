@@ -692,6 +692,7 @@ class DeploymentStore:
         comment: str = None,
         is_rollback: bool = False,
         rollback_from_id: str = None,
+        source_version: int = None,  # For rollbacks: version being rolled back TO
         config_snapshot: dict = None,
     ) -> Deployment:
         """
@@ -735,6 +736,7 @@ class DeploymentStore:
             "comment": comment,
             "is_rollback": 1 if is_rollback else 0,
             "rollback_from_id": rollback_from_id,
+            "source_version": source_version,  # For rollbacks: the version we're rolling back TO
             "config_snapshot": json.dumps(config_snapshot) if config_snapshot else None,
         })
         
@@ -767,12 +769,18 @@ class DeploymentStore:
         
         # If transitioning to success, assign version number
         if status == "success" and entity.get("status") != "success":
-            next_version = await self._get_next_version(
-                entity["service_id"], 
-                entity["env"]
-            )
-            entity["version"] = next_version
-            assigned_version = next_version
+            # For rollbacks, use source_version (the version we rolled back TO)
+            if entity.get("is_rollback") and entity.get("source_version"):
+                entity["version"] = entity["source_version"]
+                assigned_version = entity["source_version"]
+            else:
+                # For regular deploys, auto-increment version
+                next_version = await self._get_next_version(
+                    entity["service_id"], 
+                    entity["env"]
+                )
+                entity["version"] = next_version
+                assigned_version = next_version
         
         if status:
             entity["status"] = status
@@ -810,11 +818,13 @@ class DeploymentStore:
     
     async def _get_next_version(self, service_id: str, env: str) -> int:
         """Get next version number for a coordinate (service_id + env)."""
-        result = await self.db.fetchone(
-            "SELECT MAX(version) as max_version FROM deployments WHERE service_id = ? AND env = ?",
+        # Use raw execute for efficient MAX query
+        result = await self.db.execute(
+            "SELECT MAX(version) FROM deployments WHERE service_id = ? AND env = ?",
             (service_id, env)
         )
-        current_max = result["max_version"] if result and result["max_version"] else 0
+        # result is List[Tuple] like [(5,)] or [(None,)]
+        current_max = result[0][0] if result and result[0][0] else 0
         return current_max + 1
     
     async def get_by_version(
@@ -868,11 +878,11 @@ class DeploymentStore:
         if not service_entity:
             return None
         
-        result = await self.db.fetchone(
-            "SELECT MAX(version) as max_version FROM deployments WHERE service_id = ? AND env = ?",
+        result = await self.db.execute(
+            "SELECT MAX(version) FROM deployments WHERE service_id = ? AND env = ?",
             (service_entity["id"], env)
         )
-        return result["max_version"] if result and result["max_version"] else None
+        return result[0][0] if result and result[0][0] else None
     
     async def get_deployment(
         self,
