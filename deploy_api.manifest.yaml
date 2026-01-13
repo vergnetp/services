@@ -1,5 +1,5 @@
 name: deploy_api
-version: "0.1.0"
+version: "0.2.0"
 description: |
   Deployment Management Service - API wrapper for infra deployment system.
   Provides REST endpoints for workspace, project, service, and deployment management.
@@ -9,9 +9,11 @@ description: |
 # =============================================================================
 
 # Database configuration
+# Note: DATABASE_PATH should be absolute, e.g. /app/data/deploy.db
+# For local dev, the path is resolved in config.py relative to project root
 database:
   type: sqlite
-  path: ${DATABASE_PATH:-./data/deploy.db}
+  path: ${DATABASE_PATH:-}
 
 # Redis (optional - for job queue)
 redis:
@@ -43,8 +45,6 @@ billing:
   stripe_secret_key: ${STRIPE_SECRET_KEY}
   stripe_publishable_key: ${STRIPE_PUBLISHABLE_KEY}
   stripe_webhook_secret: ${STRIPE_WEBHOOK_SECRET}
-  # Test mode auto-detected from key prefix (sk_test_*), or force it:
-  # test_mode: true
   default_currency: usd
   trial_days: 14
   
@@ -102,14 +102,26 @@ debug: ${DEBUG:-false}
 log_level: ${LOG_LEVEL:-INFO}
 
 # =============================================================================
-# Entities (generates _gen/db_schema.py, _gen/schemas.py, _gen/crud.py)
+# Entities (normalized schema)
+# =============================================================================
+#
+# Relationships:
+#   workspace (saas)
+#     └── project
+#           └── service (FK project_id)
+#     └── droplet (server inventory)
+#     └── service_droplet (junction: service ↔ droplet per env)
+#     └── deployment (history, FK service_id)
+#     └── deploy_config (saved settings, FK service_id)
+#     └── credential (FK project_id)
+#
 # =============================================================================
 
 entities:
-  # NOTE: Workspace and WorkspaceMember are now handled by kernel.saas
-  # when saas.enabled=true. Only app-specific entities below.
 
-  # Projects
+  # -------------------------------------------------------------------------
+  # Project - container for services
+  # -------------------------------------------------------------------------
   - name: project
     workspace_scoped: true
     soft_delete: false
@@ -117,23 +129,196 @@ entities:
       - name: name
         type: string
         required: true
+      - name: description
+        type: string
       - name: docker_hub_user
         type: string
-        required: true
-      - name: version
-        type: string
-        default: "latest"
-      - name: config_json
-        type: json
       - name: created_by
         type: string
 
-  # Credentials (encrypted)
+  # -------------------------------------------------------------------------
+  # Service - deployable unit within a project
+  # -------------------------------------------------------------------------
+  - name: service
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: project_id
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: port
+        type: int
+        default: 8000
+      - name: health_endpoint
+        type: string
+        default: "/health"
+      - name: description
+        type: string
+
+  # -------------------------------------------------------------------------
+  # Droplet - server inventory
+  # -------------------------------------------------------------------------
+  - name: droplet
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: do_droplet_id
+        type: string
+        required: true
+      - name: name
+        type: string
+      - name: ip
+        type: string
+      - name: region
+        type: string
+      - name: size
+        type: string
+      - name: status
+        type: string
+        default: "active"
+      - name: snapshot_id
+        type: string
+      - name: created_by
+        type: string
+
+  # -------------------------------------------------------------------------
+  # ServiceDroplet - junction: which services run on which droplets (per env)
+  # -------------------------------------------------------------------------
+  - name: service_droplet
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: service_id
+        type: string
+        required: true
+      - name: droplet_id
+        type: string
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: container_name
+        type: string
+      - name: is_healthy
+        type: bool
+        default: true
+      - name: last_healthy_at
+        type: datetime
+
+  # -------------------------------------------------------------------------
+  # Deployment - deployment history/logs
+  # -------------------------------------------------------------------------
+  - name: deployment
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: service_id
+        type: string
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: source_type
+        type: string
+        default: "image"
+      - name: image_name
+        type: string
+      - name: image_digest
+        type: string
+      - name: git_url
+        type: string
+      - name: git_branch
+        type: string
+      - name: git_commit
+        type: string
+      - name: droplet_ids
+        type: json
+      - name: port
+        type: int
+      - name: env_vars
+        type: json
+      - name: status
+        type: string
+        default: "pending"
+      - name: triggered_by
+        type: string
+        required: true
+      - name: comment
+        type: string
+      - name: is_rollback
+        type: bool
+        default: false
+      - name: rollback_from_id
+        type: string
+      - name: config_snapshot
+        type: json
+      - name: started_at
+        type: datetime
+      - name: completed_at
+        type: datetime
+      - name: duration_seconds
+        type: float
+      - name: result_json
+        type: json
+      - name: error
+        type: text
+
+  # -------------------------------------------------------------------------
+  # DeployConfig - saved deployment settings per service/env
+  # -------------------------------------------------------------------------
+  - name: deploy_config
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: service_id
+        type: string
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: source_type
+        type: string
+        default: "git"
+      - name: git_url
+        type: string
+      - name: git_branch
+        type: string
+        default: "main"
+      - name: git_folders
+        type: json
+      - name: main_folder_path
+        type: string
+      - name: dependency_folder_paths
+        type: json
+      - name: exclude_patterns
+        type: json
+      - name: port
+        type: int
+        default: 8000
+      - name: env_vars
+        type: json
+      - name: dockerfile_path
+        type: string
+        default: "Dockerfile"
+      - name: snapshot_id
+        type: string
+      - name: region
+        type: string
+      - name: size
+        type: string
+        default: "s-1vcpu-1gb"
+
+  # -------------------------------------------------------------------------
+  # Credential - encrypted credentials per project/env
+  # -------------------------------------------------------------------------
   - name: credential
     workspace_scoped: true
     soft_delete: false
     fields:
-      - name: project_name
+      - name: project_id
         type: string
         required: true
       - name: env
@@ -142,61 +327,11 @@ entities:
       - name: encrypted_blob
         type: text
 
-  # Deployment runs (history)
-  - name: deployment_run
-    workspace_scoped: true
-    soft_delete: false
-    fields:
-      - name: job_id
-        type: string
-        required: true
-      - name: project_name
-        type: string
-        required: true
-      - name: env
-        type: string
-        required: true
-      - name: services
-        type: json
-      - name: status
-        type: string
-        default: "queued"
-      - name: triggered_by
-        type: string
-        required: true
-      - name: triggered_at
-        type: datetime
-      - name: started_at
-        type: datetime
-      - name: completed_at
-        type: datetime
-      - name: result_json
-        type: json
-      - name: error
-        type: text
-
-  # Deployment state (current state per project/env)
-  - name: deployment_state
-    workspace_scoped: true
-    soft_delete: false
-    fields:
-      - name: project_name
-        type: string
-        required: true
-      - name: env
-        type: string
-        required: true
-      - name: state_json
-        type: json
-      - name: last_deployed_at
-        type: datetime
-      - name: last_deployed_by
-        type: string
-
 # =============================================================================
 # Custom routes (not auto-generated, live in src/routes/)
 # =============================================================================
 
 custom_routes:
-  - deployments  # Trigger deploy, status, rollback
-  - projects     # Extended project routes with services/credentials
+  - deployments
+  - projects
+  - infra_routes

@@ -14,30 +14,36 @@ Deploy API provides REST endpoints for:
 ## Architecture
 
 ```
-deploy_api/
-├── manifest.yaml        # Entity definitions (source of truth)
-├── config.py           # Service configuration
-├── main.py             # Application entry point
-├── worker.py           # Background job processor
-├── _gen/               # AUTO-GENERATED from manifest
-│   ├── db_schema.py    # Database tables
-│   ├── schemas.py      # Pydantic models
-│   ├── crud.py         # CRUD operations
-│   └── routes/         # (Optional) Basic CRUD routes
-├── src/                # CUSTOM business logic
-│   ├── schemas.py      # API-specific schemas
-│   ├── stores.py       # Higher-level store operations
-│   ├── deps.py         # FastAPI dependencies
-│   ├── access.py       # Workspace access checker
-│   ├── routes/         # Custom API routes
-│   │   ├── workspaces.py
-│   │   ├── projects.py
-│   │   └── deployments.py
-│   └── workers/        # Background job handlers
-│       └── tasks.py
-├── static/             # Web UI assets
-└── data/               # SQLite database (gitignored)
+deploy_api/                 # Project root
+├── data/                   # SQLite database (gitignored, persists across updates)
+│   └── deploy.db
+├── deploy_api/             # Python package
+│   ├── manifest.yaml       # Entity definitions (source of truth)
+│   ├── config.py           # Service configuration
+│   ├── main.py             # Application entry point
+│   ├── worker.py           # Background job processor
+│   ├── _gen/               # AUTO-GENERATED from manifest
+│   │   ├── db_schema.py    # Database tables
+│   │   ├── schemas.py      # Pydantic models
+│   │   ├── crud.py         # CRUD operations
+│   │   └── routes/         # (Optional) Basic CRUD routes
+│   ├── src/                # CUSTOM business logic
+│   │   ├── schemas.py      # API-specific schemas
+│   │   ├── stores.py       # Higher-level store operations
+│   │   ├── deps.py         # FastAPI dependencies
+│   │   ├── access.py       # Workspace access checker
+│   │   ├── routes/         # Custom API routes
+│   │   │   ├── workspaces.py
+│   │   │   ├── projects.py
+│   │   │   └── deployments.py
+│   │   └── workers/        # Background job handlers
+│   │       └── tasks.py
+│   ├── static/             # Web UI assets (built from frontend/)
+│   └── frontend/           # Svelte source (npm run build → static/)
+└── requirements.txt
 ```
+
+**Note:** The `data/` folder is at project root (not inside `deploy_api/`) so it persists when you replace the code folder.
 
 ## Quick Start
 

@@ -26,7 +26,7 @@ from .src.workers import TASKS
 async def init_app():
     """Initialize database for worker processes."""
     settings = get_settings()
-    settings.ensure_data_dir()
+    # Note: Data dir creation handled by kernel based on manifest database.path
     
     # Use kernel's DB session (same as main app)
     init_db_session(

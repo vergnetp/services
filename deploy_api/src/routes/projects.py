@@ -1,79 +1,78 @@
 """
-Project management routes.
+Project and Service management routes.
 """
 
-import json
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 try:
     from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
-    from shared_libs.backend.app_kernel.saas import require_workspace_member
 except ImportError:
     UserIdentity = dict
     def get_current_user(): pass
-    def require_workspace_member(): pass
 
-from ..schemas import (
-    ProjectCreateRequest,
-    ProjectUpdateRequest,
-    ProjectAPIResponse,
-    ServiceAddRequest,
-    ServiceAPIResponse,
-    CredentialsSetRequest,
-    CredentialsAPIResponse,
-    ErrorResponse,
+from ..deps import (
+    get_project_store, 
+    get_service_store, 
+    get_credentials_store,
 )
-from ..deps import get_project_store, get_credentials_store
+from ..stores import ProjectStore, ServiceStore, CredentialsStore
 
 
-router = APIRouter(prefix="/workspaces/{workspace_id}/projects", tags=["projects"])
+router = APIRouter(prefix="/projects", tags=["Projects & Services"])
 
 
-def _parse_config(project: dict) -> dict:
-    """Parse config_json if needed."""
-    config = project.get("config_json", "{}")
-    if isinstance(config, str):
-        config = json.loads(config)
-    return config
+# =============================================================================
+# Request/Response Models
+# =============================================================================
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    docker_hub_user: Optional[str] = None
 
 
-def _project_response(project: dict) -> ProjectAPIResponse:
-    """Convert DB project to response."""
-    config = _parse_config(project)
-    project_config = config.get("project", {})
-    
-    return ProjectAPIResponse(
-        id=project["id"],
-        workspace_id=project["workspace_id"],
-        name=project["name"],
-        docker_hub_user=project["docker_hub_user"],
-        version=project["version"],
-        services=project_config.get("services", {}),
-        environments=list(project_config.get("environments", {}).keys()),
-        created_at=project["created_at"],
-        updated_at=project["updated_at"],
-        created_by=project["created_by"],
-    )
+class ProjectUpdate(BaseModel):
+    description: Optional[str] = None
+    docker_hub_user: Optional[str] = None
+
+
+class ServiceCreate(BaseModel):
+    name: str
+    port: int = 8000
+    health_endpoint: str = "/health"
+    description: Optional[str] = None
+
+
+class ServiceUpdate(BaseModel):
+    port: Optional[int] = None
+    health_endpoint: Optional[str] = None
+    description: Optional[str] = None
+
+
+class CredentialsSet(BaseModel):
+    digitalocean_token: str
+    docker_hub_user: Optional[str] = None
+    docker_hub_password: Optional[str] = None
 
 
 # =============================================================================
 # Projects CRUD
 # =============================================================================
 
-@router.post(
-    "",
-    response_model=ProjectAPIResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def create_project(
-    workspace_id: str,
-    data: ProjectCreateRequest,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    data: ProjectCreate,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
 ):
-    """Create a new project in the workspace."""
-    # Check if project already exists
-    existing = await project_store.get(workspace_id, data.name)
+    """Create a new project."""
+    workspace_id = str(user.id)
+    
+    # Check if exists
+    existing = await project_store.get_by_name(workspace_id, data.name)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -83,219 +82,232 @@ async def create_project(
     project = await project_store.create(
         workspace_id=workspace_id,
         name=data.name,
+        description=data.description,
         docker_hub_user=data.docker_hub_user,
-        version=data.version,
-        created_by=current_user.id,
+        created_by=str(user.id),
     )
     
-    return _project_response(project)
+    return project
 
 
-@router.get("", response_model=list[ProjectAPIResponse])
+@router.get("")
 async def list_projects(
-    workspace_id: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
 ):
-    """List all projects in the workspace."""
-    projects = await project_store.list(workspace_id)
-    return [_project_response(p) for p in projects]
+    """List all projects."""
+    projects = await project_store.list(str(user.id))
+    return {"projects": projects}
 
 
-@router.get(
-    "/{project_name}",
-    response_model=ProjectAPIResponse,
-    responses={404: {"model": ErrorResponse}},
-)
+@router.get("/{project_name}")
 async def get_project(
-    workspace_id: str,
     project_name: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
 ):
-    """Get project details."""
-    project = await project_store.get(workspace_id, project_name)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    """Get project with its services."""
+    workspace_id = str(user.id)
     
-    return _project_response(project)
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Get services
+    services = await service_store.list_for_project(project["id"])
+    
+    return {
+        **project,
+        "services": services,
+    }
 
 
-@router.patch(
-    "/{project_name}",
-    response_model=ProjectAPIResponse,
-    responses={404: {"model": ErrorResponse}},
-)
+@router.patch("/{project_name}")
 async def update_project(
-    workspace_id: str,
     project_name: str,
-    data: ProjectUpdateRequest,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    data: ProjectUpdate,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
 ):
-    """Update project settings."""
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    """Update project."""
+    workspace_id = str(user.id)
     
-    project = await project_store.update(workspace_id, project_name, **updates)
+    project = await project_store.get_by_name(workspace_id, project_name)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Project not found")
     
-    return _project_response(project)
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    if updates:
+        project = await project_store.update(project["id"], **updates)
+    
+    return project
 
 
-@router.delete(
-    "/{project_name}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: {"model": ErrorResponse}},
-)
+@router.delete("/{project_name}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
-    workspace_id: str,
     project_name: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
 ):
     """Delete a project."""
-    deleted = await project_store.delete(workspace_id, project_name)
-    if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
-
-# =============================================================================
-# Services
-# =============================================================================
-
-@router.post(
-    "/{project_name}/services",
-    response_model=ServiceAPIResponse,
-    status_code=status.HTTP_201_CREATED,
-    responses={404: {"model": ErrorResponse}},
-)
-async def add_service(
-    workspace_id: str,
-    project_name: str,
-    data: ServiceAddRequest,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
-):
-    """Add a service to the project."""
-    project = await project_store.get(workspace_id, project_name)
+    workspace_id = str(user.id)
+    
+    project = await project_store.get_by_name(workspace_id, project_name)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Project not found")
     
-    # Build service config
-    service_config = {}
-    
-    if data.image:
-        service_config["image"] = data.image
-    if data.dockerfile:
-        service_config["dockerfile"] = data.dockerfile
-    if data.dockerfile_content:
-        service_config["dockerfile_content"] = data.dockerfile_content
-    if data.git_repo:
-        service_config["git_repo"] = data.git_repo
-    if data.ports:
-        service_config["ports"] = data.ports
-    if data.env_vars:
-        service_config["env_vars"] = data.env_vars
-    if data.domain:
-        service_config["domain"] = data.domain
-    if data.health_check:
-        service_config["health_check"] = data.health_check
-    
-    # Resource config
-    service_config["servers_count"] = data.servers_count
-    service_config["server_zone"] = data.server_zone
-    service_config["cpu"] = data.cpu
-    service_config["memory"] = data.memory
-    
-    await project_store.add_service(workspace_id, project_name, data.name, service_config)
-    
-    return ServiceAPIResponse(
-        name=data.name,
-        image=data.image,
-        dockerfile=data.dockerfile,
-        git_repo=data.git_repo,
-        ports=data.ports or [],
-        servers_count=data.servers_count,
-        server_zone=data.server_zone,
-    )
+    await project_store.delete(project["id"])
 
 
-@router.get(
-    "/{project_name}/services",
-    response_model=list[ServiceAPIResponse],
-    responses={404: {"model": ErrorResponse}},
-)
-async def list_services(
-    workspace_id: str,
+# =============================================================================
+# Services CRUD
+# =============================================================================
+
+@router.post("/{project_name}/services", status_code=status.HTTP_201_CREATED)
+async def create_service(
     project_name: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    data: ServiceCreate,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
 ):
-    """List services in the project."""
-    config = await project_store.get_config(workspace_id, project_name)
-    if not config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    """Create a service in a project."""
+    workspace_id = str(user.id)
     
-    services = config.get("project", {}).get("services", {})
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
     
-    return [
-        ServiceAPIResponse(
-            name=name,
-            image=svc.get("image"),
-            dockerfile=svc.get("dockerfile"),
-            git_repo=svc.get("git_repo"),
-            ports=svc.get("ports", []),
-            servers_count=svc.get("servers_count", 1),
-            server_zone=svc.get("server_zone", "lon1"),
+    # Check if service exists
+    existing = await service_store.get_by_name(project["id"], data.name)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Service '{data.name}' already exists in project '{project_name}'",
         )
-        for name, svc in services.items()
-    ]
+    
+    service = await service_store.create(
+        workspace_id=workspace_id,
+        project_id=project["id"],
+        name=data.name,
+        port=data.port,
+        health_endpoint=data.health_endpoint,
+        description=data.description,
+    )
+    
+    return service
 
 
-@router.delete(
-    "/{project_name}/services/{service_name}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: {"model": ErrorResponse}},
-)
-async def remove_service(
-    workspace_id: str,
+@router.get("/{project_name}/services")
+async def list_services(
+    project_name: str,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
+):
+    """List services in a project."""
+    workspace_id = str(user.id)
+    
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    services = await service_store.list_for_project(project["id"])
+    return {"services": services}
+
+
+@router.get("/{project_name}/services/{service_name}")
+async def get_service(
     project_name: str,
     service_name: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
 ):
-    """Remove a service from the project."""
-    removed = await project_store.remove_service(workspace_id, project_name, service_name)
-    if not removed:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project or service not found")
+    """Get a specific service."""
+    workspace_id = str(user.id)
+    
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    service = await service_store.get_by_name(project["id"], service_name)
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    
+    return service
+
+
+@router.patch("/{project_name}/services/{service_name}")
+async def update_service(
+    project_name: str,
+    service_name: str,
+    data: ServiceUpdate,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
+):
+    """Update a service."""
+    workspace_id = str(user.id)
+    
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    service = await service_store.get_by_name(project["id"], service_name)
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    if updates:
+        service = await service_store.update(service["id"], **updates)
+    
+    return service
+
+
+@router.delete("/{project_name}/services/{service_name}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_service(
+    project_name: str,
+    service_name: str,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
+):
+    """Delete a service."""
+    workspace_id = str(user.id)
+    
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    service = await service_store.get_by_name(project["id"], service_name)
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    
+    await service_store.delete(service["id"])
 
 
 # =============================================================================
 # Credentials
 # =============================================================================
 
-@router.put(
-    "/{project_name}/credentials/{env}",
-    response_model=CredentialsAPIResponse,
-    responses={404: {"model": ErrorResponse}},
-)
+@router.put("/{project_name}/credentials/{env}")
 async def set_credentials(
-    workspace_id: str,
     project_name: str,
     env: str,
-    data: CredentialsSetRequest,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
-    credentials_store=Depends(get_credentials_store),
+    data: CredentialsSet,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    credentials_store: CredentialsStore = Depends(get_credentials_store),
 ):
     """Set credentials for a project environment."""
-    # Verify project exists
-    project = await project_store.get(workspace_id, project_name)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    workspace_id = str(user.id)
     
-    # Store credentials
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
     creds = {
         "digitalocean_token": data.digitalocean_token,
     }
@@ -303,65 +315,57 @@ async def set_credentials(
         creds["docker_hub_user"] = data.docker_hub_user
     if data.docker_hub_password:
         creds["docker_hub_password"] = data.docker_hub_password
-    if data.postgres_password:
-        creds["postgres_password"] = data.postgres_password
-    if data.redis_password:
-        creds["redis_password"] = data.redis_password
     
-    await credentials_store.set(workspace_id, project_name, env, creds)
+    await credentials_store.set(workspace_id, project["id"], env, creds)
     
-    from datetime import datetime
-    return CredentialsAPIResponse(
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=env,
-        has_digitalocean=True,
-        has_docker_hub=bool(data.docker_hub_user),
-        updated_at=datetime.utcnow(),
-    )
+    return {
+        "project": project_name,
+        "env": env,
+        "has_digitalocean": True,
+        "has_docker_hub": bool(data.docker_hub_user),
+    }
 
 
-@router.get(
-    "/{project_name}/credentials/{env}",
-    response_model=CredentialsAPIResponse,
-    responses={404: {"model": ErrorResponse}},
-)
+@router.get("/{project_name}/credentials/{env}")
 async def get_credentials_status(
-    workspace_id: str,
     project_name: str,
     env: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    credentials_store=Depends(get_credentials_store),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    credentials_store: CredentialsStore = Depends(get_credentials_store),
 ):
-    """Check if credentials are set (doesn't return actual credentials)."""
-    exists = await credentials_store.exists(workspace_id, project_name, env)
+    """Check if credentials are set (doesn't return actual secrets)."""
+    workspace_id = str(user.id)
     
-    if not exists:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credentials not set")
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
     
-    creds = await credentials_store.get(workspace_id, project_name, env)
+    creds = await credentials_store.get(project["id"], env)
+    if not creds:
+        raise HTTPException(status_code=404, detail="Credentials not set")
     
-    from datetime import datetime
-    return CredentialsAPIResponse(
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=env,
-        has_digitalocean=bool(creds.get("digitalocean_token")),
-        has_docker_hub=bool(creds.get("docker_hub_user")),
-        updated_at=datetime.utcnow(),
-    )
+    return {
+        "project": project_name,
+        "env": env,
+        "has_digitalocean": bool(creds.get("digitalocean_token")),
+        "has_docker_hub": bool(creds.get("docker_hub_user")),
+    }
 
 
-@router.delete(
-    "/{project_name}/credentials/{env}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
+@router.delete("/{project_name}/credentials/{env}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_credentials(
-    workspace_id: str,
     project_name: str,
     env: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    credentials_store=Depends(get_credentials_store),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    credentials_store: CredentialsStore = Depends(get_credentials_store),
 ):
     """Delete credentials for a project environment."""
-    await credentials_store.delete(workspace_id, project_name, env)
+    workspace_id = str(user.id)
+    
+    project = await project_store.get_by_name(workspace_id, project_name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    await credentials_store.delete(project["id"], env)

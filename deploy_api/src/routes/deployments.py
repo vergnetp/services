@@ -1,442 +1,254 @@
 """
-Deployment management routes.
+Deployment history routes.
+
+This provides a REST API for querying deployment history.
+The actual deployment is triggered via /api/v1/infra/deploy endpoints.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import List, Optional
 
 try:
     from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
-    from shared_libs.backend.app_kernel.saas import require_workspace_member
-    from shared_libs.backend.app_kernel.jobs import get_job_client
-    from shared_libs.backend.infra.deploy import get_deployment_lock_manager
-    from shared_libs.backend.infra.utils.naming import DeploymentNaming
 except ImportError:
     UserIdentity = dict
     def get_current_user(): pass
-    def require_workspace_member(): pass
-    def get_job_client(): pass
-    def get_deployment_lock_manager(): pass
-    class DeploymentNaming:
-        @staticmethod
-        def get_container_name(*args): return "_".join(args)
 
-from ..schemas import (
-    DeploymentTriggerRequest,
-    DeploymentAPIResponse,
-    DeploymentStatusResponse,
-    DeploymentHistoryResponse,
-    ProjectStatusResponse,
-    ContainerStatusResponse,
-    ErrorResponse,
-)
-from ..deps import (
-    get_project_store,
-    get_credentials_store,
-    get_deployment_store,
-)
+from ..deps import get_deployment_store, get_project_store
+from ..stores import DeploymentStore, ProjectStore
 
 
-router = APIRouter(prefix="/workspaces/{workspace_id}/projects/{project_name}", tags=["deployments"])
+router = APIRouter(prefix="/deployments", tags=["Deployment History"])
 
 
-# =============================================================================
-# Trigger Deployment
-# =============================================================================
-
-@router.post(
-    "/deploy",
-    response_model=DeploymentAPIResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    responses={
-        404: {"model": ErrorResponse},
-        400: {"model": ErrorResponse},
-    },
-)
-async def trigger_deployment(
-    workspace_id: str,
-    project_name: str,
-    data: DeploymentTriggerRequest,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
-    credentials_store=Depends(get_credentials_store),
-    deployment_store=Depends(get_deployment_store),
-):
-    """
-    Trigger a deployment.
-    
-    Returns immediately with a job_id. Poll /deploy/{job_id} for status.
-    """
-    # Verify project exists
-    project = await project_store.get(workspace_id, project_name)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    
-    # Verify credentials are set
-    creds_exist = await credentials_store.exists(workspace_id, project_name, data.env)
-    if not creds_exist:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Credentials not set for environment '{data.env}'. Set credentials first.",
-        )
-    
-    # Get job client
-    try:
-        job_client = get_job_client()
-    except RuntimeError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Job queue not available. Check Redis connection.",
-        )
-    
-    # Enqueue deployment job
-    result = await job_client.enqueue(
-        "deploy",
-        {
-            "workspace_id": workspace_id,
-            "project_name": project_name,
-            "env": data.env,
-            "services": data.services,
-            "force": data.force,
-            "triggered_by": current_user.id,
-        },
-    )
-    job_id = result.job_id if hasattr(result, 'job_id') else str(result)
-    
-    # Record deployment run
-    run = await deployment_store.create_run(
-        job_id=job_id,
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=data.env,
-        triggered_by=current_user.id,
-        services=data.services,
-    )
-    
-    return DeploymentAPIResponse(
-        job_id=job_id,
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=data.env,
-        status="queued",
-        triggered_by=current_user.id,
-        triggered_at=run["triggered_at"],
-    )
-
-
-# =============================================================================
-# Deployment Status
-# =============================================================================
-
-@router.get(
-    "/deploy/{job_id}",
-    response_model=DeploymentStatusResponse,
-    responses={404: {"model": ErrorResponse}},
-)
-async def get_deployment_status(
-    workspace_id: str,
-    project_name: str,
-    job_id: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    deployment_store=Depends(get_deployment_store),
-):
-    """Get deployment status and logs."""
-    # Get deployment run from DB (for metadata)
-    run = await deployment_store.get_run(job_id)
-    if not run:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
-    
-    # Verify it belongs to this project
-    if run["workspace_id"] != workspace_id or run["project_name"] != project_name:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
-    
-    # Get real-time job status from Redis (primary source)
-    job_status = None
-    try:
-        job_client = get_job_client()
-        job_status = await job_client.get_job_status(job_id)
-    except (RuntimeError, AttributeError):
-        pass
-    
-    # Use Redis status if available, fall back to DB
-    if job_status:
-        status_val = job_status.get("status", run["status"])
-        step = job_status.get("step")
-        progress = job_status.get("progress")
-        error = job_status.get("error") or run.get("error")
-        result = job_status.get("result") or run.get("result")
-    else:
-        status_val = run["status"]
-        step = None
-        progress = None
-        error = run.get("error")
-        result = run.get("result")
-    
-    return DeploymentStatusResponse(
-        job_id=job_id,
-        status=status_val,
-        step=step,
-        progress=progress,
-        logs=[],  # Could add log streaming later
-        started_at=run.get("started_at"),
-        completed_at=run.get("completed_at"),
-        result=result,
-        error=error,
-    )
-
-
-# =============================================================================
-# Deployment History
-# =============================================================================
-
-@router.get(
-    "/deployments",
-    response_model=DeploymentHistoryResponse,
-)
+@router.get("")
 async def list_deployments(
-    workspace_id: str,
-    project_name: str,
-    env: str = None,
-    limit: int = 50,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    deployment_store=Depends(get_deployment_store),
+    project: Optional[str] = Query(None, description="Filter by project name"),
+    service: Optional[str] = Query(None, description="Filter by service name"),
+    env: Optional[str] = Query(None, description="Filter by environment"),
+    limit: int = Query(50, ge=1, le=200),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
 ):
-    """List deployment history for the project."""
-    runs = await deployment_store.list_runs(
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=env,
+    """List deployment history."""
+    deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=env,
+        service_name=service,
         limit=limit,
+        enrich=True,
     )
     
-    return DeploymentHistoryResponse(
-        deployments=[
-            DeploymentAPIResponse(
-                job_id=r["job_id"],
-                workspace_id=r["workspace_id"],
-                project_name=r["project_name"],
-                env=r["env"],
-                status=r["status"],
-                triggered_by=r["triggered_by"],
-                triggered_at=r["triggered_at"],
-            )
-            for r in runs
-        ],
-        total=len(runs),
-    )
+    return {
+        "deployments": [d.to_dict() for d in deployments],
+        "total": len(deployments),
+    }
 
 
-# =============================================================================
-# Live Status
-# =============================================================================
-
-@router.get(
-    "/status/{env}",
-    response_model=ProjectStatusResponse,
-    responses={404: {"model": ErrorResponse}},
-)
-async def get_live_status(
-    workspace_id: str,
-    project_name: str,
-    env: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
-    credentials_store=Depends(get_credentials_store),
+@router.get("/{deployment_id}")
+async def get_deployment(
+    deployment_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
 ):
-    """
-    Get live status of deployed containers.
+    """Get deployment details."""
+    deployment = await deployment_store.get_deployment(deployment_id, enrich=True)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found")
     
-    Queries actual running containers via the infra layer.
-    """
-    # Verify project exists
-    project = await project_store.get(workspace_id, project_name)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    # Verify ownership
+    if deployment.workspace_id != str(user.id):
+        raise HTTPException(status_code=404, detail="Deployment not found")
     
-    # Get credentials for querying servers
-    creds = await credentials_store.get(workspace_id, project_name, env)
-    if not creds:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Credentials not set for environment '{env}'",
-        )
-    
-    # Query live status via infra
-    try:
-        from infra.live_deployment_query import LiveDeploymentQuery
-        
-        live = LiveDeploymentQuery(
-            user=workspace_id,
-            project_name=project_name,
-            env=env,
-            credentials=creds,
-        )
-        
-        containers_data = live.get_running_containers()
-        
-        containers = [
-            ContainerStatusResponse(
-                name=c.get("name", ""),
-                service=c.get("service", ""),
-                server_ip=c.get("server_ip", ""),
-                status=c.get("status", "unknown"),
-                port=c.get("port"),
-                created_at=c.get("created_at"),
-            )
-            for c in containers_data
-        ]
-        
-        nginx_ok = live.check_nginx_configured()
-        healthy = all(c.status == "running" for c in containers)
-        
-    except ImportError:
-        # Infra not available - return empty
-        containers = []
-        nginx_ok = False
-        healthy = False
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error querying live status: {e}",
-        )
-    
-    return ProjectStatusResponse(
-        project_name=project_name,
-        env=env,
-        containers=containers,
-        nginx_configured=nginx_ok,
-        healthy=healthy,
-    )
+    return deployment.to_dict()
 
 
-# =============================================================================
-# Rollback
-# =============================================================================
-
-@router.post(
-    "/rollback/{env}",
-    response_model=DeploymentAPIResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    responses={404: {"model": ErrorResponse}},
-)
-async def trigger_rollback(
-    workspace_id: str,
-    project_name: str,
-    env: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
-    project_store=Depends(get_project_store),
-    credentials_store=Depends(get_credentials_store),
-    deployment_store=Depends(get_deployment_store),
+@router.get("/project/{project}")
+async def list_project_deployments(
+    project: str,
+    env: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
 ):
-    """
-    Rollback to previous deployment.
-    
-    Uses the toggle strategy - switches back to the previous container version.
-    """
-    # Verify project and credentials
-    project = await project_store.get(workspace_id, project_name)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    
-    creds_exist = await credentials_store.exists(workspace_id, project_name, env)
-    if not creds_exist:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Credentials not set for environment '{env}'",
-        )
-    
-    # Get job client
-    try:
-        job_client = get_job_client()
-    except RuntimeError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Job queue not available",
-        )
-    
-    # Enqueue rollback job
-    result = await job_client.enqueue(
-        "rollback",
-        {
-            "workspace_id": workspace_id,
-            "project_name": project_name,
-            "env": env,
-            "triggered_by": current_user.id,
-        },
-    )
-    job_id = result.job_id if hasattr(result, 'job_id') else str(result)
-    
-    # Record
-    run = await deployment_store.create_run(
-        job_id=job_id,
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=env,
-        triggered_by=current_user.id,
+    """List deployments for a specific project."""
+    deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=env,
+        limit=limit,
+        enrich=True,
     )
     
-    return DeploymentAPIResponse(
-        job_id=job_id,
-        workspace_id=workspace_id,
-        project_name=project_name,
-        env=env,
-        status="queued",
-        triggered_by=current_user.id,
-        triggered_at=run["triggered_at"],
-    )
+    return {
+        "project": project,
+        "deployments": [d.to_dict() for d in deployments],
+        "total": len(deployments),
+    }
 
 
-# =============================================================================
-# Cancel Deployment
-# =============================================================================
-
-@router.post(
-    "/cancel/{env}/{service}",
-    status_code=status.HTTP_200_OK,
-    responses={404: {"model": ErrorResponse}},
-)
-async def cancel_deployment(
-    workspace_id: str,
-    project_name: str,
-    env: str,
+@router.get("/project/{project}/service/{service}")
+async def list_service_deployments(
+    project: str,
     service: str,
-    current_user: UserIdentity = Depends(require_workspace_member),
+    env: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """List deployments for a specific service."""
+    deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=env,
+        service_name=service,
+        limit=limit,
+        enrich=True,
+    )
+    
+    return {
+        "project": project,
+        "service": service,
+        "deployments": [d.to_dict() for d in deployments],
+        "total": len(deployments),
+    }
+
+
+@router.get("/project/{project}/service/{service}/{env}/v/{version}")
+async def get_deployment_by_version(
+    project: str,
+    service: str,
+    env: str,
+    version: int,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
 ):
     """
-    Cancel an in-progress deployment.
+    Get deployment by version number.
     
-    Releases the deployment lock so the user can retry.
-    Does NOT stop already-running containers.
-    Does NOT rollback partial deployments.
-    
-    User should manually clean up partial state via server management if needed.
+    Example: GET /deployments/project/ai/service/ai-agents/prod/v/5
     """
-    # Generate container name (lock key)
-    container_name = DeploymentNaming.get_container_name(
-        workspace_id=workspace_id,
-        project=project_name,
+    deployment = await deployment_store.get_by_version(
+        workspace_id=str(user.id),
+        project=project,
+        service_name=service,
         env=env,
+        version=version,
+    )
+    
+    if not deployment:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Version {version} not found for {project}/{service}/{env}"
+        )
+    
+    return deployment.to_dict()
+
+
+@router.get("/project/{project}/service/{service}/{env}/latest")
+async def get_latest_deployment(
+    project: str,
+    service: str,
+    env: str,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """
+    Get the latest successful deployment (current live version).
+    
+    Example: GET /deployments/project/ai/service/ai-agents/prod/latest
+    """
+    latest_version = await deployment_store.get_latest_version(
+        workspace_id=str(user.id),
+        project=project,
+        service_name=service,
+        env=env,
+    )
+    
+    if not latest_version:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No successful deployments found for {project}/{service}/{env}"
+        )
+    
+    deployment = await deployment_store.get_by_version(
+        workspace_id=str(user.id),
+        project=project,
+        service_name=service,
+        env=env,
+        version=latest_version,
+    )
+    
+    return deployment.to_dict()
+
+
+@router.get("/project/{project}/service/{service}/{env}/versions")
+async def list_versions(
+    project: str,
+    service: str,
+    env: str,
+    limit: int = Query(20, ge=1, le=100),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """
+    List all versions for a coordinate.
+    
+    Example: GET /deployments/project/ai/service/ai-agents/prod/versions
+    Returns only successful deployments (which have version numbers).
+    """
+    deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=env,
+        service_name=service,
+        status="success",
+        limit=limit,
+        enrich=True,
+    )
+    
+    return {
+        "project": project,
+        "service": service,
+        "env": env,
+        "versions": [
+            {
+                "version": d.version,
+                "id": d.id,
+                "deployed_at": d.started_at,
+                "deployed_by": d.deployed_by_name or d.deployed_by,
+                "is_rollback": d.is_rollback,
+                "image_name": d.image_name,
+                "git_commit": d.git_commit,
+                "comment": d.comment,
+            }
+            for d in deployments if d.version
+        ],
+        "latest_version": deployments[0].version if deployments and deployments[0].version else None,
+    }
+
+
+@router.get("/project/{project}/service/{service}/{env}/previous")
+async def get_previous_deployment(
+    project: str,
+    service: str,
+    env: str,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """Get the previous successful deployment (for rollback)."""
+    deployment = await deployment_store.get_previous(
+        workspace_id=str(user.id),
+        project=project,
+        environment=env,
         service_name=service,
     )
     
-    # Force release the lock
-    try:
-        lock_mgr = get_deployment_lock_manager()
-        released = lock_mgr.force_release(container_name)
-    except Exception as e:
+    if not deployment:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to release lock: {e}",
+            status_code=404, 
+            detail=f"No previous successful deployment found for {project}/{service}/{env}"
         )
     
-    if released:
-        return {
-            "cancelled": True,
-            "container_name": container_name,
-            "message": "Deployment lock released. You can now retry.",
-        }
-    else:
-        return {
-            "cancelled": False,
-            "container_name": container_name,
-            "message": "No active deployment lock found for this service.",
-        }
+    return deployment.to_dict()

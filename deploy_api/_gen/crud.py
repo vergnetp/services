@@ -1,440 +1,173 @@
 """
-CRUD operations - AUTO-GENERATED from manifest.yaml
+Generic CRUD operations - AUTO-GENERATED from manifest.yaml
 DO NOT EDIT - changes will be overwritten on regenerate
+
+Usage in stores:
+    from .._gen.crud import EntityCRUD
+    
+    class MyStore:
+        def __init__(self, db):
+            self.db = db
+            self._crud = EntityCRUD("my_table")
+        
+        async def create(self, data: dict) -> dict:
+            return await self._crud.create(self.db, data)
 """
 
+from typing import Any, Optional, List
+from datetime import datetime, timezone
 import uuid
-from datetime import datetime
-from typing import Any, Dict, List, Optional
 
 
 def _now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _uuid() -> str:
     return str(uuid.uuid4())
 
 
-class BaseCRUD:
-    """Base CRUD with common operations."""
-    
-    table: str = ""
-    
-    def __init__(self, db):
-        self.db = db
-    
-    async def get(self, entity_id: str) -> Optional[Dict[str, Any]]:
-        """Get entity by ID."""
-        return await self.db.get_entity(self.table, entity_id)
-    
-    async def delete(self, entity_id: str) -> bool:
-        """Delete entity by ID."""
-        return await self.db.delete_entity(self.table, entity_id)
+def _to_dict(data: Any) -> dict:
+    """Convert pydantic model or dict to dict."""
+    if hasattr(data, "model_dump"):
+        return data.model_dump(exclude_unset=True)
+    return dict(data)
 
 
-# =============================================================================
-# Workspace CRUD
-# =============================================================================
-
-class WorkspaceCRUD(BaseCRUD):
-    table = "workspaces"
+class EntityCRUD:
+    """
+    Generic CRUD for any entity table.
     
-    async def create(
-        self,
-        name: str,
-        owner_id: str,
-        plan: str = "free",
-    ) -> Dict[str, Any]:
-        """Create a new workspace."""
-        now = _now()
-        entity = {
-            "id": _uuid(),
-            "name": name,
-            "owner_id": owner_id,
-            "plan": plan,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self.db.save_entity(self.table, entity)
-        return entity
+    Uses the databases library entity methods:
+    - db.find_entities() for list/search
+    - db.get_entity() for get by id
+    - db.save_entity() for create/update
+    - db.delete_entity() for delete
+    """
     
-    async def update(self, entity_id: str, **updates) -> Optional[Dict[str, Any]]:
-        """Update workspace fields."""
-        entity = await self.get(entity_id)
-        if not entity:
-            return None
-        for key, value in updates.items():
-            if value is not None and key in entity:
-                entity[key] = value
-        entity["updated_at"] = _now()
-        await self.db.save_entity(self.table, entity)
-        return entity
+    def __init__(self, table: str, soft_delete: bool = False):
+        self.table = table
+        self.soft_delete = soft_delete
     
-    async def find_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """Find workspace by name."""
-        results = await self.db.find_entities(
-            self.table,
-            where_clause="name = ?",
-            params=(name,),
-            limit=1,
-        )
-        return results[0] if results else None
-    
-    async def list_by_owner(self, owner_id: str) -> List[Dict[str, Any]]:
-        """List workspaces by owner."""
-        return await self.db.find_entities(
-            self.table,
-            where_clause="owner_id = ?",
-            params=(owner_id,),
-            order_by="name ASC",
-        )
-
-
-# =============================================================================
-# WorkspaceMember CRUD
-# =============================================================================
-
-class WorkspaceMemberCRUD(BaseCRUD):
-    table = "workspace_members"
-    
-    async def create(
-        self,
-        workspace_id: str,
-        user_id: str,
-        role: str = "member",
-        joined_at: str = None,
-    ) -> Dict[str, Any]:
-        """Create a new workspace member."""
-        now = _now()
-        entity = {
-            "id": _uuid(),
-            "workspace_id": workspace_id,
-            "user_id": user_id,
-            "role": role,
-            "joined_at": joined_at or now,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def update(self, entity_id: str, **updates) -> Optional[Dict[str, Any]]:
-        """Update workspace member fields."""
-        entity = await self.get(entity_id)
-        if not entity:
-            return None
-        for key, value in updates.items():
-            if value is not None and key in entity:
-                entity[key] = value
-        entity["updated_at"] = _now()
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def list_by_workspace(self, workspace_id: str) -> List[Dict[str, Any]]:
-        """List members of a workspace."""
-        return await self.db.find_entities(
-            self.table,
-            where_clause="workspace_id = ?",
-            params=(workspace_id,),
-        )
-    
-    async def list_by_user(self, user_id: str) -> List[Dict[str, Any]]:
-        """List workspace memberships for a user."""
-        return await self.db.find_entities(
-            self.table,
-            where_clause="user_id = ?",
-            params=(user_id,),
-        )
-    
-    async def find(self, workspace_id: str, user_id: str) -> Optional[Dict[str, Any]]:
-        """Find specific membership."""
-        results = await self.db.find_entities(
-            self.table,
-            where_clause="workspace_id = ? AND user_id = ?",
-            params=(workspace_id, user_id),
-            limit=1,
-        )
-        return results[0] if results else None
-    
-    async def delete_by_workspace_user(self, workspace_id: str, user_id: str) -> bool:
-        """Delete membership by workspace and user."""
-        member = await self.find(workspace_id, user_id)
-        if member:
-            return await self.delete(member["id"])
-        return False
-
-
-# =============================================================================
-# Project CRUD
-# =============================================================================
-
-class ProjectCRUD(BaseCRUD):
-    table = "projects"
-    
-    async def create(
-        self,
-        workspace_id: str,
-        name: str,
-        docker_hub_user: str,
-        version: str = "latest",
-        config_json: str = "{}",
-        created_by: str = None,
-    ) -> Dict[str, Any]:
-        """Create a new project."""
-        now = _now()
-        entity = {
-            "id": f"{workspace_id}_{name}",  # Composite key
-            "workspace_id": workspace_id,
-            "name": name,
-            "docker_hub_user": docker_hub_user,
-            "version": version,
-            "config_json": config_json,
-            "created_by": created_by or "system",
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def update(self, entity_id: str, **updates) -> Optional[Dict[str, Any]]:
-        """Update project fields."""
-        entity = await self.get(entity_id)
-        if not entity:
-            return None
-        for key, value in updates.items():
-            if value is not None and key in entity:
-                entity[key] = value
-        entity["updated_at"] = _now()
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def find_by_workspace_name(self, workspace_id: str, name: str) -> Optional[Dict[str, Any]]:
-        """Find project by workspace and name."""
-        return await self.get(f"{workspace_id}_{name}")
-    
-    async def list_by_workspace(self, workspace_id: str) -> List[Dict[str, Any]]:
-        """List projects in a workspace."""
-        return await self.db.find_entities(
-            self.table,
-            where_clause="workspace_id = ?",
-            params=(workspace_id,),
-            order_by="name ASC",
-        )
-
-
-# =============================================================================
-# Credential CRUD
-# =============================================================================
-
-class CredentialCRUD(BaseCRUD):
-    table = "credentials"
-    
-    async def create(
-        self,
-        workspace_id: str,
-        project_name: str,
-        env: str,
-        encrypted_blob: str = None,
-    ) -> Dict[str, Any]:
-        """Create credentials."""
-        now = _now()
-        entity = {
-            "id": f"{workspace_id}_{project_name}_{env}",  # Composite key
-            "workspace_id": workspace_id,
-            "project_name": project_name,
-            "env": env,
-            "encrypted_blob": encrypted_blob,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def upsert(
-        self,
-        workspace_id: str,
-        project_name: str,
-        env: str,
-        encrypted_blob: str,
-    ) -> Dict[str, Any]:
-        """Create or update credentials."""
-        entity_id = f"{workspace_id}_{project_name}_{env}"
-        existing = await self.get(entity_id)
-        if existing:
-            existing["encrypted_blob"] = encrypted_blob
-            existing["updated_at"] = _now()
-            await self.db.save_entity(self.table, existing)
-            return existing
-        return await self.create(workspace_id, project_name, env, encrypted_blob)
-    
-    async def find(self, workspace_id: str, project_name: str, env: str) -> Optional[Dict[str, Any]]:
-        """Find credentials by workspace, project, and env."""
-        return await self.get(f"{workspace_id}_{project_name}_{env}")
-    
-    async def exists(self, workspace_id: str, project_name: str, env: str) -> bool:
-        """Check if credentials exist."""
-        cred = await self.find(workspace_id, project_name, env)
-        return cred is not None
-
-
-# =============================================================================
-# DeploymentRun CRUD
-# =============================================================================
-
-class DeploymentRunCRUD(BaseCRUD):
-    table = "deployment_runs"
-    
-    async def create(
-        self,
-        workspace_id: str,
-        job_id: str,
-        project_name: str,
-        env: str,
-        triggered_by: str,
-        services: str = None,
-        status: str = "queued",
-    ) -> Dict[str, Any]:
-        """Create a deployment run."""
-        now = _now()
-        entity = {
-            "id": _uuid(),
-            "workspace_id": workspace_id,
-            "job_id": job_id,
-            "project_name": project_name,
-            "env": env,
-            "services": services,
-            "status": status,
-            "triggered_by": triggered_by,
-            "triggered_at": now,
-            "started_at": None,
-            "completed_at": None,
-            "result_json": None,
-            "error": None,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def update(self, entity_id: str, **updates) -> Optional[Dict[str, Any]]:
-        """Update deployment run fields."""
-        entity = await self.get(entity_id)
-        if not entity:
-            return None
-        for key, value in updates.items():
-            if key in entity:
-                entity[key] = value
-        entity["updated_at"] = _now()
-        await self.db.save_entity(self.table, entity)
-        return entity
-    
-    async def find_by_job_id(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Find deployment run by job ID."""
-        results = await self.db.find_entities(
-            self.table,
-            where_clause="job_id = ?",
-            params=(job_id,),
-            limit=1,
-        )
-        return results[0] if results else None
-    
-    async def update_by_job_id(self, job_id: str, **updates) -> bool:
-        """Update deployment run by job ID."""
-        run = await self.find_by_job_id(job_id)
-        if not run:
-            return False
-        await self.update(run["id"], **updates)
-        return True
-    
-    async def list_by_workspace(
-        self,
-        workspace_id: str,
-        project_name: str = None,
-        env: str = None,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        """List deployment runs."""
-        conditions = ["workspace_id = ?"]
-        params = [workspace_id]
+    async def list(
+        self, 
+        db: Any, 
+        where_clause: str = None,
+        params: tuple = None,
+        order_by: str = None,
+        limit: int = 100,
+        offset: int = 0,
+        workspace_id: str = None,
+        include_deleted: bool = False,
+    ) -> List[dict]:
+        """List entities with optional filtering."""
+        conditions = []
+        all_params = []
         
-        if project_name:
-            conditions.append("project_name = ?")
-            params.append(project_name)
-        if env:
-            conditions.append("env = ?")
-            params.append(env)
+        if workspace_id:
+            conditions.append("[workspace_id] = ?")
+            all_params.append(workspace_id)
         
-        return await self.db.find_entities(
+        if where_clause:
+            conditions.append(f"({where_clause})")
+            if params:
+                all_params.extend(params)
+        
+        final_where = " AND ".join(conditions) if conditions else None
+        final_params = tuple(all_params) if all_params else None
+        
+        return await db.find_entities(
             self.table,
-            where_clause=" AND ".join(conditions),
-            params=tuple(params),
-            order_by="triggered_at DESC",
+            where_clause=final_where,
+            params=final_params,
+            order_by=order_by or "[created_at] DESC",
             limit=limit,
+            offset=offset,
+            include_deleted=include_deleted if self.soft_delete else True,
         )
-
-
-# =============================================================================
-# DeploymentState CRUD
-# =============================================================================
-
-class DeploymentStateCRUD(BaseCRUD):
-    table = "deployment_state"
     
-    async def create(
-        self,
-        workspace_id: str,
-        project_name: str,
-        env: str,
-        state_json: str = "{}",
-        last_deployed_by: str = None,
-    ) -> Dict[str, Any]:
-        """Create deployment state."""
-        now = _now()
-        entity = {
-            "id": f"{workspace_id}_{project_name}_{env}",  # Composite key
-            "workspace_id": workspace_id,
-            "project_name": project_name,
-            "env": env,
-            "state_json": state_json,
-            "last_deployed_at": now if last_deployed_by else None,
-            "last_deployed_by": last_deployed_by,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self.db.save_entity(self.table, entity)
-        return entity
+    async def get(self, db: Any, entity_id: str) -> Optional[dict]:
+        """Get entity by ID."""
+        return await db.get_entity(self.table, entity_id)
     
-    async def upsert(
-        self,
-        workspace_id: str,
-        project_name: str,
-        env: str,
-        state_json: str,
-        deployed_by: str = None,
-    ) -> Dict[str, Any]:
-        """Create or update deployment state."""
-        entity_id = f"{workspace_id}_{project_name}_{env}"
-        now = _now()
-        existing = await self.get(entity_id)
-        if existing:
-            existing["state_json"] = state_json
-            existing["updated_at"] = now
-            if deployed_by:
-                existing["last_deployed_at"] = now
-                existing["last_deployed_by"] = deployed_by
-            await self.db.save_entity(self.table, existing)
+    async def create(self, db: Any, data: Any, entity_id: str = None) -> dict:
+        """Create new entity from dict or pydantic model."""
+        values = _to_dict(data)
+        values["id"] = entity_id or _uuid()
+        values["created_at"] = _now()
+        values["updated_at"] = _now()
+        
+        return await db.save_entity(self.table, values)
+    
+    async def update(self, db: Any, entity_id: str, data: Any) -> Optional[dict]:
+        """Update entity. Merges with existing."""
+        existing = await self.get(db, entity_id)
+        if not existing:
+            return None
+        
+        updates = _to_dict(data)
+        if not updates:
             return existing
-        return await self.create(workspace_id, project_name, env, state_json, deployed_by)
+        
+        # Merge
+        for k, v in updates.items():
+            existing[k] = v
+        existing["updated_at"] = _now()
+        
+        return await db.save_entity(self.table, existing)
     
-    async def find(self, workspace_id: str, project_name: str, env: str) -> Optional[Dict[str, Any]]:
-        """Find deployment state."""
-        return await self.get(f"{workspace_id}_{project_name}_{env}")
+    async def save(self, db: Any, entity: dict) -> dict:
+        """Save entity (upsert). Entity must have 'id'."""
+        entity["updated_at"] = _now()
+        if "created_at" not in entity:
+            entity["created_at"] = _now()
+        return await db.save_entity(self.table, entity)
     
-    async def list_by_workspace(self, workspace_id: str) -> List[Dict[str, Any]]:
-        """List all deployment states for a workspace."""
-        return await self.db.find_entities(
+    async def delete(self, db: Any, entity_id: str, permanent: bool = None) -> bool:
+        """Delete entity. Uses soft_delete setting unless permanent specified."""
+        is_permanent = permanent if permanent is not None else not self.soft_delete
+        return await db.delete_entity(self.table, entity_id, permanent=is_permanent)
+    
+    async def find_one(
+        self,
+        db: Any,
+        where_clause: str,
+        params: tuple = None,
+    ) -> Optional[dict]:
+        """Find single entity matching criteria."""
+        results = await db.find_entities(
             self.table,
-            where_clause="workspace_id = ?",
-            params=(workspace_id,),
+            where_clause=where_clause,
+            params=params,
+            limit=1,
+        )
+        return results[0] if results else None
+    
+    async def count(
+        self,
+        db: Any,
+        where_clause: str = None,
+        params: tuple = None,
+        workspace_id: str = None,
+    ) -> int:
+        """Count entities matching criteria."""
+        conditions = []
+        all_params = []
+        
+        if workspace_id:
+            conditions.append("[workspace_id] = ?")
+            all_params.append(workspace_id)
+        
+        if where_clause:
+            conditions.append(f"({where_clause})")
+            if params:
+                all_params.extend(params)
+        
+        final_where = " AND ".join(conditions) if conditions else None
+        final_params = tuple(all_params) if all_params else None
+        
+        return await db.count_entities(
+            self.table,
+            where_clause=final_where,
+            params=final_params,
         )

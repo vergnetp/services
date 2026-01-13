@@ -16,9 +16,12 @@ from shared_libs.backend.app_kernel.db import db_connection
 
 from .stores import (
     ProjectStore,
+    ServiceStore,
+    DropletStore,
+    ServiceDropletStore,
     CredentialsStore,
     DeploymentStore,
-    DatabaseStorageAdapter,
+    DeployConfigStore,
 )
 
 
@@ -31,6 +34,21 @@ async def get_project_store(db = Depends(db_connection)):
     return ProjectStore(db)
 
 
+async def get_service_store(db = Depends(db_connection)):
+    """Get service store - shares request connection."""
+    return ServiceStore(db)
+
+
+async def get_droplet_store(db = Depends(db_connection)):
+    """Get droplet store - shares request connection."""
+    return DropletStore(db)
+
+
+async def get_service_droplet_store(db = Depends(db_connection)):
+    """Get service-droplet junction store - shares request connection."""
+    return ServiceDropletStore(db)
+
+
 async def get_credentials_store(db = Depends(db_connection)):
     """Get credentials store - shares request connection."""
     return CredentialsStore(db)
@@ -41,12 +59,6 @@ async def get_deployment_store(db = Depends(db_connection)):
     return DeploymentStore(db)
 
 
-# =============================================================================
-# Storage Adapter (for infra compatibility)
-# =============================================================================
-
-async def get_storage_adapter(db = Depends(db_connection)) -> DatabaseStorageAdapter:
-    """Get storage adapter for infra compatibility."""
-    project_store = ProjectStore(db)
-    deployment_store = DeploymentStore(db)
-    return DatabaseStorageAdapter(project_store, deployment_store)
+async def get_deploy_config_store(db = Depends(db_connection)):
+    """Get deploy config store - shares request connection."""
+    return DeployConfigStore(db)

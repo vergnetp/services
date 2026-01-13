@@ -59,7 +59,7 @@ async def on_shutdown():
 def create_app() -> FastAPI:
     """Create the deploy-api application."""
     app_settings = get_app_settings()
-    app_settings.ensure_data_dir()
+    # Note: Data dir creation handled by kernel based on manifest database.path
     
     # Load all infrastructure config from manifest.yaml
     # Environment variables override manifest values via ${VAR:-default} syntax

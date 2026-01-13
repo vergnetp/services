@@ -52,13 +52,6 @@ class AppSettings(BaseSettings):
     origin_cert_path: Optional[str] = None  # Path to cert file
     origin_key_path: Optional[str] = None   # Path to key file
     
-    # Data directory (for ensuring it exists)
-    data_dir: str = str(SERVICE_DIR / "data")
-    
-    def ensure_data_dir(self):
-        """Create data directory if needed."""
-        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
-    
     def get_origin_cert(self) -> Optional[str]:
         """Get origin certificate content (from env or file)."""
         if self.origin_cert:
@@ -114,19 +107,13 @@ class Settings(BaseSettings):
     redis_key_prefix: str = "deploy:"
     
     # Database (from manifest or env)
-    database_path: str = str(SERVICE_DIR / "data" / "deploy.db")
+    # Path is relative to working directory, matching manifest
+    database_path: str = "./data/deploy.db"
     database_type: str = "sqlite"
     database_host: str = "localhost"
     database_port: int = 5432
     database_user: Optional[str] = None
     database_password: Optional[str] = None
-    
-    # Data directory
-    data_dir: str = str(SERVICE_DIR / "data")
-    
-    def ensure_data_dir(self):
-        """Create data directory if needed."""
-        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache
@@ -157,7 +144,7 @@ def get_settings() -> Settings:
         # Extract database settings
         db = manifest.get("database", {})
         settings_dict["database_type"] = db.get("type", "sqlite")
-        settings_dict["database_path"] = db.get("path", str(SERVICE_DIR / "data" / "deploy.db"))
+        settings_dict["database_path"] = db.get("path", "./data/deploy.db")
         settings_dict["database_host"] = db.get("host", "localhost")
         settings_dict["database_port"] = db.get("port", 5432)
         settings_dict["database_user"] = db.get("user")

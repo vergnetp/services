@@ -1,17 +1,49 @@
 """
 Generic CRUD operations - AUTO-GENERATED from manifest.yaml
 DO NOT EDIT - changes will be overwritten on regenerate
+
+Usage in stores:
+    from .._gen.crud import EntityCRUD
+    
+    class MyStore:
+        def __init__(self, db):
+            self.db = db
+            self._crud = EntityCRUD("my_table")
+        
+        async def create(self, data: dict) -> dict:
+            return await self._crud.create(self.db, data)
 """
 
-from typing import Any, Optional, TypeVar
+from typing import Any, Optional, List
 from datetime import datetime, timezone
 import uuid
 
-T = TypeVar("T")
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def _to_dict(data: Any) -> dict:
+    """Convert pydantic model or dict to dict."""
+    if hasattr(data, "model_dump"):
+        return data.model_dump(exclude_unset=True)
+    return dict(data)
 
 
 class EntityCRUD:
-    """Generic CRUD for any entity."""
+    """
+    Generic CRUD for any entity table.
+    
+    Uses the databases library entity methods:
+    - db.find_entities() for list/search
+    - db.get_entity() for get by id
+    - db.save_entity() for create/update
+    - db.delete_entity() for delete
+    """
     
     def __init__(self, table: str, soft_delete: bool = False):
         self.table = table
@@ -20,77 +52,122 @@ class EntityCRUD:
     async def list(
         self, 
         db: Any, 
-        skip: int = 0, 
+        where_clause: str = None,
+        params: tuple = None,
+        order_by: str = None,
         limit: int = 100,
-        workspace_id: Optional[str] = None,
+        offset: int = 0,
+        workspace_id: str = None,
         include_deleted: bool = False,
-    ) -> list[dict]:
-        """List entities with pagination."""
+    ) -> List[dict]:
+        """List entities with optional filtering."""
         conditions = []
-        params = []
+        all_params = []
         
         if workspace_id:
-            conditions.append("workspace_id = ?")
-            params.append(workspace_id)
+            conditions.append("[workspace_id] = ?")
+            all_params.append(workspace_id)
         
-        if self.soft_delete and not include_deleted:
-            conditions.append("deleted_at IS NULL")
+        if where_clause:
+            conditions.append(f"({where_clause})")
+            if params:
+                all_params.extend(params)
         
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        final_where = " AND ".join(conditions) if conditions else None
+        final_params = tuple(all_params) if all_params else None
         
-        query = f"""
-            SELECT * FROM {self.table}
-            {where}
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-        """
-        params.extend([limit, skip])
-        
-        return await db.fetch_all(query, params)
+        return await db.find_entities(
+            self.table,
+            where_clause=final_where,
+            params=final_params,
+            order_by=order_by or "[created_at] DESC",
+            limit=limit,
+            offset=offset,
+            include_deleted=include_deleted if self.soft_delete else True,
+        )
     
-    async def get(self, db: Any, id: str) -> Optional[dict]:
+    async def get(self, db: Any, entity_id: str) -> Optional[dict]:
         """Get entity by ID."""
-        query = f"SELECT * FROM {self.table} WHERE id = ?"
-        return await db.fetch_one(query, [id])
+        return await db.get_entity(self.table, entity_id)
     
-    async def create(self, db: Any, data: Any) -> dict:
-        """Create new entity."""
-        now = datetime.now(timezone.utc).isoformat()
-        entity_id = str(uuid.uuid4())
+    async def create(self, db: Any, data: Any, entity_id: str = None) -> dict:
+        """Create new entity from dict or pydantic model."""
+        values = _to_dict(data)
+        values["id"] = entity_id or _uuid()
+        values["created_at"] = _now()
+        values["updated_at"] = _now()
         
-        values = data.model_dump(exclude_unset=True)
-        values["id"] = entity_id
-        values["created_at"] = now
-        values["updated_at"] = now
-        
-        columns = ", ".join(values.keys())
-        placeholders = ", ".join(["?"] * len(values))
-        query = f"INSERT INTO {self.table} ({columns}) VALUES ({placeholders})"
-        
-        await db.execute(query, list(values.values()))
-        return await self.get(db, entity_id)
+        return await db.save_entity(self.table, values)
     
-    async def update(self, db: Any, id: str, data: Any) -> Optional[dict]:
-        """Update entity."""
-        values = data.model_dump(exclude_unset=True)
-        if not values:
-            return await self.get(db, id)
+    async def update(self, db: Any, entity_id: str, data: Any) -> Optional[dict]:
+        """Update entity. Merges with existing."""
+        existing = await self.get(db, entity_id)
+        if not existing:
+            return None
         
-        values["updated_at"] = datetime.now(timezone.utc).isoformat()
+        updates = _to_dict(data)
+        if not updates:
+            return existing
         
-        sets = ", ".join(f"{k} = ?" for k in values.keys())
-        query = f"UPDATE {self.table} SET {sets} WHERE id = ?"
+        # Merge
+        for k, v in updates.items():
+            existing[k] = v
+        existing["updated_at"] = _now()
         
-        await db.execute(query, list(values.values()) + [id])
-        return await self.get(db, id)
+        return await db.save_entity(self.table, existing)
     
-    async def delete(self, db: Any, id: str) -> bool:
-        """Delete entity (soft delete if configured)."""
-        if self.soft_delete:
-            now = datetime.now(timezone.utc).isoformat()
-            query = f"UPDATE {self.table} SET deleted_at = ? WHERE id = ?"
-            await db.execute(query, [now, id])
-        else:
-            query = f"DELETE FROM {self.table} WHERE id = ?"
-            await db.execute(query, [id])
-        return True
+    async def save(self, db: Any, entity: dict) -> dict:
+        """Save entity (upsert). Entity must have 'id'."""
+        entity["updated_at"] = _now()
+        if "created_at" not in entity:
+            entity["created_at"] = _now()
+        return await db.save_entity(self.table, entity)
+    
+    async def delete(self, db: Any, entity_id: str, permanent: bool = None) -> bool:
+        """Delete entity. Uses soft_delete setting unless permanent specified."""
+        is_permanent = permanent if permanent is not None else not self.soft_delete
+        return await db.delete_entity(self.table, entity_id, permanent=is_permanent)
+    
+    async def find_one(
+        self,
+        db: Any,
+        where_clause: str,
+        params: tuple = None,
+    ) -> Optional[dict]:
+        """Find single entity matching criteria."""
+        results = await db.find_entities(
+            self.table,
+            where_clause=where_clause,
+            params=params,
+            limit=1,
+        )
+        return results[0] if results else None
+    
+    async def count(
+        self,
+        db: Any,
+        where_clause: str = None,
+        params: tuple = None,
+        workspace_id: str = None,
+    ) -> int:
+        """Count entities matching criteria."""
+        conditions = []
+        all_params = []
+        
+        if workspace_id:
+            conditions.append("[workspace_id] = ?")
+            all_params.append(workspace_id)
+        
+        if where_clause:
+            conditions.append(f"({where_clause})")
+            if params:
+                all_params.extend(params)
+        
+        final_where = " AND ".join(conditions) if conditions else None
+        final_params = tuple(all_params) if all_params else None
+        
+        return await db.count_entities(
+            self.table,
+            where_clause=final_where,
+            params=final_params,
+        )

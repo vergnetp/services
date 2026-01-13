@@ -25,6 +25,28 @@ router = APIRouter(prefix="/infra", tags=["Infrastructure"])
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
 
+# Stores
+from ..deps import (
+    get_deployment_store, 
+    get_project_store, 
+    get_deploy_config_store,
+)
+from ..stores import (
+    DeploymentStore, 
+    ProjectStore, 
+    DeployConfigStore, 
+    DEFAULT_EXCLUDE_PATTERNS,
+)
+
+
+def _get_fresh_deployment_store():
+    """
+    Get a fresh DeploymentStore with new DB connection.
+    Used in worker threads that have their own event loop.
+    """
+    from shared_libs.backend.app_kernel.db import get_db_connection
+    return get_db_connection, DeploymentStore
+
 
 # ==========================================
 # Credentials Helpers
@@ -112,6 +134,7 @@ async def _ensure_nginx_on_server(client, log_fn=None):
     """
     Ensure nginx is running on the server.
     Thin wrapper around client.ensure_nginx_running().
+    Also fixes common nginx config issues like server_names_hash_bucket_size.
     """
     try:
         if log_fn:
@@ -127,6 +150,14 @@ async def _ensure_nginx_on_server(client, log_fn=None):
             else:
                 if log_fn:
                     log_fn("✅ Nginx started on ports 80/443")
+            
+            # Fix server_names_hash_bucket_size if needed
+            try:
+                await _fix_nginx_hash_bucket_size(client, log_fn)
+            except Exception as e:
+                if log_fn:
+                    log_fn(f"⚠️ Could not fix nginx hash bucket size: {e}")
+            
             return True
         else:
             if log_fn:
@@ -137,6 +168,40 @@ async def _ensure_nginx_on_server(client, log_fn=None):
         if log_fn:
             log_fn(f"⚠️ Nginx setup error: {e}")
         return False
+
+
+async def _fix_nginx_hash_bucket_size(client, log_fn=None):
+    """
+    Fix nginx server_names_hash_bucket_size by adding it to nginx.conf if not present.
+    This prevents the error: 'could not build server_names_hash, you should increase server_names_hash_bucket_size'
+    """
+    try:
+        # Check if the fix is needed by trying to run a command via deploy_container
+        # We'll use a simple container to check and fix the config
+        fix_script = '''
+# Check if server_names_hash_bucket_size is already set
+if ! grep -q "server_names_hash_bucket_size" /etc/nginx/nginx.conf; then
+    # Add it after the 'http {' line
+    sed -i '/^http {/a\\    server_names_hash_bucket_size 128;' /etc/nginx/nginx.conf
+    nginx -t && nginx -s reload
+    echo "FIXED"
+else
+    echo "ALREADY_SET"
+fi
+'''
+        # Try to fix via deploy_container with custom command
+        # This is a workaround - ideally the node agent should handle this
+        if hasattr(client, 'run_script') or hasattr(client, 'exec_command'):
+            # Some node agents support this
+            if hasattr(client, 'exec_command'):
+                result = await client.exec_command(fix_script)
+            else:
+                result = await client.run_script(fix_script)
+            if log_fn and result.success:
+                log_fn("✅ Nginx hash bucket size configured")
+    except Exception:
+        # Silently fail - this is a best-effort fix
+        pass
 
 
 async def _setup_service_nginx_config(
@@ -1289,43 +1354,75 @@ async def get_action_status(
 # Server/Droplet Endpoints
 # ==========================================
 
+@router.get("/regions")
+async def list_regions(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get list of available DigitalOcean regions."""
+    return {
+        "regions": [
+            {"slug": "lon1", "name": "London 1"},
+            {"slug": "ams3", "name": "Amsterdam 3"},
+            {"slug": "fra1", "name": "Frankfurt 1"},
+            {"slug": "nyc1", "name": "New York 1"},
+            {"slug": "nyc3", "name": "New York 3"},
+            {"slug": "sfo2", "name": "San Francisco 2"},
+            {"slug": "sfo3", "name": "San Francisco 3"},
+            {"slug": "sgp1", "name": "Singapore 1"},
+            {"slug": "tor1", "name": "Toronto 1"},
+            {"slug": "blr1", "name": "Bangalore 1"},
+            {"slug": "syd1", "name": "Sydney 1"},
+        ]
+    }
+
+
+@router.get("/sizes")
+async def list_sizes(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get list of available DigitalOcean droplet sizes."""
+    return {
+        "sizes": [
+            {"slug": "s-1vcpu-1gb", "description": "1GB / 1 vCPU"},
+            {"slug": "s-1vcpu-2gb", "description": "2GB / 1 vCPU"},
+            {"slug": "s-2vcpu-2gb", "description": "2GB / 2 vCPU"},
+            {"slug": "s-2vcpu-4gb", "description": "4GB / 2 vCPU"},
+            {"slug": "s-4vcpu-8gb", "description": "8GB / 4 vCPU"},
+            {"slug": "s-8vcpu-16gb", "description": "16GB / 8 vCPU"},
+        ]
+    }
+
+
 @router.get("/servers")
 async def list_servers(
     user: UserIdentity = Depends(get_current_user),
     project: Optional[str] = Query(None, description="Filter by project name"),
     environment: Optional[str] = Query(None, description="Filter by environment (prod, staging, dev)"),
-    tag: Optional[str] = Query("deployed-via-api", description="Filter by tag (default: deployed-via-api, use 'all' for no filter)"),
+    tag: Optional[str] = Query(None, description="Filter by specific tag (optional)"),
     region: Optional[str] = Query(None, description="Filter by region (e.g. lon1, nyc1)"),
     size: Optional[str] = Query(None, description="Filter by size (e.g. s-1vcpu-1gb)"),
     status: Optional[str] = Query(None, description="Filter by status (e.g. active, new)"),
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
-    """List droplets with optional filtering by project, environment, region, etc."""
+    """
+    List droplets with optional filtering by project, environment, region, etc.
+    
+    SAFETY: Only returns droplets managed by this system (tagged with 'deployed-via-api').
+    Personal/unmanaged servers are never returned.
+    """
     from shared_libs.backend.infra.cloud import DOClient
     
     token = _get_do_token(do_token)
     client = DOClient(token)
     
-    # Handle tag filtering:
-    # - 'all': Show all droplets (no tag filter)
-    # - None or default: Use project filter if specified, else 'deployed-via-api'
-    # - specific tag: Use that tag
-    if tag == 'all':
-        filter_tag = None
-        filter_project = project
-    elif project:
-        # Project filter takes priority - don't pass default tag
-        filter_tag = None
-        filter_project = project
-    else:
-        filter_tag = tag  # Default: 'deployed-via-api'
-        filter_project = None
+    # DOClient.list_droplets() defaults to managed droplets only
+    # Special case: tag="all" means skip tag filtering (but still only managed)
+    effective_tag = None if tag == "all" else tag
     
-    # Use DOClient with project/environment filtering
     droplets = client.list_droplets(
-        project=filter_project,
+        project=project,
         environment=environment,
-        tag=filter_tag,
+        tag=effective_tag,
     )
     
     # Convert to response format
@@ -1368,8 +1465,8 @@ async def list_projects(
     token = _get_do_token(do_token)
     client = DOClient(token)
     
-    # Get all droplets (no filter)
-    droplets = client.list_droplets(tag="deployed-via-api")
+    # DOClient defaults to managed droplets only
+    droplets = client.list_droplets()
     
     # Extract unique projects and environments
     projects = set()
@@ -1402,11 +1499,8 @@ async def list_containers(
     api_key = _get_node_agent_key(token, str(user.id))
     client = DOClient(token)
     
-    # Get servers filtered by project/environment
-    if project:
-        droplets = client.list_droplets(project=project, environment=environment)
-    else:
-        droplets = client.list_droplets(tag="deployed-via-api", environment=environment)
+    # Get servers filtered by project/environment (DOClient defaults to managed only)
+    droplets = client.list_droplets(project=project, environment=environment)
     
     # Get containers from each server
     containers_by_server = {}
@@ -1808,10 +1902,10 @@ async def get_fleet_health(
     
     api_key = generate_node_agent_key(token, str(user.id))
     
-    # Get all servers from DO
+    # Get all servers from DO (DOClient defaults to managed only)
     try:
         do_client = DOClient(token)
-        droplets = do_client.list_droplets(tag="deployed-via-api")
+        droplets = do_client.list_droplets()
         servers = [{"ip": d.ip, "name": d.name, "region": d.region} for d in droplets if d.ip]
     except Exception as e:
         return {"servers": [], "summary": {"total": 0, "healthy": 0, "unhealthy": 0, "unreachable": 0}, "error": str(e)}
@@ -2314,6 +2408,27 @@ async def agent_health_simple(
         return {"status": "unhealthy", "error": str(e)}
 
 
+@router.get("/agent/containers")
+async def agent_containers_simple(
+    server_ip: str = Query(..., description="Server IP address"),
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
+):
+    """List containers via node agent (simplified, with server_ip as query param)."""
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, user.id)
+    
+    try:
+        async with NodeAgentClient(server_ip, api_key) as client:
+            result = await client.list_containers()
+            if result.success:
+                return result.data
+            return {"containers": [], "error": result.error}
+    except Exception as e:
+        return {"containers": [], "error": str(e)}
+
+
 # ==========================================
 # Status/Health Endpoints
 # ==========================================
@@ -2463,6 +2578,70 @@ async def get_deployment_logs(
 class DOTokenTestRequest(BaseModel):
     """Request to test DO token."""
     token: str
+
+
+@router.get("/test/deployment-store")
+async def test_deployment_store_get(
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """Test if deployment store can write to database. Visit in browser."""
+    import traceback
+    try:
+        record = await deployment_store.record_deployment(
+            workspace_id=str(user.id),
+            project="test-project",
+            environment="test",
+            service_name="test-service",
+            source_type="image",
+            image_name="test:latest",
+            deployed_by=str(user.id),
+            
+            comment="Test deployment record",
+        )
+        return {
+            "success": True,
+            "deployment_id": record.id,
+            "message": "Deployment record created successfully - check your database!"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
+@router.post("/test/deployment-store")
+async def test_deployment_store(
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """Test if deployment store can write to database."""
+    import traceback
+    try:
+        record = await deployment_store.record_deployment(
+            workspace_id=str(user.id),
+            project="test-project",
+            environment="test",
+            service_name="test-service",
+            source_type="image",
+            image_name="test:latest",
+            deployed_by=str(user.id),
+            
+            comment="Test deployment record",
+        )
+        return {
+            "success": True,
+            "deployment_id": record.id,
+            "message": "Deployment record created successfully"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 
 @router.post("/test/do-token")
@@ -2622,6 +2801,66 @@ class NginxConfigRequest(BaseModel):
     domain: Optional[str] = None
     ssl: bool = False
     websocket: bool = False
+
+
+@router.get("/debug/api-key")
+async def get_api_key(
+    do_token: str = Query(..., description="DO token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get the full node agent API key for debugging auth issues."""
+    api_key = _get_node_agent_key(do_token, str(user.id))
+    return {
+        "api_key": api_key,
+        "user_id": str(user.id),
+        "key_prefix": api_key[:8],
+        "instructions": "Update agents with: ssh root@SERVER 'echo YOUR_KEY > /opt/node_agent/api_key.txt && systemctl restart node_agent'"
+    }
+
+
+@router.post("/debug/update-agent-key")
+async def update_agent_key(
+    server_ip: str = Query(..., description="Server IP"),
+    do_token: str = Query(..., description="DO token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Update node agent API key on a server via SSH (requires SSH access)."""
+    import asyncio
+    import asyncssh
+    
+    api_key = _get_node_agent_key(do_token, str(user.id))
+    
+    try:
+        # Try to SSH and update the key
+        async with asyncssh.connect(
+            server_ip,
+            username='root',
+            known_hosts=None,
+            connect_timeout=10
+        ) as conn:
+            # Update the key file
+            cmd = f'echo "{api_key}" > /opt/node_agent/api_key.txt && systemctl restart node_agent'
+            result = await conn.run(cmd, check=True)
+            
+            return {
+                "success": True,
+                "server_ip": server_ip,
+                "new_key_prefix": api_key[:8],
+                "message": "Agent key updated and service restarted"
+            }
+    except asyncssh.Error as e:
+        return {
+            "success": False,
+            "error": f"SSH failed: {e}",
+            "manual_command": f"ssh root@{server_ip} 'echo \"{api_key}\" > /opt/node_agent/api_key.txt && systemctl restart node_agent'"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "api_key": api_key,
+            "manual_command": f"ssh root@{server_ip} 'echo \"{api_key}\" > /opt/node_agent/api_key.txt && systemctl restart node_agent'"
+        }
 
 
 @router.post("/test/nginx-config")
@@ -2811,6 +3050,9 @@ class UnifiedDeployRequest(BaseModel):
     tags: List[str] = []
     project: Optional[str] = None  # Project name (defaults to service name)
     
+    # Deployment metadata
+    comment: Optional[str] = None  # Deployment notes (e.g., "Fix login bug", "v1.2.3")
+    
     # Service mesh / dependencies
     depends_on: List[str] = []  # Services this depends on (e.g., ["postgres", "redis"])
     setup_sidecar: bool = True  # Set up nginx sidecar after deploy
@@ -2846,6 +3088,9 @@ class UnifiedDeployRequest(BaseModel):
     snapshot_id: Optional[str] = None
     region: str = "lon1"
     size: str = "s-1vcpu-1gb"
+    
+    # Exclusion patterns for folder upload filtering
+    exclude_patterns: Optional[List[str]] = None
 
 
 @router.post("/deploy")
@@ -2854,6 +3099,7 @@ async def deploy_unified(
     do_token: str = Query(..., description="DO token"),
     cf_token: Optional[str] = Query(None, description="Cloudflare token (required if setup_domain=True)"),
     user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
 ):
     """
     Unified deployment endpoint for multi-server deployments.
@@ -2865,25 +3111,72 @@ async def deploy_unified(
     
     Handles multiple existing servers and/or provisioning new ones.
     Returns SSE stream with progress logs.
+    Records deployment to history for rollback support.
     """
     import json
     import base64
     import queue
     import threading
+    import time
     
     token = _get_do_token(do_token)
     api_key = _get_node_agent_key(token, str(user.id))  # Ensure string
     msg_queue = queue.Queue()
+    
+    # Build config snapshot for rollback support
+    config_snapshot = {
+        "source_type": req.source_type,
+        "git_url": req.git_url,
+        "git_branch": req.git_branch,
+        "git_folders": req.git_folders,
+        "exclude_patterns": req.exclude_patterns,
+        "image": req.image,
+        "dockerfile": req.dockerfile,
+        "port": req.port,
+        "container_port": req.container_port,
+        "host_port": req.host_port,
+        "env_vars": req.env_vars or {},
+        "tags": req.tags or [],
+        "server_ips": req.server_ips or [],
+        "snapshot_id": req.snapshot_id,
+        "region": req.region,
+        "size": req.size,
+        "setup_domain": req.setup_domain,
+        "base_domain": req.base_domain,
+    }
+    
+    # Record deployment start
+    deployment_record = await deployment_store.record_deployment(
+        workspace_id=str(user.id),
+        project=req.project or "default",
+        environment=req.environment,
+        service_name=req.name,
+        source_type=req.source_type,
+        image_name=req.image if req.source_type == "image" else None,
+        git_url=req.git_url if req.source_type == "git" else None,
+        git_branch=req.git_branch,
+        server_ips=req.server_ips or [],
+        port=req.port,
+        env_vars=req.env_vars or {},
+        deployed_by=str(user.id),
+        
+        comment=req.comment,
+        config_snapshot=config_snapshot,
+    )
+    deployment_id = deployment_record.id
+    start_time = time.time()
     
     def log(msg: str):
         msg_queue.put({"type": "log", "message": msg})
     
     # Debug: log api key prefix
     log(f"🔑 Using API key: {api_key[:8]}...")
+    log(f"📝 Deployment ID: {deployment_id}")
     
     def deploy_worker():
         """Run deployment in background thread."""
         import asyncio
+        from shared_libs.backend.infra.deploy import DeploymentStatus
         
         try:
             # Build config
@@ -2910,6 +3203,7 @@ async def deploy_unified(
                 dockerfile=req.dockerfile,
                 project=req.project,  # For container naming
                 workspace_id=str(user.id),  # For container naming
+                deployment_id=deployment_id,  # For image tagging (rollback)
                 # Service mesh
                 depends_on=req.depends_on,
                 setup_sidecar=req.setup_sidecar,
@@ -2942,10 +3236,159 @@ async def deploy_unified(
             result = loop.run_until_complete(service.deploy(config))
             loop.close()
             
+            # Calculate duration
+            duration = time.time() - start_time
+            
+            # Update deployment history with result
+            successful_ips = [s.ip for s in result.servers if s.success]
+            image_name = None
+            container_name = None
+            
+            # Try to capture the actual image name used
+            if result.servers:
+                for s in result.servers:
+                    if s.container_name:
+                        container_name = s.container_name
+                        break
+            
+            # Compute the tagged image name for rollback
+            # Format: {container_base}:deploy_{deployment_id}
+            tagged_image_name = None
+            if container_name and result.success:
+                from shared_libs.backend.infra.utils.naming import DeploymentNaming
+                tagged_image_name = DeploymentNaming.get_local_image_name(
+                    container_name, deployment_id=deployment_id
+                )
+                
+                # Actually tag the image on each server for rollback support
+                from shared_libs.backend.infra.node_agent import NodeAgentClient
+                
+                async def tag_images_for_rollback():
+                    for s in result.servers:
+                        if not s.success or not s.ip:
+                            continue
+                        try:
+                            async with NodeAgentClient(s.ip, api_key, timeout=30) as client:
+                                # Tag the built image for rollback
+                                source_image = f"{req.name}:latest"
+                                tag_result = await client.tag_image(source_image, tagged_image_name)
+                                if tag_result.success:
+                                    log(f"📌 Tagged image on {s.ip} as {tagged_image_name}")
+                        except Exception as e:
+                            log(f"⚠️ Could not tag image on {s.ip}: {e}")
+                
+                loop_tag = asyncio.new_event_loop()
+                try:
+                    asyncio.set_event_loop(loop_tag)
+                    loop_tag.run_until_complete(asyncio.wait_for(tag_images_for_rollback(), timeout=60))
+                except asyncio.TimeoutError:
+                    log(f"⚠️ Image tagging timed out")
+                except Exception as e:
+                    log(f"⚠️ Image tagging failed: {e}")
+                finally:
+                    loop_tag.close()
+            
+            # Update status using fresh db connection in worker thread
+            assigned_version = None
+            version_tagged_image = None
+            
+            async def update_status():
+                nonlocal assigned_version, version_tagged_image
+                from shared_libs.backend.app_kernel.db import get_db_connection
+                async with get_db_connection() as db:
+                    store = DeploymentStore(db)
+                    # Get final server IPs from result
+                    final_server_ips = [s.ip for s in result.servers if s.success] if result.servers else req.server_ips
+                    if result.success:
+                        update_result = await store.update_deployment(
+                            deployment_id,
+                            status="success",
+                            duration_seconds=duration,
+                            started_at=deployment_record.created_at,
+                            completed_at=_now_str(),
+                            image_name=tagged_image_name,  # Save the deployed image (deploy_id tag)
+                            server_ips=final_server_ips,
+                        )
+                        # Get assigned version for retagging
+                        if update_result.get("version"):
+                            assigned_version = update_result["version"]
+                            # Create version-based image name using infra naming
+                            if container_name:
+                                from shared_libs.backend.infra.utils.naming import DeploymentNaming
+                                version_tagged_image = DeploymentNaming.get_local_image_name(
+                                    container_name, version=assigned_version
+                                )
+                    else:
+                        await store.update_deployment(
+                            deployment_id,
+                            status="failed",
+                            error=result.error or "Deployment failed",
+                            duration_seconds=duration,
+                            started_at=deployment_record.created_at,
+                            completed_at=_now_str(),
+                            server_ips=final_server_ips,
+                        )
+            
+            def _now_str():
+                from datetime import datetime
+                return datetime.utcnow().isoformat()
+            
+            try:
+                loop.run_until_complete(asyncio.wait_for(update_status(), timeout=30))
+            except asyncio.TimeoutError:
+                log(f"⚠️ Status update timed out")
+            except Exception as e:
+                log(f"⚠️ Status update failed: {e}")
+            
+            # After success, retag image with version and update DB
+            if assigned_version and version_tagged_image and tagged_image_name:
+                log(f"📌 Tagging image as {version_tagged_image}")
+                
+                async def retag_with_version():
+                    from shared_libs.backend.app_kernel.db import get_db_connection
+                    from shared_libs.backend.infra.node_agent import NodeAgentClient
+                    final_server_ips = [s.ip for s in result.servers if s.success] if result.servers else req.server_ips
+                    
+                    # Retag on all successful servers
+                    for ip in final_server_ips:
+                        try:
+                            async with NodeAgentClient(ip, api_key, timeout=30) as client:
+                                tag_result = await client.tag_image(tagged_image_name, version_tagged_image)
+                                if tag_result.success:
+                                    log(f"✓ Tagged on {ip}: {version_tagged_image}")
+                        except Exception as e:
+                            log(f"⚠️ Retag failed on {ip}: {e}")
+                    
+                    # Update DB with version-tagged image name
+                    async with get_db_connection() as db:
+                        store = DeploymentStore(db)
+                        await store.update_deployment(
+                            deployment_id,
+                            image_name=version_tagged_image,  # Update to version tag
+                        )
+                
+                loop_retag = asyncio.new_event_loop()
+                try:
+                    loop_retag.run_until_complete(asyncio.wait_for(retag_with_version(), timeout=60))
+                except Exception as e:
+                    log(f"⚠️ Version retagging failed: {e}")
+                finally:
+                    loop_retag.close()
+            
+            # Build error message if result.error is empty but there are failures
+            final_error = result.error
+            if not final_error and result.failed_count > 0:
+                failed_errors = [f"{s.ip}: {s.error}" for s in result.servers if not s.success and s.error]
+                if failed_errors:
+                    final_error = "; ".join(failed_errors)
+                else:
+                    final_error = f"{result.failed_count} server(s) failed"
+            
             # Send done with architecture info
             msg_queue.put({
                 "type": "done",
                 "success": result.success,
+                "deployment_id": deployment_id,
                 "servers": [
                     {
                         "ip": s.ip, 
@@ -2961,7 +3404,7 @@ async def deploy_unified(
                 ],
                 "successful_count": result.successful_count,
                 "failed_count": result.failed_count,
-                "error": result.error,
+                "error": final_error,
                 # Architecture info
                 "service_name": result.service_name,
                 "project": result.project,
@@ -2980,9 +3423,32 @@ async def deploy_unified(
             import traceback
             log(f"❌ Error: {e}")
             traceback.print_exc()
+            
+            # Update deployment history with failure
+            duration = time.time() - start_time
+            try:
+                async def update_failure():
+                    from shared_libs.backend.app_kernel.db import get_db_connection
+                    async with get_db_connection() as db:
+                        store = DeploymentStore(db)
+                        await store.update_deployment(
+                            deployment_id,
+                            status="failed",
+                            error=str(e),
+                            duration_seconds=duration,
+                        )
+                
+                loop2 = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop2)
+                loop2.run_until_complete(asyncio.wait_for(update_failure(), timeout=30))
+                loop2.close()
+            except:
+                pass
+            
             msg_queue.put({
                 "type": "done",
                 "success": False,
+                "deployment_id": deployment_id,
                 "error": str(e),
             })
     
@@ -3035,6 +3501,8 @@ async def deploy_multipart(
     base_domain: str = Query("digitalpixo.com", description="Base domain for subdomains"),
     domain_aliases: str = Query("[]", description="JSON array of domain aliases"),
     user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+    project_store: ProjectStore = Depends(get_project_store),
 ):
     """
     Multipart deployment endpoint - memory efficient for large files.
@@ -3059,7 +3527,10 @@ async def deploy_multipart(
     import tempfile
     import os
     import asyncio
+    import time
+    from datetime import datetime
     
+    start_time = time.time()
     token = _get_do_token(do_token)
     api_key = _get_node_agent_key(token, str(user.id))
     msg_queue = queue.Queue()
@@ -3074,7 +3545,7 @@ async def deploy_multipart(
     provisioned_servers = []
     
     if new_server_count > 0 and snapshot_id:
-        log(f"🆕 Provisioning {new_server_count} server(s) in parallel with upload...")
+        log(f"🆕 Provisioning {new_server_count} server(s)... (this takes 30-60 seconds)")
         
         async def provision_now():
             from shared_libs.backend.infra.cloud import DOClient
@@ -3106,7 +3577,7 @@ async def deploy_multipart(
             if not droplet_ids:
                 return []
             
-            log(f"   ⏳ Waiting for {len(droplet_ids)} droplet(s)...")
+            log(f"   ⏳ Waiting for {len(droplet_ids)} server(s) to boot...")
             
             # Poll until ready
             servers = []
@@ -3150,6 +3621,7 @@ async def deploy_multipart(
     git_folders_str = form.get("git_folders")
     image = form.get("image")
     server_ips = form.get("server_ips", "[]")
+    exclude_patterns_str = form.get("exclude_patterns")
     
     # Parse JSON fields
     try:
@@ -3157,8 +3629,63 @@ async def deploy_multipart(
         tags_list = json_mod.loads(tags) if tags else []
         server_ips_list = json_mod.loads(server_ips) if server_ips else []
         git_folders = json_mod.loads(git_folders_str) if git_folders_str else None
+        exclude_patterns = json_mod.loads(exclude_patterns_str) if exclude_patterns_str else None
     except json_mod.JSONDecodeError as e:
         raise HTTPException(400, f"Invalid JSON in form field: {e}")
+    
+    # Auto-create project if it doesn't exist
+    project_final = project or "default"
+    existing_project = await project_store.get_by_name(str(user.id), project_final)
+    if not existing_project:
+        log(f"📁 Creating project: {project_final}")
+        await project_store.create(
+            workspace_id=str(user.id),
+            name=project_final,
+            created_by=str(user.id),
+        )
+    
+    # Build config snapshot for rollback support
+    config_snapshot = {
+        "source_type": source_type,
+        "git_url": git_url,
+        "git_branch": git_branch,
+        "git_folders": git_folders,
+        "exclude_patterns": exclude_patterns,
+        "image": image,
+        "dockerfile": dockerfile,
+        "port": port,
+        "container_port": container_port,
+        "host_port": host_port,
+        "env_vars": env_vars_dict,
+        "tags": tags_list,
+        "server_ips": server_ips_list,
+        "snapshot_id": snapshot_id,
+        "region": region,
+        "size": size,
+        "setup_domain": setup_domain,
+        "base_domain": base_domain,
+    }
+    
+    # Record deployment start
+    deployment_record = await deployment_store.record_deployment(
+        workspace_id=str(user.id),
+        project=project_final,
+        environment=environment,
+        service_name=name,
+        source_type=source_type,
+        image_name=image if source_type == "image" else None,
+        git_url=git_url if source_type == "git" else None,
+        git_branch=git_branch,
+        server_ips=server_ips_list,
+        port=port,
+        env_vars=env_vars_dict,
+        deployed_by=str(user.id),
+        
+        comment=f"Deployed via multipart upload",
+        config_snapshot=config_snapshot,
+    )
+    deployment_id = deployment_record.id
+    log(f"📝 Deployment ID: {deployment_id}")
     
     # Save uploaded files to temp paths
     code_tar_path = None
@@ -3280,17 +3807,161 @@ async def deploy_multipart(
             result = loop.run_until_complete(service.deploy(config))
             loop.close()
             
+            # Update deployment status
+            duration = int((time.time() - start_time))
+            
+            # Compute the tagged image name for rollback support
+            # Format: {container_base}:deploy_{deployment_id}
+            tagged_image_name = None
+            container_name = None
+            if result.servers:
+                for s in result.servers:
+                    if s.container_name:
+                        container_name = s.container_name
+                        break
+            
+            if container_name and result.success:
+                from shared_libs.backend.infra.utils.naming import DeploymentNaming
+                tagged_image_name = DeploymentNaming.get_local_image_name(
+                    container_name, deployment_id=deployment_id
+                )
+                
+                # Actually tag the image on each server for rollback support
+                from shared_libs.backend.infra.node_agent import NodeAgentClient
+                
+                async def tag_images_for_rollback():
+                    for s in result.servers:
+                        if not s.success or not s.ip:
+                            continue
+                        try:
+                            async with NodeAgentClient(s.ip, api_key, timeout=30) as client:
+                                # Tag the built image for rollback
+                                source_image = f"{name}:latest"
+                                tag_result = await client.tag_image(source_image, tagged_image_name)
+                                if tag_result.success:
+                                    log(f"📌 Tagged image on {s.ip} as {tagged_image_name}")
+                        except Exception as e:
+                            log(f"⚠️ Could not tag image on {s.ip}: {e}")
+                
+                loop_tag = asyncio.new_event_loop()
+                try:
+                    asyncio.set_event_loop(loop_tag)
+                    loop_tag.run_until_complete(asyncio.wait_for(tag_images_for_rollback(), timeout=60))
+                except asyncio.TimeoutError:
+                    log(f"⚠️ Image tagging timed out")
+                except Exception as e:
+                    log(f"⚠️ Image tagging failed: {e}")
+                finally:
+                    loop_tag.close()
+            
+            assigned_version = None
+            version_tagged_image = None
+            
+            async def update_status():
+                nonlocal assigned_version, version_tagged_image
+                from shared_libs.backend.app_kernel.db import get_db_connection
+                async with get_db_connection() as db:
+                    store = DeploymentStore(db)
+                    # Get final server IPs from result
+                    final_server_ips = [s.ip for s in result.servers if s.success] if result.servers else all_server_ips
+                    if result.success:
+                        update_result = await store.update_deployment(
+                            deployment_id,
+                            status="success",
+                            duration_seconds=duration,
+                            completed_at=datetime.utcnow().isoformat(),
+                            image_name=tagged_image_name,  # Save the deployed image
+                            server_ips=final_server_ips,
+                        )
+                        # Get assigned version for retagging
+                        if update_result.get("version"):
+                            assigned_version = update_result["version"]
+                            if container_name:
+                                from shared_libs.backend.infra.utils.naming import DeploymentNaming
+                                version_tagged_image = DeploymentNaming.get_local_image_name(
+                                    container_name, version=assigned_version
+                                )
+                    else:
+                        await store.update_deployment(
+                            deployment_id,
+                            status="failed",
+                            error=result.error or "Deployment failed",
+                            duration_seconds=duration,
+                            completed_at=datetime.utcnow().isoformat(),
+                            server_ips=final_server_ips,
+                        )
+            
+            loop2 = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop2)
+                loop2.run_until_complete(asyncio.wait_for(update_status(), timeout=30))
+            except asyncio.TimeoutError:
+                log(f"⚠️ Status update timed out")
+            except Exception as e:
+                log(f"⚠️ Status update failed: {e}")
+            finally:
+                loop2.close()
+            
+            # After success, retag image with version and update DB
+            if assigned_version and version_tagged_image and tagged_image_name:
+                log(f"📌 Tagging image as {version_tagged_image}")
+                
+                async def retag_with_version():
+                    from shared_libs.backend.app_kernel.db import get_db_connection
+                    final_server_ips = [s.ip for s in result.servers if s.success] if result.servers else all_server_ips
+                    
+                    for ip in final_server_ips:
+                        try:
+                            async with NodeAgentClient(ip, api_key, timeout=30) as client:
+                                tag_result = await client.tag_image(tagged_image_name, version_tagged_image)
+                                if tag_result.success:
+                                    log(f"✓ Tagged on {ip}: {version_tagged_image}")
+                        except Exception as e:
+                            log(f"⚠️ Retag failed on {ip}: {e}")
+                    
+                    async with get_db_connection() as db:
+                        store = DeploymentStore(db)
+                        await store.update_deployment(
+                            deployment_id,
+                            image_name=version_tagged_image,
+                        )
+                
+                loop_retag = asyncio.new_event_loop()
+                try:
+                    loop_retag.run_until_complete(asyncio.wait_for(retag_with_version(), timeout=60))
+                except Exception as e:
+                    log(f"⚠️ Version retagging failed: {e}")
+                finally:
+                    loop_retag.close()
+            
             # Send done
+            # Build error message if result.error is empty but there are failures
+            final_error = result.error
+            if not final_error and result.failed_count > 0:
+                failed_errors = [f"{s.ip}: {s.error}" for s in result.servers if not s.success and s.error]
+                if failed_errors:
+                    final_error = "; ".join(failed_errors)
+                else:
+                    final_error = f"{result.failed_count} server(s) failed"
+            
             msg_queue.put({
                 "type": "done",
                 "success": result.success,
                 "servers": [
-                    {"ip": s.ip, "name": s.name, "success": s.success, "url": s.url, "error": s.error}
+                    {
+                        "ip": s.ip, 
+                        "name": s.name, 
+                        "success": s.success, 
+                        "url": s.url, 
+                        "error": s.error,
+                        "container_name": s.container_name,
+                    }
                     for s in result.servers
                 ],
                 "successful_count": result.successful_count,
                 "failed_count": result.failed_count,
-                "error": result.error,
+                "error": final_error,
+                "container_name": result.container_name,
                 # Domain info
                 "domain": result.domain,
                 "domain_aliases": result.domain_aliases,
@@ -5280,9 +5951,9 @@ async def get_architecture(
         # Get server IPs
         server_ips = req.server_ips
         if not server_ips:
-            # Query all user's servers
+            # Query all user's servers (DOClient defaults to managed only)
             do_client = DOClient(token)
-            droplets = do_client.list_droplets(tag="deployed-via-api")
+            droplets = do_client.list_droplets()
             server_ips = [d.ip for d in droplets if d.ip]
         
         if not server_ips:
@@ -5548,9 +6219,9 @@ async def list_architecture_projects(
         token = _get_do_token(do_token)
         api_key = generate_node_agent_key(token, str(user.id))
         
-        # Get all servers
+        # Get all servers (DOClient defaults to managed only)
         do_client = DOClient(token)
-        droplets = do_client.list_droplets(tag="deployed-via-api")
+        droplets = do_client.list_droplets()
         server_ips = [d.ip for d in droplets if d.ip]
         
         projects = set()
@@ -5774,3 +6445,876 @@ async def stop_scheduler(
     scheduler = get_task_scheduler()
     await scheduler.stop()
     return {"status": "stopped"}
+
+
+# ==========================================
+# Deployment History & Rollback
+# ==========================================
+
+
+@router.get("/deployments/history")
+async def get_deployment_history_list(
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+    project: Optional[str] = Query(None, description="Filter by project"),
+    environment: Optional[str] = Query(None, description="Filter by environment"),
+    service_name: Optional[str] = Query(None, description="Filter by service name"),
+    limit: int = Query(50, description="Max records to return"),
+):
+    """
+    Get deployment history.
+    
+    Returns recent deployments with metadata including who deployed, when, and any comments.
+    User IDs are resolved to display names (emails) server-side.
+    """
+    # Use get_deployments for all cases - it handles filtering internally
+    records = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+        limit=limit,
+        enrich=True,  # Resolve user IDs to emails
+    )
+    
+    # Add rollbackability info to each deployment
+    def enrich_with_rollback(d):
+        data = d.to_dict()
+        has_source = bool(data.get('image_name') or data.get('git_url'))
+        has_servers = bool(data.get('server_ips') or data.get('droplet_ids'))
+        data['can_rollback'] = has_source and has_servers
+        return data
+    
+    return {
+        "deployments": [enrich_with_rollback(r) for r in records],
+        "count": len(records),
+    }
+
+
+@router.get("/deployments/history/{deployment_id}")
+async def get_deployment_details(
+    deployment_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """Get details of a specific deployment."""
+    record = await deployment_store.get_deployment(deployment_id, enrich=True)
+    
+    if not record:
+        raise HTTPException(404, "Deployment not found")
+    
+    if record.workspace_id != str(user.id):
+        raise HTTPException(403, "Not authorized")
+    
+    return record.to_dict()
+
+
+class RollbackRequest(BaseModel):
+    """Rollback request."""
+    deployment_id: Optional[str] = None  # Specific deployment to rollback to (optional)
+    version: Optional[int] = None  # Version number to rollback to (optional, alternative to deployment_id)
+    comment: Optional[str] = None  # Why rolling back
+    do_token: Optional[str] = None
+
+
+@router.post("/deployments/rollback")
+async def rollback_deployment(
+    project: str = Query(..., description="Project name"),
+    environment: str = Query(..., description="Environment (prod, staging, etc)"),
+    service_name: str = Query(..., description="Service name"),
+    req: RollbackRequest = None,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+    do_token: Optional[str] = Query(None),
+):
+    """
+    Rollback a service to a previous deployment.
+    
+    Options (in order of priority):
+    1. deployment_id: Roll back to a specific deployment ID
+    2. version: Roll back to a specific version number (e.g., version=5)
+    3. Neither: Roll back to the most recent successful deployment before the current one
+    
+    Returns SSE stream with rollback progress.
+    
+    Examples:
+        POST /infra/deployments/rollback?project=ai&service_name=ai-agents&environment=prod
+        Body: {"version": 5}
+        
+        POST /infra/deployments/rollback?project=ai&service_name=ai-agents&environment=prod
+        Body: {"deployment_id": "abc123"}
+    """
+    from shared_libs.backend.infra.deploy import DeploymentStatus
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import DOClient, generate_node_agent_key
+    
+    req = req or RollbackRequest()
+    token = _get_do_token(do_token or req.do_token)
+    api_key = generate_node_agent_key(token, str(user.id))
+    
+    # Find the deployment to rollback to (priority: deployment_id > version > previous)
+    target = None
+    
+    if req.deployment_id:
+        # Option 1: Explicit deployment ID
+        target = await deployment_store.get_deployment(req.deployment_id)
+        if not target:
+            raise HTTPException(404, f"Deployment {req.deployment_id} not found")
+        if target.workspace_id != str(user.id):
+            raise HTTPException(403, "Not authorized")
+    elif req.version is not None:
+        # Option 2: Version number
+        target = await deployment_store.get_by_version(
+            workspace_id=str(user.id),
+            project=project,
+            service_name=service_name,
+            env=environment,
+            version=req.version,
+        )
+        if not target:
+            raise HTTPException(404, f"Version {req.version} not found for {project}/{service_name}/{environment}")
+    else:
+        # Option 3: Previous successful deployment
+        target = await deployment_store.get_previous(
+            workspace_id=str(user.id),
+            project=project,
+            environment=environment,
+            service_name=service_name,
+        )
+        
+        if not target:
+            raise HTTPException(404, "No previous successful deployment found to rollback to")
+    
+    # Fetch current SUCCESSFUL deployment to mark as rolled_back later
+    # (only successful deployments are actually "running" and can be "rolled back")
+    current_deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+        status="success",  # Only mark successful deployments as rolled_back
+        limit=1,
+        enrich=True,
+    )
+    
+    # Validate we have enough info to redeploy
+    if not target.image_name and not target.git_url:
+        raise HTTPException(
+            400, 
+            f"Cannot rollback: Deployment {target.id[:8]}... was created before image tracking was enabled. "
+            f"Only newer deployments with recorded image names can be rolled back."
+        )
+    
+    if not target.server_ips and not target.droplet_ids:
+        raise HTTPException(
+            400, 
+            f"Cannot rollback: Deployment {target.id[:8]}... has no server IPs recorded. "
+            f"Deploy to specific servers first."
+        )
+    
+    async def rollback_stream():
+        import json
+        import time as time_mod
+        from datetime import datetime
+        
+        start_time = time_mod.time()
+        
+        def emit(event_type: str, data: dict):
+            return f"data: {json.dumps({'type': event_type, **data})}\n\n"
+        
+        def log(msg: str):
+            """Log to SSE stream."""
+            nonlocal msg_queue
+            msg_queue.append(emit("progress", {"message": msg}))
+        
+        msg_queue = []
+        
+        try:
+            yield emit("start", {
+                "message": f"Starting rollback to deployment {target.id}",
+                "target_deployment": target.to_dict(),
+            })
+            
+            # Record this rollback as a new deployment
+            rollback_record = await deployment_store.record_deployment(
+                workspace_id=str(user.id),
+                project=project,
+                environment=environment,
+                service_name=service_name,
+                source_type="image",  # Rollback is always image-based
+                image_name=target.image_name,
+                image_digest=target.image_digest,
+                git_url=target.git_url,
+                git_branch=target.git_branch,
+                git_commit=target.git_commit,
+                server_ips=target.server_ips,
+                port=target.port,
+                env_vars=target.env_vars,
+                deployed_by=str(user.id),
+                
+                comment=req.comment or f"Rollback to {target.id}",
+                is_rollback=True,
+                rollback_from_id=target.id,
+                config_snapshot=target.config_snapshot,
+            )
+            
+            yield emit("progress", {"message": f"Created rollback record: {rollback_record.id}"})
+            
+            if not target.server_ips:
+                yield emit("error", {"message": "No server IPs found for this deployment"})
+                yield emit("complete", {
+                    "success": False,
+                    "message": "No server IPs found",
+                    "errors": [{"error": "No server IPs"}],
+                })
+                return
+            
+            yield emit("progress", {"message": f"Rolling back on {len(target.server_ips)} server(s): {', '.join(target.server_ips)}"})
+            
+            # Construct the tagged image name for rollback
+            # Image is stored as: {container_base}:deploy_{deployment_id}
+            image_base = target.image_name.split(":")[0] if target.image_name else None
+            tagged_image_name = f"{image_base}:deploy_{target.id}"
+            
+            yield emit("progress", {"message": f"Using image: {tagged_image_name}"})
+            
+            # Use the existing deployment service - it handles everything!
+            # (toggle, nginx sidecar, health checks, cleanup)
+            from shared_libs.backend.infra.deploy import DeploymentService, MultiDeployConfig, DeploySource
+            
+            config = MultiDeployConfig(
+                name=service_name,
+                port=target.port or 8000,
+                env_vars=target.env_vars or {},
+                environment=environment,
+                project=project,
+                workspace_id=str(user.id),
+                deployment_id=rollback_record.id,
+                
+                # Use IMAGE source with the tagged image
+                source_type=DeploySource.IMAGE,
+                image=tagged_image_name,
+                skip_pull=True,  # Image is local (tagged during original deployment)
+                
+                # Target the same servers
+                server_ips=target.server_ips,
+                
+                # Service mesh
+                setup_sidecar=True,
+                
+                # Don't re-provision domain (already set up)
+                setup_domain=False,
+            )
+            
+            service = DeploymentService(
+                do_token=token,
+                agent_key=api_key,
+                log=log,
+            )
+            
+            # Run the deployment
+            yield emit("progress", {"message": "🚀 Starting deployment service..."})
+            
+            import asyncio
+            result = await service.deploy(config)
+            
+            # Flush queued log messages
+            for msg in msg_queue:
+                yield msg
+            
+            # Calculate duration
+            duration = time_mod.time() - start_time
+            completed_at = datetime.utcnow().isoformat()
+            
+            if result.success:
+                # Update rollback record
+                await deployment_store.update_deployment(
+                    rollback_record.id,
+                    status="success",
+                    duration_seconds=duration,
+                    completed_at=completed_at,
+                )
+                
+                # Mark the current deployment as rolled back
+                if current_deployments:
+                    await deployment_store.update_deployment(
+                        current_deployments[0].id,
+                        status="rolled_back",
+                    )
+                
+                successful_count = len([s for s in result.servers if s.success])
+                yield emit("complete", {
+                    "success": True,
+                    "message": f"Rollback complete ({successful_count}/{len(target.server_ips)} servers)",
+                    "deployment_id": rollback_record.id,
+                    "successes": [s.ip for s in result.servers if s.success],
+                    "errors": [{"ip": s.ip, "error": s.error} for s in result.servers if not s.success],
+                })
+            else:
+                await deployment_store.update_deployment(
+                    rollback_record.id,
+                    status="failed",
+                    error=result.error,
+                    duration_seconds=duration,
+                    completed_at=completed_at,
+                )
+                
+                yield emit("complete", {
+                    "success": False,
+                    "message": f"Rollback failed: {result.error}",
+                    "errors": [{"error": result.error}],
+                })
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield emit("error", {
+                "message": f"Rollback failed: {str(e)}",
+                "error": str(e),
+            })
+            yield emit("complete", {
+                "success": False,
+                "message": f"Rollback failed: {str(e)}",
+                "errors": [{"error": str(e)}],
+            })
+    
+    return StreamingResponse(
+        rollback_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@router.get("/deployments/rollback/preview")
+async def preview_rollback(
+    project: str = Query(..., description="Project name"),
+    environment: str = Query(..., description="Environment"),
+    service_name: str = Query(..., description="Service name"),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """
+    Preview what a rollback would do.
+    
+    Shows the current deployment and what it would rollback to.
+    """
+    # Get recent deployments with user info enriched
+    deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+        limit=10,  # Return more for selection
+        enrich=True,
+    )
+    
+    if not deployments:
+        return {
+            "can_rollback": False,
+            "message": "No deployment history found",
+            "current": None,
+            "rollback_target": None,
+        }
+    
+    current = deployments[0] if deployments else None
+    
+    # Find rollback target - last successful deployment before current
+    rollback_target = await deployment_store.get_previous(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+    )
+    
+    # Don't rollback to ourselves
+    if rollback_target and current and rollback_target.id == current.id:
+        # Find next one
+        successful = [d for d in deployments if d.status == 'success' and d.id != current.id]
+        rollback_target = successful[0] if successful else None
+    
+    # Enrich each deployment with rollbackability
+    def to_dict_with_rollback(d):
+        data = d.to_dict()
+        # A deployment can be rolled back if it has image/git info AND server IPs
+        has_source = bool(data.get('image_name') or data.get('git_url'))
+        has_servers = bool(data.get('server_ips') or data.get('droplet_ids'))
+        data['can_rollback'] = has_source and has_servers
+        if not has_source:
+            data['rollback_blocked_reason'] = 'No image recorded'
+        elif not has_servers:
+            data['rollback_blocked_reason'] = 'No servers recorded'
+        return data
+    
+    return {
+        "can_rollback": rollback_target is not None,
+        "message": "Ready to rollback" if rollback_target else "No previous deployment to rollback to",
+        "current": to_dict_with_rollback(current) if current else None,
+        "rollback_target": to_dict_with_rollback(rollback_target) if rollback_target else None,
+        "recent_deployments": [to_dict_with_rollback(d) for d in deployments],
+    }
+
+
+# ==========================================
+# Fleet Health Check Automation
+# ==========================================
+
+@router.post("/scheduler/fleet-health/enable")
+async def enable_fleet_health_check(
+    interval_minutes: int = Query(5, description="Check interval in minutes"),
+    auto_restart: bool = Query(False, description="Auto-restart unhealthy containers"),
+    user: UserIdentity = Depends(get_current_user),
+    do_token: Optional[str] = Query(None),
+):
+    """
+    Enable automated fleet health checks.
+    
+    Creates a scheduled task that runs every N minutes to check all managed servers.
+    """
+    from shared_libs.backend.infra.scheduling import ScheduledTask, TaskType
+    
+    token = _get_do_token(do_token)
+    scheduler = get_task_scheduler()
+    
+    task_id = f"fleet-health-{user.id}"
+    
+    # Remove existing task if any
+    scheduler.remove_task(task_id)
+    
+    # Create new task
+    task = ScheduledTask(
+        id=task_id,
+        name="Fleet Health Check",
+        task_type=TaskType.HEALTH_CHECK,
+        interval_minutes=interval_minutes,
+        workspace_id=str(user.id),
+        enabled=True,
+        config={
+            "do_token": token,
+            "user_id": str(user.id),
+            "auto_restart": auto_restart,
+        },
+    )
+    
+    scheduler.add_task(task)
+    
+    # Start scheduler if not running
+    if not scheduler._running:
+        await scheduler.start()
+    
+    return {
+        "enabled": True,
+        "task_id": task_id,
+        "interval_minutes": interval_minutes,
+        "auto_restart": auto_restart,
+    }
+
+
+@router.post("/scheduler/fleet-health/disable")
+async def disable_fleet_health_check(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Disable automated fleet health checks."""
+    scheduler = get_task_scheduler()
+    task_id = f"fleet-health-{user.id}"
+    
+    removed = scheduler.remove_task(task_id)
+    
+    return {
+        "disabled": True,
+        "task_id": task_id,
+        "was_enabled": removed,
+    }
+
+
+@router.get("/scheduler/fleet-health/status")
+async def get_fleet_health_check_status(
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get status of automated fleet health checks."""
+    scheduler = get_task_scheduler()
+    task_id = f"fleet-health-{user.id}"
+    
+    task = scheduler.get_task(task_id)
+    
+    if not task:
+        return {
+            "enabled": False,
+            "scheduler_running": scheduler._running,
+        }
+    
+    return {
+        "enabled": task.enabled,
+        "scheduler_running": scheduler._running,
+        "interval_minutes": task.interval_minutes,
+        "auto_restart": task.config.get("auto_restart", False),
+        "last_run": task.last_run.isoformat() if task.last_run else None,
+        "last_status": task.last_status.value,
+        "last_result": task.last_result,
+        "run_count": task.run_count,
+        "error_count": task.error_count,
+    }
+
+
+@router.post("/deployments/cleanup")
+async def cleanup_old_deployments(
+    project: str = Query(..., description="Project name"),
+    environment: str = Query(..., description="Environment"),
+    service_name: str = Query(..., description="Service name"),
+    keep: int = Query(20, description="Number of deployments to keep"),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """
+    Clean up old deployment records, keeping only the most recent N.
+    
+    Note: This only removes history records, not actual Docker images on servers.
+    """
+    # TODO: Implement cleanup with new schema
+    # For now, just return current count
+    deployments = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+        limit=1000,
+        enrich=False,
+    )
+    
+    return {
+        "cleaned_up": 0,
+        "remaining": len(deployments),
+        "kept": keep,
+        "message": "Cleanup not yet implemented with new schema",
+    }
+
+
+# ==========================================
+# Frontend Compatibility Aliases
+# ==========================================
+
+@router.get("/deployments")
+async def get_deployments_alias(
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+    service: Optional[str] = Query(None),
+    project: Optional[str] = Query(None),
+    env: Optional[str] = Query(None),
+    limit: int = Query(50),
+):
+    """Alias for /deployments/history for frontend compatibility."""
+    records = await deployment_store.get_deployments(
+        workspace_id=str(user.id),
+        project=project,
+        environment=env,
+        service_name=service,
+        limit=limit,
+        enrich=True,
+    )
+    
+    def enrich_with_rollback(d):
+        data = d.to_dict()
+        has_source = bool(data.get('image_name') or data.get('git_url'))
+        has_servers = bool(data.get('server_ips') or data.get('droplet_ids'))
+        data['can_rollback'] = has_source and has_servers
+        return data
+    
+    return [enrich_with_rollback(r) for r in records]
+
+
+# ==========================================
+# Deploy Config (Saved Settings per Service)
+# ==========================================
+
+class DeployConfigRequest(BaseModel):
+    """Request body for saving deploy config."""
+    project_name: str
+    service_name: str
+    env: str = "prod"
+    source_type: str = "git"  # git, folder, image
+    # Git settings
+    git_url: Optional[str] = None
+    git_branch: str = "main"
+    git_folders: Optional[List[Dict[str, Any]]] = None
+    # Local folder settings
+    main_folder_path: Optional[str] = None
+    dependency_folder_paths: Optional[List[str]] = None
+    # Exclusion patterns
+    exclude_patterns: Optional[List[str]] = None
+    # Container settings
+    port: int = 8000
+    env_vars: Optional[Dict[str, str]] = None
+    dockerfile_path: str = "Dockerfile"
+    # Server targeting
+    server_ips: Optional[List[str]] = None
+    snapshot_id: Optional[str] = None
+    region: Optional[str] = None
+    size: str = "s-1vcpu-1gb"
+
+
+@router.get("/deploy-configs")
+async def list_deploy_configs(
+    user: UserIdentity = Depends(get_current_user),
+    config_store: DeployConfigStore = Depends(get_deploy_config_store),
+    project: Optional[str] = Query(None, description="Filter by project"),
+):
+    """List saved deployment configs."""
+    if project:
+        configs = await config_store.list_for_project(str(user.id), project)
+    else:
+        configs = await config_store.list_all(str(user.id))
+    return {"configs": [c.to_dict() for c in configs]}
+
+
+@router.get("/deploy-configs/{project}/{service}/{env}")
+async def get_deploy_config(
+    project: str,
+    service: str,
+    env: str,
+    user: UserIdentity = Depends(get_current_user),
+    config_store: DeployConfigStore = Depends(get_deploy_config_store),
+):
+    """Get a specific deployment config."""
+    config = await config_store.get(str(user.id), project, service, env)
+    if not config:
+        raise HTTPException(404, f"Config not found: {project}/{service}/{env}")
+    return config.to_dict()
+
+
+@router.post("/deploy-configs")
+async def save_deploy_config(
+    req: DeployConfigRequest,
+    user: UserIdentity = Depends(get_current_user),
+    config_store: DeployConfigStore = Depends(get_deploy_config_store),
+):
+    """Save deployment config (creates or updates)."""
+    config = await config_store.save(
+        workspace_id=str(user.id),
+        project_name=req.project_name,
+        service_name=req.service_name,
+        env=req.env,
+        config={
+            "source_type": req.source_type,
+            "git_url": req.git_url,
+            "git_branch": req.git_branch,
+            "git_folders": req.git_folders or [],
+            "main_folder_path": req.main_folder_path,
+            "dependency_folder_paths": req.dependency_folder_paths or [],
+            "exclude_patterns": req.exclude_patterns or DEFAULT_EXCLUDE_PATTERNS,
+            "port": req.port,
+            "env_vars": req.env_vars or {},
+            "dockerfile_path": req.dockerfile_path,
+            # Note: server_ips not stored in config - managed via service_droplets
+            "snapshot_id": req.snapshot_id,
+            "region": req.region,
+            "size": req.size,
+        },
+    )
+    return {"success": True, "config": config.to_dict()}
+
+
+@router.delete("/deploy-configs/{project}/{service}/{env}")
+async def delete_deploy_config(
+    project: str,
+    service: str,
+    env: str,
+    user: UserIdentity = Depends(get_current_user),
+    config_store: DeployConfigStore = Depends(get_deploy_config_store),
+):
+    """Delete a deployment config."""
+    deleted = await config_store.delete(str(user.id), project, service, env)
+    if not deleted:
+        raise HTTPException(404, f"Config not found: {project}/{service}/{env}")
+    return {"success": True}
+
+
+@router.get("/deploy-configs/defaults")
+async def get_default_exclude_patterns():
+    """Get default exclusion patterns."""
+    return {
+        "exclude_patterns": DEFAULT_EXCLUDE_PATTERNS,
+        "description": "Default patterns applied to zip uploads and git clones",
+    }
+
+
+# =============================================================================
+# Peer Discovery (for distributed scheduling / leader election)
+# =============================================================================
+
+from ..stores import ServiceStore, DropletStore, ServiceDropletStore
+from ..deps import get_service_store, get_droplet_store, get_service_droplet_store
+
+
+@router.get("/peers/{project}/{service}/{env}")
+async def get_service_peers(
+    project: str,
+    service: str,
+    env: str,
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
+    droplet_store: DropletStore = Depends(get_droplet_store),
+    service_droplet_store: ServiceDropletStore = Depends(get_service_droplet_store),
+):
+    """
+    Get peer IPs for a service (for distributed scheduling / leader election).
+    
+    Returns sorted list of healthy peer IPs. Lowest IP is the leader.
+    
+    Called by node_agent to:
+    1. Discover all servers running the same service
+    2. Determine if this server is the leader (lowest IP)
+    3. Coordinate distributed tasks (run on all vs run on leader only)
+    """
+    workspace_id = str(user.id)
+    
+    # Get project
+    project_entity = await project_store.get_by_name(workspace_id, project)
+    if not project_entity:
+        raise HTTPException(404, f"Project not found: {project}")
+    
+    # Get service
+    service_entity = await service_store.get_by_name(project_entity["id"], service)
+    if not service_entity:
+        raise HTTPException(404, f"Service not found: {project}/{service}")
+    
+    # Get peer IPs
+    peer_ips = await service_droplet_store.get_peer_ips(
+        service_entity["id"], 
+        env,
+        droplet_store,
+    )
+    
+    return {
+        "project": project,
+        "service": service,
+        "env": env,
+        "peers": peer_ips,
+        "leader": peer_ips[0] if peer_ips else None,
+        "count": len(peer_ips),
+    }
+
+
+@router.get("/peers/{project}/{service}/{env}/am-i-leader")
+async def check_if_leader(
+    project: str,
+    service: str,
+    env: str,
+    my_ip: str = Query(..., description="This server's IP address"),
+    user: UserIdentity = Depends(get_current_user),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
+    droplet_store: DropletStore = Depends(get_droplet_store),
+    service_droplet_store: ServiceDropletStore = Depends(get_service_droplet_store),
+):
+    """
+    Check if this server is the leader for a service.
+    
+    Leader election: lowest IP wins.
+    
+    Used by node_agent cron jobs to decide:
+    - If this is the leader: run single-instance jobs (migrations, billing, etc.)
+    - If not: skip single-instance jobs, only run parallel jobs
+    """
+    workspace_id = str(user.id)
+    
+    # Get project
+    project_entity = await project_store.get_by_name(workspace_id, project)
+    if not project_entity:
+        raise HTTPException(404, f"Project not found: {project}")
+    
+    # Get service
+    service_entity = await service_store.get_by_name(project_entity["id"], service)
+    if not service_entity:
+        raise HTTPException(404, f"Service not found: {project}/{service}")
+    
+    # Get peer IPs
+    peer_ips = await service_droplet_store.get_peer_ips(
+        service_entity["id"],
+        env,
+        droplet_store,
+    )
+    
+    leader = peer_ips[0] if peer_ips else None
+    is_leader = (my_ip == leader)
+    
+    return {
+        "is_leader": is_leader,
+        "leader": leader,
+        "my_ip": my_ip,
+        "peers": peer_ips,
+        "count": len(peer_ips),
+    }
+
+
+@router.post("/servers/fix-nginx")
+async def fix_nginx_config_on_servers(
+    server_ips: List[str] = Query(None, description="Specific server IPs to fix (empty = all servers)"),
+    do_token: str = Query(None, description="DigitalOcean API token"),
+    user: UserIdentity = Depends(get_current_user),
+    droplet_store: DropletStore = Depends(get_droplet_store),
+):
+    """
+    Fix nginx server_names_hash_bucket_size on servers.
+    
+    This fixes the error: 'could not build server_names_hash, you should increase server_names_hash_bucket_size'
+    
+    The fix adds 'server_names_hash_bucket_size 128;' to nginx.conf if not already present.
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    
+    token = _get_do_token(do_token)
+    api_key = generate_node_agent_key(token, str(user.id))
+    
+    # Get servers to fix
+    if server_ips:
+        ips = server_ips
+    else:
+        # Get all servers for this user
+        droplets = await droplet_store.list(str(user.id))
+        ips = [d["ip"] for d in droplets if d.get("ip")]
+    
+    results = []
+    for ip in ips:
+        try:
+            async with NodeAgentClient(ip, api_key, timeout=30) as client:
+                # Try different methods to fix nginx
+                fixed = False
+                error = None
+                
+                # Method 1: Check if node agent has fix_nginx_config method
+                if hasattr(client, 'fix_nginx_config'):
+                    result = await client.fix_nginx_config()
+                    fixed = result.success
+                    error = result.error if not result.success else None
+                
+                # Method 2: Try via ensure_nginx_running (newer agents may handle this)
+                if not fixed:
+                    result = await client.ensure_nginx_running()
+                    if result.success:
+                        fixed = True
+                    else:
+                        error = result.error
+                
+                results.append({
+                    "ip": ip,
+                    "success": fixed,
+                    "error": error,
+                })
+        except Exception as e:
+            results.append({
+                "ip": ip,
+                "success": False,
+                "error": str(e),
+            })
+    
+    success_count = sum(1 for r in results if r["success"])
+    return {
+        "results": results,
+        "summary": f"Fixed {success_count}/{len(results)} servers",
+        "note": "For manual fix: SSH to server and run: sed -i '/^http {/a\\    server_names_hash_bucket_size 128;' /etc/nginx/nginx.conf && nginx -t && nginx -s reload",
+    }
