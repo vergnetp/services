@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { deploymentsStore } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
-  import { api, apiStream } from '../../api/client.js'
+  import { api, apiStream, getDoToken } from '../../api/client.js'
   import Card from '../ui/Card.svelte'
   import Button from '../ui/Button.svelte'
   import Badge from '../ui/Badge.svelte'
@@ -18,9 +18,23 @@
   let rollbackInProgress = false
   let rollbackLogs = []
   
+  // Rollback confirmation state (cleanup or missing servers)
+  let showRollbackConfirm = false
+  let rollbackConfirmType = ''  // 'cleanup' or 'missing'
+  let rollbackCleanupServers = []  // Servers that will have containers stopped
+  let rollbackMissingServers = []  // Servers that are unavailable
+  let rollbackAvailableServers = []  // Servers that are available for rollback
+  let pendingRollbackTarget = null
+  
   // Config snapshot modal
   let configModalOpen = false
   let configDeployment = null
+  
+  // Deployment logs modal
+  let logsModalOpen = false
+  let logsDeployment = null
+  let deploymentLogs = []
+  let logsLoading = false
   
   // Processed deployments (local)
   let deployments = []
@@ -118,6 +132,22 @@
     toasts.info('Config loaded - switch to Deploy tab')
   }
   
+  async function showDeploymentLogs(deployment) {
+    logsDeployment = deployment
+    logsModalOpen = true
+    logsLoading = true
+    deploymentLogs = []
+    
+    try {
+      const data = await api('GET', `/infra/deployments/history/${deployment.id}/logs`)
+      deploymentLogs = data.logs || []
+    } catch (err) {
+      toasts.error('Failed to load logs: ' + (err.message || err))
+    } finally {
+      logsLoading = false
+    }
+  }
+  
   async function initiateRollback(deployment) {
     rollbackTarget = deployment
     
@@ -143,6 +173,111 @@
       return
     }
     
+    // Find the target deployment from previousDeployments
+    const targetDeployment = previousDeployments.find(d => d.id === selectedRollbackId)
+    if (!targetDeployment) {
+      toasts.error('Target deployment not found')
+      return
+    }
+    
+    const project = rollbackTarget.project || ''
+    const environment = rollbackTarget.environment || ''
+    const serviceName = rollbackTarget.service_name || rollbackTarget.service || ''
+    
+    // Check current service state and target servers
+    try {
+      // Get current service servers
+      const stateParams = new URLSearchParams({ project, environment, service_name: serviceName })
+      const currentState = await api('GET', `/infra/services/state?${stateParams}`)
+      
+      // Get target deployment servers
+      const targetServerIps = targetDeployment.server_ips || []
+      const currentServerIps = currentState.server_ips || []
+      
+      // Find orphan servers (currently running but not in target)
+      const orphanIps = currentServerIps.filter(ip => !targetServerIps.includes(ip))
+      const orphanServers = (currentState.servers || []).filter(s => orphanIps.includes(s.ip))
+      
+      // Check if target servers are available
+      if (targetServerIps.length > 0) {
+        const checkResult = await api('POST', `/infra/services/check-servers?do_token=${getDoToken()}&server_ips=${targetServerIps.join(',')}`, null)
+        
+        rollbackMissingServers = checkResult.unavailable || []
+        rollbackAvailableServers = checkResult.available || []
+        
+        // If some servers are missing, show confirmation
+        if (rollbackMissingServers.length > 0) {
+          rollbackConfirmType = 'missing'
+          pendingRollbackTarget = targetDeployment
+          showRollbackConfirm = true
+          return
+        }
+      }
+      
+      // If there are orphan servers, show cleanup confirmation
+      if (orphanServers.length > 0) {
+        rollbackCleanupServers = orphanServers
+        rollbackConfirmType = 'cleanup'
+        pendingRollbackTarget = targetDeployment
+        showRollbackConfirm = true
+        return
+      }
+      
+    } catch (err) {
+      console.log('Rollback pre-check:', err.message || err)
+      // Continue with rollback if checks fail
+    }
+    
+    // No issues - proceed with rollback
+    await performRollback()
+  }
+  
+  async function confirmRollbackAndProceed() {
+    showRollbackConfirm = false
+    
+    if (rollbackConfirmType === 'cleanup' && rollbackCleanupServers.length > 0) {
+      // Cleanup orphan containers
+      const containerName = `${rollbackTarget.project}_${rollbackTarget.service || rollbackTarget.service_name}_${rollbackTarget.environment}`.replace(/[^a-zA-Z0-9_]/g, '_')
+      const orphanIps = rollbackCleanupServers.map(s => s.ip)
+      
+      try {
+        const result = await api('POST', `/infra/services/cleanup?do_token=${getDoToken()}`, {
+          server_ips: orphanIps,
+          container_name: containerName
+        })
+        rollbackLogs = [...rollbackLogs, { message: `Cleanup: ${result.cleaned} stopped`, type: 'info', time: new Date() }]
+      } catch (err) {
+        rollbackLogs = [...rollbackLogs, { message: `Cleanup warning: ${err.message}`, type: 'warning', time: new Date() }]
+      }
+    }
+    
+    rollbackCleanupServers = []
+    rollbackMissingServers = []
+    pendingRollbackTarget = null
+    
+    await performRollback()
+  }
+  
+  // Store servers to use for partial rollback
+  let useOnlyAvailableServers = false
+  let availableServersForRollback = []
+  
+  async function rollbackWithAvailableOnly() {
+    showRollbackConfirm = false
+    
+    // Save available servers for partial rollback
+    useOnlyAvailableServers = true
+    availableServersForRollback = rollbackAvailableServers.map(s => s.ip)
+    
+    rollbackMissingServers = []
+    pendingRollbackTarget = null
+    
+    // Proceed with available servers only
+    await performRollback()
+  }
+  
+  async function performRollback() {
+    
     // Reset and start
     rollbackLogs = []
     rollbackInProgress = true
@@ -163,8 +298,15 @@
       let success = false
       let errorMsg = ''
       
+      // Build request body - include server_ips for partial rollback
+      const requestBody = { deployment_id: selectedRollbackId }
+      if (useOnlyAvailableServers && availableServersForRollback.length > 0) {
+        requestBody.server_ips = availableServersForRollback
+        addLog(`Partial rollback to ${availableServersForRollback.length} available server(s)`)
+      }
+      
       await apiStream('POST', `/infra/deployments/rollback?${queryParams}`, 
-        { deployment_id: selectedRollbackId },
+        requestBody,
         (msg) => {
           if (msg.type === 'progress' || msg.type === 'start') {
             addLog(msg.message, 'info')
@@ -196,6 +338,9 @@
       toasts.error('Rollback failed: ' + (err.message || String(err)))
     } finally {
       rollbackInProgress = false
+      // Reset partial rollback flags
+      useOnlyAvailableServers = false
+      availableServersForRollback = []
     }
   }
   
@@ -234,17 +379,18 @@
             <th>Status</th>
             <th>Comment</th>
             <th class="config-col"></th>
+            <th class="logs-col"></th>
             <th class="rollback-col"></th>
           </tr>
         </thead>
         <tbody>
           {#if loading && deployments.length === 0}
             <tr>
-              <td colspan="11" class="loading-cell">Loading deployment history...</td>
+              <td colspan="12" class="loading-cell">Loading deployment history...</td>
             </tr>
           {:else if deployments.length === 0}
             <tr>
-              <td colspan="11" class="empty-cell">No deployments found</td>
+              <td colspan="12" class="empty-cell">No deployments found</td>
             </tr>
           {:else}
             {#each deployments as deployment}
@@ -269,7 +415,7 @@
                   {/if}
                 </td>
                 <td class="date-cell">{formatDate(deployment.deployed_at || deployment.created_at)}</td>
-                <td>{deployment.deployed_by || deployment.user || '-'}</td>
+                <td class="by-cell" title={deployment.deployed_by || deployment.user || '-'}>{deployment.deployed_by || deployment.user || '-'}</td>
                 <td>
                   <Badge variant={deployment.is_rollback ? 'warning' : 'info'}>
                     {deployment.is_rollback ? 'rollback' : 'deploy'}
@@ -288,11 +434,17 @@
                     </button>
                   {/if}
                 </td>
+                <td class="logs-cell">
+                  {#if deployment.has_logs}
+                    <button class="icon-btn" on:click={() => showDeploymentLogs(deployment)} title="View logs">
+                      📋
+                    </button>
+                  {/if}
+                </td>
                 <td class="rollback-cell">
                   {#if deployment.is_current_active}
-                    <button class="rollback-btn" on:click={() => initiateRollback(deployment)}>
-                      <span class="rollback-icon">⏪</span>
-                      Rollback
+                    <button class="icon-btn rollback-icon-btn" on:click={() => initiateRollback(deployment)} title="Rollback">
+                      ⏪
                     </button>
                   {/if}
                 </td>
@@ -464,6 +616,112 @@
   </div>
 </Modal>
 
+<!-- Deployment Logs Modal -->
+<Modal 
+  bind:open={logsModalOpen}
+  title="📋 Deployment Logs"
+  width="700px"
+  on:close={() => logsModalOpen = false}
+>
+  {#if logsDeployment}
+    <div class="logs-modal-content">
+      <div class="logs-header-info">
+        <span class="service-name">{logsDeployment.service || logsDeployment.name}</span>
+        <span class="meta">{logsDeployment.environment} • {formatDate(logsDeployment.deployed_at)}</span>
+        {#if logsDeployment.version}
+          <Badge variant="purple">v{logsDeployment.version}</Badge>
+        {/if}
+        <Badge variant={getStatusBadge(getDisplayStatus(logsDeployment))}>{getDisplayStatus(logsDeployment)}</Badge>
+      </div>
+      
+      {#if logsLoading}
+        <div class="logs-loading">Loading logs...</div>
+      {:else if deploymentLogs.length === 0}
+        <div class="no-logs">No logs available for this deployment</div>
+      {:else}
+        <div class="logs-container">
+          {#each deploymentLogs as log}
+            <div class="log-line">
+              <span class="log-time">{log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ''}</span>
+              <span class="log-message">{log.message}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+  
+  <div slot="footer">
+    <Button variant="ghost" on:click={() => logsModalOpen = false}>Close</Button>
+  </div>
+</Modal>
+
+<!-- Rollback Confirmation Modal -->
+<Modal 
+  bind:open={showRollbackConfirm}
+  title={rollbackConfirmType === 'cleanup' ? '⚠️ Stop Orphan Containers' : '⚠️ Servers Unavailable'}
+  width="500px"
+  on:close={() => { showRollbackConfirm = false; pendingRollbackTarget = null }}
+>
+  {#if rollbackConfirmType === 'cleanup'}
+    <div class="rollback-confirm-content">
+      <p>
+        Rolling back will restore to <strong>{rollbackAvailableServers.length}</strong> servers.
+        Service currently runs on <strong>{rollbackAvailableServers.length + rollbackCleanupServers.length}</strong> servers.
+      </p>
+      
+      <p>Stop containers on the following servers?</p>
+      
+      <div class="confirm-server-list">
+        {#each rollbackCleanupServers as server}
+          <div class="confirm-server-item">
+            <span class="server-name">{server.name || server.ip}</span>
+            <span class="server-ip">{server.ip}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {:else if rollbackConfirmType === 'missing'}
+    <div class="rollback-confirm-content">
+      <p>
+        <strong>{rollbackMissingServers.length}</strong> server(s) from the original deployment are unavailable:
+      </p>
+      
+      <div class="confirm-server-list unavailable">
+        {#each rollbackMissingServers as server}
+          <div class="confirm-server-item">
+            <span class="server-name">{server.name || server.ip}</span>
+            <span class="server-ip">{server.ip}</span>
+            <Badge variant="error">offline</Badge>
+          </div>
+        {/each}
+      </div>
+      
+      {#if rollbackAvailableServers.length > 0}
+        <p>Available servers ({rollbackAvailableServers.length}):</p>
+        <div class="confirm-server-list available">
+          {#each rollbackAvailableServers as server}
+            <div class="confirm-server-item">
+              <span class="server-name">{server.name || server.ip}</span>
+              <span class="server-ip">{server.ip}</span>
+              <Badge variant="success">online</Badge>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+  
+  <div slot="footer">
+    {#if rollbackConfirmType === 'cleanup'}
+      <Button variant="primary" on:click={confirmRollbackAndProceed}>Proceed</Button>
+    {:else if rollbackConfirmType === 'missing' && rollbackAvailableServers.length > 0}
+      <Button variant="primary" on:click={rollbackWithAvailableOnly}>Proceed with available only</Button>
+    {/if}
+    <Button variant="ghost" on:click={() => { showRollbackConfirm = false; pendingRollbackTarget = null }}>Cancel</Button>
+  </div>
+</Modal>
+
 <style>
   .deployments-page {
     padding: 0;
@@ -493,7 +751,7 @@
   }
   
   .table-container {
-    overflow: hidden;
+    overflow-x: auto;
   }
   
   .table {
@@ -503,7 +761,7 @@
   
   .table th {
     text-align: left;
-    padding: 12px 16px;
+    padding: 10px 12px;
     font-weight: 500;
     font-size: 0.85rem;
     color: var(--text-muted);
@@ -513,9 +771,9 @@
   }
   
   .table td {
-    padding: 12px 16px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--border);
-    font-size: 0.875rem;
+    font-size: 0.85rem;
   }
   
   .table tbody tr:last-child td {
@@ -527,7 +785,7 @@
   }
   
   .version-col {
-    width: 50px;
+    width: 40px;
     text-align: center;
   }
   
@@ -550,25 +808,28 @@
   }
   
   .config-col {
-    width: 40px;
+    width: 36px;
     text-align: center;
-    padding: 12px 8px !important;
+    padding: 10px 4px !important;
+  }
+  
+  .logs-col {
+    width: 36px;
+    text-align: center;
+    padding: 10px 4px !important;
   }
   
   .rollback-col {
-    width: 120px;
+    width: 36px;
     text-align: center;
-    padding: 12px 24px 12px 8px !important;
+    padding: 10px 8px 10px 4px !important;
   }
   
-  .config-cell {
-    text-align: center;
-    padding: 12px 8px !important;
-  }
-  
+  .config-cell,
+  .logs-cell,
   .rollback-cell {
     text-align: center;
-    padding: 12px 24px 12px 8px !important;
+    padding: 10px 4px !important;
   }
   
   .service-cell {
@@ -591,8 +852,15 @@
     font-size: 0.8rem;
   }
   
+  .by-cell {
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
   .comment-cell {
-    max-width: 200px;
+    max-width: 120px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -868,33 +1136,125 @@
     background: var(--btn-bg-hover);
   }
   
-  .rollback-btn {
-    display: inline-flex;
+  .rollback-icon-btn {
+    color: #a78bfa !important;
+  }
+  
+  .rollback-icon-btn:hover {
+    background: rgba(139, 92, 246, 0.15) !important;
+  }
+
+  /* Logs Modal */
+  .logs-modal-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .logs-header-info {
+    display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.15));
-    border: 1px solid rgba(139, 92, 246, 0.3);
+    gap: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  
+  .logs-header-info .service-name {
+    font-weight: 600;
+  }
+  
+  .logs-header-info .meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+  
+  .logs-loading,
+  .no-logs {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+  }
+  
+  .logs-container {
+    max-height: 400px;
+    overflow-y: auto;
+    background: var(--bg-dark, #1a1b26);
     border-radius: 8px;
-    color: #a78bfa;
-    font-size: 13px;
+    padding: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+  }
+  
+  .log-line {
+    display: flex;
+    gap: 12px;
+    padding: 4px 0;
+    line-height: 1.4;
+  }
+  
+  .log-time {
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 80px;
+  }
+  
+  .log-message {
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  
+  /* Rollback Confirmation Modal */
+  .rollback-confirm-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .rollback-confirm-content p {
+    margin: 0;
+    line-height: 1.5;
+  }
+  
+  .confirm-server-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-input);
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  
+  .confirm-server-list.unavailable {
+    border: 1px solid var(--error);
+    background: rgba(239, 68, 68, 0.05);
+  }
+  
+  .confirm-server-list.available {
+    border: 1px solid var(--success);
+    background: rgba(34, 197, 94, 0.05);
+  }
+  
+  .confirm-server-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    gap: 12px;
+  }
+  
+  .confirm-server-item .server-name {
     font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
+    flex: 1;
   }
   
-  .rollback-btn:hover {
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.25), rgba(59, 130, 246, 0.25));
-    border-color: rgba(139, 92, 246, 0.5);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.2);
-  }
-  
-  .rollback-btn:active {
-    transform: translateY(0);
-  }
-  
-  .rollback-icon {
-    font-size: 12px;
+  .confirm-server-item .server-ip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-muted);
   }
 </style>

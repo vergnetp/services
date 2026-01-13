@@ -111,6 +111,7 @@ async def init_schema(db: Any) -> None:
             completed_at TEXT,
             duration_seconds REAL,
             result_json TEXT,
+            logs_json TEXT,
             error TEXT,
             created_at TEXT,
             updated_at TEXT

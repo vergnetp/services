@@ -7,6 +7,7 @@
   import Card from '../ui/Card.svelte'
   import Button from '../ui/Button.svelte'
   import Badge from '../ui/Badge.svelte'
+  import Modal from '../ui/Modal.svelte'
   
   // Form state
   let name = ''
@@ -40,6 +41,7 @@
   let folderPickerRef = null
   let pendingFolderCallback = null
   let rememberFolders = true
+  let isDraggingFolder = false
   
   // Dockerfile
   let dockerfile = ''
@@ -65,6 +67,11 @@
   let selectedServers = new Set()
   let additionalServers = 0
   let deployResult = null  // Result from last deployment
+  
+  // Cleanup confirmation state
+  let showCleanupConfirm = false
+  let cleanupServers = []  // Servers that will have containers stopped
+  let pendingDeployAction = null  // Function to call after confirmation
   
   // Service config
   let autoEnv = true
@@ -372,6 +379,142 @@
     
     // Reset input for reuse
     event.target.value = ''
+  }
+  
+  // Drag & drop handlers for folder upload (no browser confirmation popup!)
+  function handleDragEnter(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    isDraggingFolder = true
+  }
+  
+  function handleDragLeave(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      isDraggingFolder = false
+    }
+  }
+  
+  function handleDragOver(e) {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  
+  async function handleDrop(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    isDraggingFolder = false
+    
+    const items = e.dataTransfer?.items
+    if (!items || items.length === 0) return
+    
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const entry = item.webkitGetAsEntry?.()
+        if (entry?.isDirectory) {
+          await processDroppedFolder(entry)
+        }
+      }
+    }
+  }
+  
+  async function processDroppedFolder(dirEntry) {
+    const folderName = dirEntry.name
+    
+    if (buildFolders.some(f => f.name === folderName)) {
+      toasts.error(`Folder "${folderName}" is already added`)
+      return
+    }
+    
+    toasts.info(`Reading ${folderName}/...`)
+    const files = await readDirectoryRecursively(dirEntry, '')
+    
+    if (files.length === 0) {
+      toasts.error(`No files found in ${folderName}/`)
+      return
+    }
+    
+    const isMain = buildFolders.length === 0
+    await processDroppedFiles(files, folderName, isMain)
+  }
+  
+  async function readDirectoryRecursively(dirEntry, basePath) {
+    const files = []
+    const reader = dirEntry.createReader()
+    
+    let entries = []
+    let batch
+    do {
+      batch = await new Promise((resolve, reject) => {
+        reader.readEntries(resolve, reject)
+      })
+      entries = entries.concat(batch)
+    } while (batch.length > 0)
+    
+    for (const entry of entries) {
+      const path = basePath ? `${basePath}/${entry.name}` : entry.name
+      
+      if (entry.isFile) {
+        const file = await new Promise((resolve, reject) => {
+          entry.file(resolve, reject)
+        })
+        file._relativePath = path
+        files.push(file)
+      } else if (entry.isDirectory) {
+        const subFiles = await readDirectoryRecursively(entry, path)
+        files.push(...subFiles)
+      }
+    }
+    
+    return files
+  }
+  
+  async function processDroppedFiles(files, folderName, isMain) {
+    if (isMain && buildFolders.some(f => f.isMain)) {
+      buildFolders = buildFolders.map(f => ({...f, isMain: false}))
+    }
+    
+    const fileContents = []
+    let existingDockerfile = null
+    let skippedCount = 0
+    
+    for (const file of files) {
+      const relativePath = file._relativePath || file.name
+      
+      if (shouldIgnoreFile(relativePath)) {
+        skippedCount++
+        continue
+      }
+      
+      const content = await readFileAsArrayBuffer(file)
+      fileContents.push({ path: relativePath, content })
+      
+      if (isMain && relativePath === 'Dockerfile') {
+        existingDockerfile = await readFileAsText(file)
+      }
+    }
+    
+    console.log(`[Deploy] Dropped ${folderName}/: ${files.length} total, ${skippedCount} skipped, ${fileContents.length} included`)
+    
+    buildFolders = [...buildFolders, {
+      name: folderName,
+      fileContents,
+      isMain,
+      fileCount: fileContents.length
+    }]
+    
+    updateCodeSelectionInfo()
+    
+    if (buildFolders.some(f => f.isMain)) {
+      updateDockerfilePreview(existingDockerfile)
+    }
+    
+    if (rememberFolders && project && name) {
+      saveFolderConfig()
+    }
+    
+    toasts.success(`Added ${folderName}/ (${fileContents.length} files)`)
   }
   
   async function processSelectedFolder(files, folderName, isMain) {
@@ -737,6 +880,71 @@ CMD ["python", "main.py"]
       return
     }
     
+    // Check for orphan servers (scale-down scenario)
+    const targetServerIps = [...selectedServers]
+    if (project && name && environment) {
+      try {
+        const params = new URLSearchParams({
+          project,
+          environment,
+          service_name: name
+        })
+        const state = await api('GET', `/infra/services/state?${params}`)
+        
+        if (state.server_ips && state.server_ips.length > 0) {
+          // Find servers that are currently running but not in target list
+          const orphans = state.servers.filter(s => !targetServerIps.includes(s.ip))
+          
+          if (orphans.length > 0) {
+            // Show confirmation modal
+            cleanupServers = orphans
+            pendingDeployAction = () => executeDeployment(e)
+            showCleanupConfirm = true
+            return
+          }
+        }
+      } catch (err) {
+        // Service doesn't exist yet or error - proceed without cleanup check
+        console.log('Service state check:', err.message || err)
+      }
+    }
+    
+    // No orphans - proceed directly
+    await executeDeployment(e)
+  }
+  
+  async function confirmCleanupAndDeploy() {
+    showCleanupConfirm = false
+    
+    // Get container name for cleanup
+    const containerName = `${project}_${name}_${environment}`.replace(/[^a-zA-Z0-9_]/g, '_')
+    
+    // Cleanup orphan containers
+    if (cleanupServers.length > 0) {
+      const orphanIps = cleanupServers.map(s => s.ip)
+      log(`Stopping containers on ${cleanupServers.length} server(s)...`)
+      
+      try {
+        const result = await api('POST', `/infra/services/cleanup?do_token=${getDoToken()}`, {
+          server_ips: orphanIps,
+          container_name: containerName
+        })
+        log(`Cleanup complete: ${result.cleaned} stopped, ${result.failed} failed`)
+      } catch (err) {
+        log(`Cleanup warning: ${err.message || err}`, 'warning')
+      }
+    }
+    
+    cleanupServers = []
+    
+    // Now proceed with deployment
+    if (pendingDeployAction) {
+      await pendingDeployAction()
+      pendingDeployAction = null
+    }
+  }
+  
+  async function executeDeployment(e) {
     deploying = true
     progress = 0
     logs = []
@@ -981,42 +1189,60 @@ CMD ["python", "main.py"]
             <div class="form-group">
               <label>Build Folders</label>
               
-              <!-- Hidden folder picker -->
-              <input 
-                type="file" 
-                bind:this={folderPickerRef}
-                webkitdirectory
-                directory
-                multiple
-                style="display: none;"
-                on:change={onFolderPicked}
+              <!-- Drop zone for drag & drop -->
+              <div 
+                class="folder-drop-zone"
+                class:dragover={isDraggingFolder}
+                on:dragenter={handleDragEnter}
+                on:dragleave={handleDragLeave}
+                on:dragover={handleDragOver}
+                on:drop={handleDrop}
               >
+                {#if isDraggingFolder}
+                  <div class="drop-overlay">
+                    <span class="drop-icon">📂</span>
+                    <span>Drop folder here</span>
+                  </div>
+                {/if}
               
-              <!-- Folders list -->
-              {#if buildFolders.length > 0}
-                <div class="folder-list">
-                  {#each buildFolders as folder, i}
-                    <div class="folder-item">
-                      <span class="folder-icon">{folder.isMain ? '📁' : '📂'}</span>
-                      <strong>{folder.name}/</strong>
-                      <Badge variant={folder.isMain ? 'success' : 'secondary'}>
-                        {folder.isMain ? 'MAIN' : 'dependency'}
-                      </Badge>
-                      <span class="file-count">{folder.fileCount} files</span>
-                      {#if !folder.isMain}
-                        <button type="button" class="set-main-btn" on:click={() => setFolderAsMain(i)} title="Set as main">⭐</button>
-                      {/if}
-                      <button type="button" class="remove-btn" on:click={() => removeBuildFolder(i)}>✕</button>
-                    </div>
-                  {/each}
+                <!-- Hidden folder picker -->
+                <input 
+                  type="file" 
+                  bind:this={folderPickerRef}
+                  webkitdirectory
+                  directory
+                  multiple
+                  style="display: none;"
+                  on:change={onFolderPicked}
+                >
+                
+                <!-- Folders list -->
+                {#if buildFolders.length > 0}
+                  <div class="folder-list">
+                    {#each buildFolders as folder, i}
+                      <div class="folder-item">
+                        <span class="folder-icon">{folder.isMain ? '📁' : '📂'}</span>
+                        <strong>{folder.name}/</strong>
+                        <Badge variant={folder.isMain ? 'success' : 'secondary'}>
+                          {folder.isMain ? 'MAIN' : 'dependency'}
+                        </Badge>
+                        <span class="file-count">{folder.fileCount} files</span>
+                        {#if !folder.isMain}
+                          <button type="button" class="set-main-btn" on:click={() => setFolderAsMain(i)} title="Set as main">⭐</button>
+                        {/if}
+                        <button type="button" class="remove-btn" on:click={() => removeBuildFolder(i)}>✕</button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                
+                <!-- Add folder button -->
+                <div class="folder-actions">
+                  <Button size="sm" on:click={addBuildFolderUI}>
+                    ➕ Add Folder
+                  </Button>
+                  <span class="drop-hint">or drag & drop folders here</span>
                 </div>
-              {/if}
-              
-              <!-- Add folder button -->
-              <div class="folder-actions">
-                <Button size="sm" on:click={addBuildFolderUI}>
-                  ➕ Add Folder
-                </Button>
               </div>
               
               <!-- Status info -->
@@ -1528,6 +1754,41 @@ CMD ["python", "main.py"]
     </Card>
   </div>
 </div>
+
+<!-- Cleanup Confirmation Modal -->
+<Modal 
+  bind:open={showCleanupConfirm}
+  title="⚠️ Service Already Running"
+  width="500px"
+  on:close={() => { showCleanupConfirm = false; pendingDeployAction = null }}
+>
+  <div class="cleanup-confirm-content">
+    <p>
+      This service is currently running on <strong>{cleanupServers.length + [...selectedServers].length}</strong> servers.
+      You're deploying to <strong>{[...selectedServers].length}</strong> servers.
+    </p>
+    
+    <p>Stop containers on the following servers?</p>
+    
+    <div class="cleanup-server-list">
+      {#each cleanupServers as server}
+        <div class="cleanup-server-item">
+          <span class="server-name">{server.name || server.ip}</span>
+          <span class="server-ip">{server.ip}</span>
+        </div>
+      {/each}
+    </div>
+  </div>
+  
+  <div slot="footer">
+    <Button variant="primary" on:click={confirmCleanupAndDeploy}>
+      Proceed
+    </Button>
+    <Button variant="ghost" on:click={() => { showCleanupConfirm = false; pendingDeployAction = null }}>
+      Cancel
+    </Button>
+  </div>
+</Modal>
 
 <style>
   .deploy-page {
@@ -2202,6 +2463,47 @@ CMD ["python", "main.py"]
   
   .folder-actions {
     margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  
+  .drop-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  
+  .folder-drop-zone {
+    position: relative;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    transition: all 0.2s;
+    min-height: 80px;
+  }
+  
+  .folder-drop-zone.dragover {
+    border-color: var(--primary);
+    background: rgba(99, 102, 241, 0.05);
+  }
+  
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: rgba(99, 102, 241, 0.1);
+    border-radius: 10px;
+    z-index: 10;
+    color: var(--primary);
+    font-weight: 500;
+  }
+  
+  .drop-overlay .drop-icon {
+    font-size: 2rem;
   }
   
   .code-selection-info {
@@ -2461,5 +2763,47 @@ CMD ["python", "main.py"]
       width: 100%;
       margin-left: 24px;
     }
+  }
+  
+  /* Cleanup Confirmation Modal */
+  .cleanup-confirm-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .cleanup-confirm-content p {
+    margin: 0;
+    line-height: 1.5;
+  }
+  
+  .cleanup-server-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-input);
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  
+  .cleanup-server-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+  }
+  
+  .cleanup-server-item .server-name {
+    font-weight: 500;
+  }
+  
+  .cleanup-server-item .server-ip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-muted);
   }
 </style>

@@ -286,6 +286,15 @@ class DropletStore:
             ids.append(droplet["id"])
         return ids
     
+    async def get_droplets_for_ips(self, workspace_id: str, ips: List[str]) -> List[Dict[str, Any]]:
+        """Get droplet info (including names) for a list of IPs."""
+        droplets = []
+        for ip in ips:
+            droplet = await self.get_by_ip(workspace_id, ip)
+            if droplet:
+                droplets.append(droplet)
+        return droplets
+    
     async def list(self, workspace_id: str, status: str = None) -> List[Dict[str, Any]]:
         if status:
             return await self._crud.list(
@@ -582,6 +591,17 @@ class Deployment:
     def error(self) -> Optional[str]:
         return self._data.get("error")
     
+    @property
+    def logs(self) -> Optional[List[Dict[str, Any]]]:
+        val = self._data.get("logs_json")
+        if isinstance(val, str):
+            return json.loads(val) if val else None
+        return val
+    
+    @property
+    def has_logs(self) -> bool:
+        return bool(self._data.get("logs_json"))
+    
     def to_dict(self) -> dict:
         """Return dict with both normalized and backward-compat fields."""
         return {
@@ -621,6 +641,7 @@ class Deployment:
             "duration_seconds": self.duration_seconds,
             "result": self.result,
             "error": self.error,
+            "has_logs": self.has_logs,
             # Computed field for rollback eligibility
             "can_rollback": self.status == "success",
         }
@@ -751,6 +772,7 @@ class DeploymentStore:
         completed_at: str = None,
         duration_seconds: float = None,
         result: dict = None,
+        logs: list = None,
         error: str = None,
         image_name: str = None,
         image_digest: str = None,
@@ -790,6 +812,8 @@ class DeploymentStore:
             entity["duration_seconds"] = duration_seconds
         if result:
             entity["result_json"] = json.dumps(result)
+        if logs is not None:
+            entity["logs_json"] = json.dumps(logs)
         if error:
             entity["error"] = error
         if image_name:
@@ -981,6 +1005,47 @@ class DeploymentStore:
         if entity:
             return await self._enrich_deployment(entity)
         return None
+    
+    async def get_current_deployment(
+        self,
+        workspace_id: str,
+        project: str,
+        environment: str,
+        service_name: str,
+    ) -> Optional[Deployment]:
+        """Get the current active (most recent successful) deployment for a service."""
+        return await self.get_previous(workspace_id, project, environment, service_name)
+    
+    async def get_current_servers(
+        self,
+        workspace_id: str,
+        project: str,
+        environment: str,
+        service_name: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get info about servers currently running a service.
+        Returns list of {ip, name, status} for each server.
+        """
+        deployment = await self.get_current_deployment(
+            workspace_id, project, environment, service_name
+        )
+        if not deployment or not deployment.server_ips:
+            return []
+        
+        droplet_store = DropletStore(self.db)
+        droplets = await droplet_store.get_droplets_for_ips(
+            workspace_id, deployment.server_ips
+        )
+        
+        return [
+            {
+                "ip": d.get("ip"),
+                "name": d.get("name") or d.get("ip"),
+                "status": d.get("status", "unknown"),
+            }
+            for d in droplets
+        ]
 
 
 # =============================================================================

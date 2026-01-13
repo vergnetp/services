@@ -78,21 +78,21 @@
   }
   
   .btn-danger {
-    background: rgba(255,77,94,.12);
+    background: transparent;
     border-color: rgba(255,77,94,.35);
-    color: var(--btn-danger-text);
+    color: var(--danger);
   }
   .btn-danger:hover:not(:disabled) {
-    background: rgba(255,77,94,.18);
+    background: rgba(255,77,94,.10);
   }
   
   .btn-warning {
-    background: rgba(245,158,11,.15);
+    background: transparent;
     border-color: rgba(245,158,11,.35);
     color: var(--warning);
   }
   .btn-warning:hover:not(:disabled) {
-    background: rgba(245,158,11,.25);
+    background: rgba(245,158,11,.10);
   }
   
   .btn-ghost {

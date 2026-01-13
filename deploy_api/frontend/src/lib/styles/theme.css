@@ -1,44 +1,44 @@
 /* ===== THEME: DARK (default) ===== */
 :root, [data-theme="dark"] {
-  --bg0: #060913;
-  --bg1: #0b1022;
-  --bg-card: rgba(18,22,38,.68);
-  --bg-card2: rgba(18,22,38,.52);
-  --bg-input: rgba(255,255,255,.04);
-  --border: rgba(255,255,255,.10);
-  --border2: rgba(255,255,255,.14);
+  --bg0: #0b1022;
+  --bg1: #111a33;
+  --bg-card: rgba(24,30,54,.62);
+  --bg-card2: rgba(24,30,54,.48);
+  --bg-input: rgba(255,255,255,.05);
+  --border: rgba(255,255,255,.09);
+  --border2: rgba(255,255,255,.13);
   --text: rgba(255,255,255,.92);
-  --text-muted: rgba(255,255,255,.66);
-  --text-muted2: rgba(255,255,255,.44);
+  --text-muted: rgba(255,255,255,.70);
+  --text-muted2: rgba(255,255,255,.50);
   --primary: #6d5cff;
   --primary2: #2d7dff;
   --primary-hover: #7d6cff;
   --success: #36d37c;
   --warning: #f59e0b;
   --danger: #ff4d5e;
-  --shadow: 0 20px 60px rgba(0,0,0,.55);
-  --shadow2: 0 10px 30px rgba(0,0,0,.35);
+  --shadow: 0 18px 50px rgba(0,0,0,.45);
+  --shadow2: 0 10px 26px rgba(0,0,0,.28);
   --r: 22px;
   --r2: 16px;
   /* Dark theme specific */
   --body-bg: linear-gradient(180deg, var(--bg0), var(--bg1));
-  --body-gradient1: rgba(109,92,255,.30);
-  --body-gradient2: rgba(45,125,255,.22);
-  --body-gradient3: rgba(54,211,124,.12);
-  --starfield-opacity: 0.85;
+  --body-gradient1: rgba(109,92,255,.22);
+  --body-gradient2: rgba(45,125,255,.16);
+  --body-gradient3: rgba(54,211,124,.08);
+  --starfield-opacity: 0.55;
   --glass-bg: radial-gradient(120% 140% at 10% 0%, rgba(255,255,255,.10), rgba(255,255,255,.04) 40%, rgba(255,255,255,.02) 60%);
-  --scope-bg: rgba(0,0,0,.16);
+  --scope-bg: rgba(0,0,0,.12);
   --field-bg: rgba(255,255,255,.04);
   --field-border: rgba(255,255,255,.06);
-  --btn-ghost-bg: rgba(0,0,0,.18);
+  --btn-ghost-bg: rgba(0,0,0,.14);
   --table-row-hover: rgba(255,255,255,.03);
   --table-header-bg: rgba(255,255,255,.03);
-  --panel-bg: rgba(0,0,0,.10);
+  --panel-bg: rgba(0,0,0,.08);
   /* Button backgrounds */
   --btn-bg: rgba(255,255,255,.06);
   --btn-bg-hover: rgba(255,255,255,.10);
   --btn-danger-text: rgba(255,180,186,.95);
-  --iconbtn-bg: rgba(0,0,0,.18);
+  --iconbtn-bg: rgba(0,0,0,.14);
   --iconbtn-text: rgba(255,255,255,.86);
   /* Tabs */
   --tabs-bg: rgba(0,0,0,.16);

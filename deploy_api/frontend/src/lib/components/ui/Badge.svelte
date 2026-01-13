@@ -1,5 +1,5 @@
 <script>
-  export let variant = 'info' // success, warning, danger, info, purple, secondary
+  export let variant = 'info' // success, warning, danger, error, info, purple, secondary
 </script>
 
 <span class="badge badge-{variant}">
@@ -31,7 +31,8 @@
     color: var(--warning);
   }
   
-  .badge-danger {
+  .badge-danger,
+  .badge-error {
     background: rgba(255,77,94,.15);
     color: var(--danger);
   }

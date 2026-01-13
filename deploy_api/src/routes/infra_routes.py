@@ -30,11 +30,13 @@ from ..deps import (
     get_deployment_store, 
     get_project_store, 
     get_deploy_config_store,
+    get_droplet_store,
 )
 from ..stores import (
     DeploymentStore, 
     ProjectStore, 
     DeployConfigStore, 
+    DropletStore,
     DEFAULT_EXCLUDE_PATTERNS,
 )
 
@@ -2571,6 +2573,145 @@ async def get_deployment_logs(
         return await client.container_logs(service_name, lines)
 
 
+@router.get("/services/state")
+async def get_service_state(
+    project: str = Query(..., description="Project name"),
+    environment: str = Query(..., description="Environment"),
+    service_name: str = Query(..., description="Service name"),
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """
+    Get current state of a service - which servers it's running on.
+    Used to detect orphan containers before deploy/rollback.
+    """
+    servers = await deployment_store.get_current_servers(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+    )
+    
+    current = await deployment_store.get_current_deployment(
+        workspace_id=str(user.id),
+        project=project,
+        environment=environment,
+        service_name=service_name,
+    )
+    
+    return {
+        "project": project,
+        "environment": environment,
+        "service_name": service_name,
+        "servers": servers,
+        "server_ips": [s["ip"] for s in servers],
+        "current_version": current.version if current else None,
+        "current_deployment_id": current.id if current else None,
+    }
+
+
+class CleanupRequest(BaseModel):
+    """Request to cleanup orphan containers."""
+    server_ips: List[str]
+    container_name: str
+
+
+@router.post("/services/cleanup")
+async def cleanup_service_containers(
+    req: CleanupRequest,
+    user: UserIdentity = Depends(get_current_user),
+    do_token: str = Query(..., description="DO token"),
+):
+    """
+    Stop containers on specified servers. Used to cleanup orphans after
+    scale-down deploys or rollbacks.
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    api_key = _get_node_agent_key(do_token, str(user.id))
+    
+    results = []
+    for ip in req.server_ips:
+        stopped = False
+        try:
+            async with NodeAgentClient(ip, api_key, timeout=30) as client:
+                # Try both container names (toggle deployment: base and _secondary)
+                for suffix in ["", "_secondary"]:
+                    container = f"{req.container_name}{suffix}"
+                    try:
+                        result = await client.stop_container(container)
+                        if result.success:
+                            results.append({"ip": ip, "container": container, "success": True})
+                            stopped = True
+                            # Don't break - stop both if running
+                    except:
+                        pass  # Container doesn't exist, try next
+                
+                if not stopped:
+                    results.append({"ip": ip, "success": False, "error": "No container found"})
+        except Exception as e:
+            results.append({"ip": ip, "success": False, "error": str(e)})
+    
+    return {
+        "results": results,
+        "cleaned": len([r for r in results if r.get("success")]),
+        "failed": len([r for r in results if not r.get("success")]),
+    }
+
+
+@router.post("/services/check-servers")
+async def check_servers_availability(
+    server_ips: str = Query(..., description="Server IPs to check (comma-separated)"),
+    user: UserIdentity = Depends(get_current_user),
+    do_token: str = Query(..., description="DO token"),
+    droplet_store: DropletStore = Depends(get_droplet_store),
+):
+    """
+    Check if servers are available (online and reachable).
+    Used before rollback to detect missing servers.
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    
+    # Parse comma-separated IPs
+    ip_list = [ip.strip() for ip in server_ips.split(",") if ip.strip()]
+    
+    api_key = _get_node_agent_key(do_token, str(user.id))
+    
+    results = []
+    for ip in ip_list:
+        # Get server name from DB
+        droplet = await droplet_store.get_by_ip(str(user.id), ip)
+        name = droplet.get("name") if droplet else ip
+        
+        try:
+            async with NodeAgentClient(ip, api_key, timeout=10) as client:
+                health = await client.health()
+                results.append({
+                    "ip": ip,
+                    "name": name,
+                    "available": health.success,
+                    "status": "online",
+                })
+        except Exception as e:
+            results.append({
+                "ip": ip,
+                "name": name,
+                "available": False,
+                "status": "offline",
+                "error": str(e),
+            })
+    
+    available = [r for r in results if r["available"]]
+    unavailable = [r for r in results if not r["available"]]
+    
+    return {
+        "results": results,
+        "available": available,
+        "unavailable": unavailable,
+        "all_available": len(unavailable) == 0,
+    }
+
+
 # ==========================================
 # Test Endpoints
 # ==========================================
@@ -3166,7 +3307,13 @@ async def deploy_unified(
     deployment_id = deployment_record.id
     start_time = time.time()
     
+    # Track logs for persistence
+    deployment_logs = []
+    
     def log(msg: str):
+        from datetime import datetime
+        timestamp = datetime.utcnow().isoformat()
+        deployment_logs.append({"message": msg, "timestamp": timestamp})
         msg_queue.put({"type": "log", "message": msg})
     
     # Debug: log api key prefix
@@ -3308,6 +3455,7 @@ async def deploy_unified(
                             completed_at=_now_str(),
                             image_name=tagged_image_name,  # Save the deployed image (deploy_id tag)
                             server_ips=final_server_ips,
+                            logs=deployment_logs,
                         )
                         # Get assigned version for retagging
                         if update_result.get("version"):
@@ -3327,6 +3475,7 @@ async def deploy_unified(
                             started_at=deployment_record.created_at,
                             completed_at=_now_str(),
                             server_ips=final_server_ips,
+                            logs=deployment_logs,
                         )
             
             def _now_str():
@@ -3436,6 +3585,7 @@ async def deploy_unified(
                             status="failed",
                             error=str(e),
                             duration_seconds=duration,
+                            logs=deployment_logs,
                         )
                 
                 loop2 = asyncio.new_event_loop()
@@ -3535,7 +3685,12 @@ async def deploy_multipart(
     api_key = _get_node_agent_key(token, str(user.id))
     msg_queue = queue.Queue()
     
+    # Track logs for persistence
+    deployment_logs = []
+    
     def log(msg: str):
+        timestamp = datetime.utcnow().isoformat()
+        deployment_logs.append({"message": msg, "timestamp": timestamp})
         msg_queue.put({"type": "log", "message": msg})
     
     log(f"🔑 Using API key: {api_key[:8]}...")
@@ -3872,6 +4027,7 @@ async def deploy_multipart(
                             completed_at=datetime.utcnow().isoformat(),
                             image_name=tagged_image_name,  # Save the deployed image
                             server_ips=final_server_ips,
+                            logs=deployment_logs,
                         )
                         # Get assigned version for retagging
                         if update_result.get("version"):
@@ -3889,6 +4045,7 @@ async def deploy_multipart(
                             duration_seconds=duration,
                             completed_at=datetime.utcnow().isoformat(),
                             server_ips=final_server_ips,
+                            logs=deployment_logs,
                         )
             
             loop2 = asyncio.new_event_loop()
@@ -6509,12 +6666,35 @@ async def get_deployment_details(
     return record.to_dict()
 
 
+@router.get("/deployments/history/{deployment_id}/logs")
+async def get_deployment_logs(
+    deployment_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    deployment_store: DeploymentStore = Depends(get_deployment_store),
+):
+    """Get logs for a specific deployment."""
+    record = await deployment_store.get_deployment(deployment_id, enrich=False)
+    
+    if not record:
+        raise HTTPException(404, "Deployment not found")
+    
+    if record.workspace_id != str(user.id):
+        raise HTTPException(403, "Not authorized")
+    
+    return {
+        "deployment_id": deployment_id,
+        "logs": record.logs or [],
+        "has_logs": record.has_logs,
+    }
+
+
 class RollbackRequest(BaseModel):
     """Rollback request."""
     deployment_id: Optional[str] = None  # Specific deployment to rollback to (optional)
     version: Optional[int] = None  # Version number to rollback to (optional, alternative to deployment_id)
     comment: Optional[str] = None  # Why rolling back
     do_token: Optional[str] = None
+    server_ips: Optional[List[str]] = None  # Override target servers (for partial rollback to available only)
 
 
 @router.post("/deployments/rollback")
@@ -6612,6 +6792,9 @@ async def rollback_deployment(
             f"Deploy to specific servers first."
         )
     
+    # Use provided server_ips (for partial rollback) or target's full list
+    rollback_server_ips = req.server_ips if req.server_ips else target.server_ips
+    
     async def rollback_stream():
         import json
         import time as time_mod
@@ -6619,12 +6802,17 @@ async def rollback_deployment(
         
         start_time = time_mod.time()
         
+        # Track logs for persistence
+        deployment_logs = []
+        
         def emit(event_type: str, data: dict):
             return f"data: {json.dumps({'type': event_type, **data})}\n\n"
         
         def log(msg: str):
-            """Log to SSE stream."""
+            """Log to SSE stream and track for persistence."""
             nonlocal msg_queue
+            timestamp = datetime.utcnow().isoformat()
+            deployment_logs.append({"message": msg, "timestamp": timestamp})
             msg_queue.append(emit("progress", {"message": msg}))
         
         msg_queue = []
@@ -6649,7 +6837,7 @@ async def rollback_deployment(
                 git_url=target.git_url,
                 git_branch=target.git_branch,
                 git_commit=target.git_commit,
-                server_ips=target.server_ips,
+                server_ips=rollback_server_ips,
                 port=target.port,
                 env_vars=target.env_vars,
                 deployed_by=str(user.id),
@@ -6663,7 +6851,7 @@ async def rollback_deployment(
             
             yield emit("progress", {"message": f"Created rollback record: {rollback_record.id}"})
             
-            if not target.server_ips:
+            if not rollback_server_ips:
                 yield emit("error", {"message": "No server IPs found for this deployment"})
                 yield emit("complete", {
                     "success": False,
@@ -6672,7 +6860,7 @@ async def rollback_deployment(
                 })
                 return
             
-            yield emit("progress", {"message": f"Rolling back on {len(target.server_ips)} server(s): {', '.join(target.server_ips)}"})
+            yield emit("progress", {"message": f"Rolling back on {len(rollback_server_ips)} server(s): {', '.join(rollback_server_ips)}"})
             
             # Construct the tagged image name for rollback
             # Image is stored as: {container_base}:deploy_{deployment_id}
@@ -6699,8 +6887,8 @@ async def rollback_deployment(
                 image=tagged_image_name,
                 skip_pull=True,  # Image is local (tagged during original deployment)
                 
-                # Target the same servers
-                server_ips=target.server_ips,
+                # Target the specified servers (may be filtered for partial rollback)
+                server_ips=rollback_server_ips,
                 
                 # Service mesh
                 setup_sidecar=True,
@@ -6736,6 +6924,7 @@ async def rollback_deployment(
                     status="success",
                     duration_seconds=duration,
                     completed_at=completed_at,
+                    logs=deployment_logs,
                 )
                 
                 # Note: We don't mark the previous deployment as "rolled_back"
@@ -6744,7 +6933,7 @@ async def rollback_deployment(
                 successful_count = len([s for s in result.servers if s.success])
                 yield emit("complete", {
                     "success": True,
-                    "message": f"Rollback complete ({successful_count}/{len(target.server_ips)} servers)",
+                    "message": f"Rollback complete ({successful_count}/{len(rollback_server_ips)} servers)",
                     "deployment_id": rollback_record.id,
                     "successes": [s.ip for s in result.servers if s.success],
                     "errors": [{"ip": s.ip, "error": s.error} for s in result.servers if not s.success],
@@ -6756,6 +6945,7 @@ async def rollback_deployment(
                     error=result.error,
                     duration_seconds=duration,
                     completed_at=completed_at,
+                    logs=deployment_logs,
                 )
                 
                 yield emit("complete", {

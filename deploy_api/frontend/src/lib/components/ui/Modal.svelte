@@ -73,13 +73,18 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0,0,0,0.6);
-    backdrop-filter: blur(4px);
+    background: rgba(0,0,0,0.85);
+    backdrop-filter: blur(8px);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
     padding: 20px;
+  }
+  
+  /* Stacked modals get higher z-index */
+  .modal-overlay ~ .modal-overlay {
+    z-index: 1100;
   }
   
   .modal {
@@ -89,7 +94,7 @@
     width: 100%;
     max-height: 90vh;
     overflow: hidden;
-    box-shadow: var(--shadow);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     display: flex;
     flex-direction: column;
   }
