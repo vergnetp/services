@@ -60,11 +60,16 @@ async def main():
     logger.info(f"Tasks: {list(TASKS.keys())}")
     logger.info(f"Redis key prefix: {settings.redis_key_prefix}")
     
+    # Get manifest path for auto-adding kernel integration tasks
+    from pathlib import Path
+    manifest_path = Path(__file__).parent / "manifest.yaml"
+    
     # Run worker with init/shutdown hooks
     await run_worker(
         tasks=TASKS,
         redis_url=settings.redis_url,
         key_prefix=settings.redis_key_prefix,
+        manifest_path=str(manifest_path),
         init_app=init_app,
         shutdown_app=shutdown_app,
     )

@@ -141,18 +141,18 @@ def get_settings() -> Settings:
         content = re.sub(r'\$\{([^}:]+)(?::-([^}]*))?\}', interpolate, content)
         manifest = yaml.safe_load(content)
         
-        # Extract database settings
+        # Extract database settings (use `or` to handle empty interpolated values)
         db = manifest.get("database", {})
-        settings_dict["database_type"] = db.get("type", "sqlite")
-        settings_dict["database_path"] = db.get("path", "./data/deploy.db")
-        settings_dict["database_host"] = db.get("host", "localhost")
-        settings_dict["database_port"] = db.get("port", 5432)
-        settings_dict["database_user"] = db.get("user")
-        settings_dict["database_password"] = db.get("password")
+        settings_dict["database_type"] = db.get("type") or "sqlite"
+        settings_dict["database_path"] = db.get("path") or "./data/deploy.db"
+        settings_dict["database_host"] = db.get("host") or "localhost"
+        settings_dict["database_port"] = db.get("port") or 5432
+        settings_dict["database_user"] = db.get("user") or None
+        settings_dict["database_password"] = db.get("password") or None
         
-        # Extract redis settings
+        # Extract redis settings (env var takes priority)
         redis = manifest.get("redis", {})
-        settings_dict["redis_url"] = redis.get("url", "redis://localhost:6379/0")
-        settings_dict["redis_key_prefix"] = redis.get("key_prefix", "deploy:")
+        settings_dict["redis_url"] = os.environ.get("REDIS_URL") or redis.get("url") or "redis://localhost:6379/0"
+        settings_dict["redis_key_prefix"] = redis.get("key_prefix") or "deploy:"
     
     return Settings(**settings_dict)

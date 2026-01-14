@@ -30,6 +30,7 @@ from .src.routes import (
     documents_router,
     analytics_router,
     workspaces_router,
+    orchestration_router,
 )
 from .src.auth import get_auth_service, get_current_user
 from .src.authz import require_admin, CurrentUser
@@ -196,6 +197,7 @@ def create_app():
             chat_router,
             documents_router,
             analytics_router,
+            orchestration_router,
         ],
         
         # Background tasks

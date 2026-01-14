@@ -56,7 +56,7 @@ echo Shared libs: %PROJECTS_ROOT%\shared_libs
 echo.
 
 REM ---- ENV VARS ----
-set "REDIS_URL=redis://localhost:6379/0"
+
 set "JWT_SECRET=dev-secret-change-in-prod"
 set "PYTHONUNBUFFERED=1"
 
@@ -64,7 +64,8 @@ echo REDIS_URL=%REDIS_URL%
 echo.
 
 REM ---- START REDIS (Docker) ----
-REM echo Checking Redis...
+echo Checking Redis...
+
 REM docker ps --filter "name=redis" --format "{{.Names}}" 2>nul | findstr redis >nul
 REM if %ERRORLEVEL% NEQ 0 (
 REM     docker ps -a --filter "name=redis" --format "{{.Names}}" 2>nul | findstr redis >nul

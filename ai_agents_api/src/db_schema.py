@@ -249,3 +249,25 @@ async def init_agent_schema(db: Any) -> None:
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_analytics_date ON analytics_daily(date)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_analytics_workspace ON analytics_daily(workspace_id)")
+    
+    # =========================================================================
+    # Orchestration Runs
+    # =========================================================================
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS orchestration_runs (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            user_id TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            agent_ids TEXT NOT NULL,
+            input_message TEXT NOT NULL,
+            config TEXT DEFAULT '{}',
+            results TEXT DEFAULT '{}',
+            total_cost REAL DEFAULT 0,
+            duration_ms INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_orchestration_user ON orchestration_runs(user_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_orchestration_pattern ON orchestration_runs(pattern)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_orchestration_workspace ON orchestration_runs(workspace_id)")

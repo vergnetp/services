@@ -16,6 +16,18 @@ cors:
   origins: ["*"]
   credentials: true
 
+# Observability
+observability:
+  request_metrics:
+    enabled: true
+    exclude_paths:
+      - /health
+      - /healthz
+      - /readyz
+      - /metrics
+      - /favicon.ico
+      - /static
+
 tasks:
   - ingest_document
   - reindex_document

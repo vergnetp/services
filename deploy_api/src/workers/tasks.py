@@ -84,14 +84,13 @@ async def _sync_run_to_db(
         _get_logger().warning(f"Failed to sync run to DB: {e}")
 
 
-async def run_deployment(job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def run_deployment(payload: Dict[str, Any], ctx) -> Dict[str, Any]:
     """
     Execute a deployment using the infra Deployer.
     
     This runs your existing deployment code as a background job.
     
     Args:
-        job_id: Job ID for status updates
         payload: Deployment parameters:
             - workspace_id: Tenant ID (maps to infra's "user")
             - project_name: Project name
@@ -99,11 +98,13 @@ async def run_deployment(job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]
             - services: Optional list of services to deploy
             - force: Force rebuild
             - triggered_by: User who triggered
+        ctx: JobContext with job_id, task_name, etc.
     
     Returns:
         Deployment result
     """
     logger = _get_logger()
+    job_id = ctx.job_id
     
     workspace_id = payload["workspace_id"]
     project_name = payload["project_name"]
@@ -231,18 +232,19 @@ async def run_deployment(job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]
         raise
 
 
-async def run_rollback(job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def run_rollback(payload: Dict[str, Any], ctx) -> Dict[str, Any]:
     """
     Execute a rollback using the infra RollbackManager.
     
     Args:
-        job_id: Job ID
         payload: Rollback parameters
+        ctx: JobContext with job_id, task_name, etc.
     
     Returns:
         Rollback result
     """
     logger = _get_logger()
+    job_id = ctx.job_id
     
     workspace_id = payload["workspace_id"]
     project_name = payload["project_name"]

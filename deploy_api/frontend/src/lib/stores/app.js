@@ -1,8 +1,31 @@
 import { writable, derived } from 'svelte/store'
 import { createApiStore, createParamStore } from './fetchStore.js'
+import { getDoToken } from './auth.js'
 
 // Current tab
 export const currentTab = writable('infra')
+
+// DO Token store (reactive wrapper around cookie)
+function createDoTokenStore() {
+  const { subscribe, set } = writable(null)
+  
+  // Initialize from cookie on client
+  if (typeof window !== 'undefined') {
+    set(getDoToken())
+  }
+  
+  return {
+    subscribe,
+    refresh() {
+      set(getDoToken())
+    },
+    set(value) {
+      set(value)
+    }
+  }
+}
+
+export const doToken = createDoTokenStore()
 
 // Scope bar state (shared across tabs)
 export const scope = writable({
@@ -78,7 +101,7 @@ export const deploymentHistory = derived(deploymentsStore, $s => $s?.data || [])
 export const containers = derived(containersStore, $s => $s?.data || [])
 
 // Agent version (keep in sync with agent_code.py)
-export const EXPECTED_AGENT_VERSION = '1.9.5'
+export const EXPECTED_AGENT_VERSION = '1.9.7'
 
 // Theme
 function createThemeStore() {

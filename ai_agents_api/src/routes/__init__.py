@@ -11,6 +11,7 @@ from .chat import router as chat_router
 from .documents import router as documents_router
 from .analytics import router as analytics_router
 from .workspaces import router as workspaces_router
+from .orchestration import router as orchestration_router
 
 __all__ = [
     "agents_router",
@@ -19,4 +20,5 @@ __all__ = [
     "documents_router",
     "analytics_router",
     "workspaces_router",
+    "orchestration_router",
 ]

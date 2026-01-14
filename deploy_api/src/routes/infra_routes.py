@@ -132,6 +132,42 @@ def _build_deploy_volumes(
     return volumes
 
 
+def _decrypt_env_vars_if_needed(
+    env_vars: Dict[str, str],
+    do_token: str,
+    user_id: str,
+) -> Dict[str, str]:
+    """
+    Decrypt env_vars if they are encrypted.
+    
+    Args:
+        env_vars: Environment variables dict (may be encrypted or plain)
+        do_token: DO token for decryption
+        user_id: User ID (must match what was used for encryption)
+        
+    Returns:
+        Decrypted env vars dict
+    """
+    if not env_vars:
+        return {}
+    
+    # Check if encrypted (has __encrypted__ key with encrypted string)
+    if isinstance(env_vars, dict) and "__encrypted__" in env_vars:
+        try:
+            from shared_libs.backend.infra.utils.encryption import Encryption
+            return Encryption.decrypt_env_vars(
+                env_vars["__encrypted__"],
+                do_token,
+                user_id=user_id
+            )
+        except Exception as e:
+            # Decryption failed - return empty to avoid exposing partial data
+            raise ValueError(f"Failed to decrypt env vars (wrong DO token?): {e}")
+    
+    # Not encrypted - return as-is
+    return env_vars
+
+
 async def _ensure_nginx_on_server(client, log_fn=None):
     """
     Ensure nginx is running on the server.
@@ -7366,23 +7402,75 @@ async def get_deploy_config(
     project: str,
     service: str,
     env: str,
+    do_token: Optional[str] = Query(None, description="DO token for decrypting env vars"),
     user: UserIdentity = Depends(get_current_user),
     config_store: DeployConfigStore = Depends(get_deploy_config_store),
 ):
-    """Get a specific deployment config."""
+    """
+    Get a specific deployment config.
+    
+    If do_token is provided and env_vars are encrypted, they will be decrypted.
+    Without do_token, encrypted env_vars show as {"__encrypted__": true}.
+    """
     config = await config_store.get(str(user.id), project, service, env)
     if not config:
         raise HTTPException(404, f"Config not found: {project}/{service}/{env}")
-    return config.to_dict()
+    
+    result = config.to_dict()
+    
+    # Decrypt env_vars if encrypted and DO token provided
+    env_vars = result.get("env_vars", {})
+    if isinstance(env_vars, dict) and "__encrypted__" in env_vars:
+        if do_token:
+            try:
+                from shared_libs.backend.infra.utils.encryption import Encryption
+                result["env_vars"] = Encryption.decrypt_env_vars(
+                    env_vars["__encrypted__"],
+                    do_token,
+                    user_id=str(user.id)
+                )
+                result["env_vars_decrypted"] = True
+            except Exception as e:
+                # Wrong key or decryption failed
+                result["env_vars"] = {"__encrypted__": True, "__error__": "Decryption failed - wrong DO token?"}
+                result["env_vars_decrypted"] = False
+        else:
+            # No token provided - indicate encrypted but don't expose
+            result["env_vars"] = {"__encrypted__": True}
+            result["env_vars_decrypted"] = False
+    
+    return result
 
 
 @router.post("/deploy-configs")
 async def save_deploy_config(
     req: DeployConfigRequest,
+    do_token: Optional[str] = Query(None, description="DO token for encrypting env vars"),
     user: UserIdentity = Depends(get_current_user),
     config_store: DeployConfigStore = Depends(get_deploy_config_store),
 ):
-    """Save deployment config (creates or updates)."""
+    """
+    Save deployment config (creates or updates).
+    
+    If do_token is provided and env_vars are set, the env_vars will be encrypted.
+    The same do_token must be provided when deploying to decrypt them.
+    """
+    # Encrypt env_vars if DO token provided
+    env_vars_to_store = req.env_vars or {}
+    if do_token and env_vars_to_store:
+        try:
+            from shared_libs.backend.infra.utils.encryption import Encryption
+            env_vars_to_store = {
+                "__encrypted__": Encryption.encrypt_env_vars(
+                    env_vars_to_store, 
+                    do_token, 
+                    user_id=str(user.id)
+                )
+            }
+        except Exception as e:
+            # Fall back to unencrypted if encryption fails
+            pass
+    
     config = await config_store.save(
         workspace_id=str(user.id),
         project_name=req.project_name,
@@ -7397,7 +7485,7 @@ async def save_deploy_config(
             "dependency_folder_paths": req.dependency_folder_paths or [],
             "exclude_patterns": req.exclude_patterns or DEFAULT_EXCLUDE_PATTERNS,
             "port": req.port,
-            "env_vars": req.env_vars or {},
+            "env_vars": env_vars_to_store,
             "dockerfile_path": req.dockerfile_path,
             # Note: server_ips not stored in config - managed via service_droplets
             "snapshot_id": req.snapshot_id,
@@ -7405,7 +7493,7 @@ async def save_deploy_config(
             "size": req.size,
         },
     )
-    return {"success": True, "config": config.to_dict()}
+    return {"success": True, "config": config.to_dict(), "encrypted": "__encrypted__" in env_vars_to_store}
 
 
 @router.delete("/deploy-configs/{project}/{service}/{env}")

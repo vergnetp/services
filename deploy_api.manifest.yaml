@@ -9,11 +9,11 @@ description: |
 # =============================================================================
 
 # Database configuration
-# Note: DATABASE_PATH should be absolute, e.g. /app/data/deploy.db
-# For local dev, the path is resolved in config.py relative to project root
+# Path is relative to working directory (deploy_api/)
+# For Docker: set DATABASE_PATH=/app/data/deploy.db
 database:
   type: sqlite
-  path: ${DATABASE_PATH:-}
+  path: ${DATABASE_PATH:-./data/deploy.db}
 
 # Redis (optional - for job queue)
 redis:
@@ -96,6 +96,18 @@ billing:
 # CORS
 cors:
   origins: ["*"]
+
+# Observability
+observability:
+  request_metrics:
+    enabled: true
+    exclude_paths:
+      - /health
+      - /healthz
+      - /readyz
+      - /metrics
+      - /favicon.ico
+      - /static
 
 # Debug/logging
 debug: ${DEBUG:-false}

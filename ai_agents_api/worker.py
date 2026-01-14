@@ -33,7 +33,10 @@ async def shutdown():
 
 
 if __name__ == "__main__":
+    from pathlib import Path
     from shared_libs.backend.app_kernel.jobs import run_worker
+    
+    manifest_path = Path(__file__).parent / "manifest.yaml"
     
     asyncio.run(run_worker(
         tasks={
@@ -43,6 +46,7 @@ if __name__ == "__main__":
             "memory_compaction": compact_memory,
             "chat_response": process_chat,
         },
+        manifest_path=str(manifest_path),
         init_app=init,
         shutdown_app=shutdown,
     ))

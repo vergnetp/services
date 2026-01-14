@@ -827,6 +827,187 @@
             border-radius: 10px;
             margin-left: 4px;
         }
+        
+        /* Orchestration Styles */
+        .orchestration-patterns {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .pattern-card {
+            padding: 12px;
+            background: #f5f7fa;
+            border-radius: 8px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .pattern-card:hover {
+            background: #e8eaef;
+        }
+        
+        .pattern-card.selected {
+            border-color: #5b4ed9;
+            background: #ebe9fc;
+        }
+        
+        .pattern-icon {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+        
+        .pattern-name {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+        
+        .pattern-desc {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 2px;
+        }
+        
+        .orch-agent-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .orch-agent-item {
+            padding: 8px 12px;
+            background: #f5f7fa;
+            border-radius: 6px;
+            margin-bottom: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border: 2px solid transparent;
+            transition: all 0.15s;
+        }
+        
+        .orch-agent-item:hover {
+            background: #e8eaef;
+        }
+        
+        .orch-agent-item.selected {
+            border-color: #5b4ed9;
+            background: #ebe9fc;
+        }
+        
+        .orch-agent-item .order-badge {
+            background: #5b4ed9;
+            color: white;
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 10px;
+            min-width: 18px;
+            text-align: center;
+        }
+        
+        .orch-config {
+            background: #f5f7fa;
+            padding: 12px;
+            border-radius: 8px;
+        }
+        
+        .orch-result-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 12px;
+            border-left: 3px solid #5b4ed9;
+        }
+        
+        .orch-result-card.error {
+            border-left-color: #f44336;
+            background: #fff5f5;
+        }
+        
+        .orch-result-card.success {
+            border-left-color: #4caf50;
+        }
+        
+        .orch-result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .orch-result-agent {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .orch-result-meta {
+            font-size: 0.75rem;
+            color: #666;
+        }
+        
+        .orch-result-content {
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .orch-history-item {
+            padding: 12px;
+            background: #f5f7fa;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .orch-history-item:hover {
+            background: #e8eaef;
+        }
+        
+        .orch-history-pattern {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .orch-history-pattern.parallel { background: #e3f2fd; color: #1976d2; }
+        .orch-history-pattern.supervisor { background: #f3e5f5; color: #7b1fa2; }
+        .orch-history-pattern.pipeline { background: #e8f5e9; color: #388e3c; }
+        .orch-history-pattern.debate { background: #fff3e0; color: #f57c00; }
+        
+        .debate-round {
+            margin-bottom: 16px;
+            border-left: 3px solid #ddd;
+            padding-left: 12px;
+        }
+        
+        .debate-round-header {
+            font-weight: 600;
+            color: #5b4ed9;
+            margin-bottom: 8px;
+        }
+        
+        .debate-message {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        
+        .debate-message-agent {
+            font-weight: 600;
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+        }
+        
+        .debate-message-content {
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+        }
     </style>
 </head>
 <body>
@@ -843,6 +1024,7 @@
             <button class="tab active" data-tab="chat">💬 Chat</button>
             <button class="tab" data-tab="agents">🤖 Agents</button>
             <button class="tab" data-tab="documents">📄 Documents</button>
+            <button class="tab" data-tab="orchestration">🎭 Orchestration</button>
             <button class="tab" data-tab="security">🔒 Security</button>
             <button class="tab" data-tab="monitoring">📊 Monitoring</button>
         </div>
@@ -1050,6 +1232,166 @@
             <div class="card">
                 <div class="card-title">📁 Uploaded Documents</div>
                 <div id="documentList"></div>
+            </div>
+        </div>
+        
+        <!-- Orchestration Panel -->
+        <div class="panel" id="orchestration">
+            <h2 style="margin-bottom: 20px;">🎭 Multi-Agent Orchestration</h2>
+            
+            <div class="grid" style="grid-template-columns: 320px 1fr;">
+                <!-- Pattern Selection -->
+                <div class="sidebar">
+                    <h3>Pattern</h3>
+                    <div class="orchestration-patterns">
+                        <div class="pattern-card selected" data-pattern="parallel" onclick="selectOrchPattern('parallel')">
+                            <div class="pattern-icon">⚡</div>
+                            <div class="pattern-name">Parallel</div>
+                            <div class="pattern-desc">Run agents concurrently on same input</div>
+                        </div>
+                        <div class="pattern-card" data-pattern="supervisor" onclick="selectOrchPattern('supervisor')">
+                            <div class="pattern-icon">👔</div>
+                            <div class="pattern-name">Supervisor</div>
+                            <div class="pattern-desc">Plan → Delegate → Synthesize</div>
+                        </div>
+                        <div class="pattern-card" data-pattern="pipeline" onclick="selectOrchPattern('pipeline')">
+                            <div class="pattern-icon">🔗</div>
+                            <div class="pattern-name">Pipeline</div>
+                            <div class="pattern-desc">Sequential agent chain</div>
+                        </div>
+                        <div class="pattern-card" data-pattern="debate" onclick="selectOrchPattern('debate')">
+                            <div class="pattern-icon">💬</div>
+                            <div class="pattern-name">Debate</div>
+                            <div class="pattern-desc">Multi-round discussion</div>
+                        </div>
+                    </div>
+                    
+                    <h3 style="margin-top: 20px;">Select Agents</h3>
+                    <div class="agent-hints" style="font-size: 0.75rem; color: #666; margin-bottom: 8px;">
+                        Hint: Create agents with roles like Researcher, Writer, Analyst, Editor, Critic
+                    </div>
+                    <div id="orchAgentList" class="orch-agent-list"></div>
+                    <div id="selectedAgentCount" style="font-size: 0.85rem; color: #5b4ed9; margin-top: 8px;">0 agents selected</div>
+                    
+                    <!-- Pattern-specific config -->
+                    <div id="orchConfig" style="margin-top: 16px;">
+                        <!-- Parallel config -->
+                        <div class="orch-config" data-config="parallel">
+                            <div class="form-group">
+                                <label>Timeout (seconds)</label>
+                                <input type="number" id="parallelTimeout" value="30" min="5" max="300">
+                            </div>
+                            <div class="form-group">
+                                <label>Result Format</label>
+                                <select id="parallelFormat">
+                                    <option value="numbered">Numbered</option>
+                                    <option value="labeled">Labeled</option>
+                                    <option value="xml">XML</option>
+                                </select>
+                            </div>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="parallelFailFast">
+                                Fail fast (stop on first error)
+                            </label>
+                        </div>
+                        
+                        <!-- Supervisor config -->
+                        <div class="orch-config" data-config="supervisor" style="display: none;">
+                            <div class="form-group">
+                                <label>Mode</label>
+                                <select id="supervisorMode">
+                                    <option value="selective">Selective (planner chooses)</option>
+                                    <option value="all">All workers</option>
+                                    <option value="sequential">Sequential</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Max Iterations</label>
+                                <input type="number" id="supervisorIterations" value="1" min="1" max="5">
+                            </div>
+                        </div>
+                        
+                        <!-- Pipeline config -->
+                        <div class="orch-config" data-config="pipeline" style="display: none;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="pipelineStopOnError" checked>
+                                Stop on error
+                            </label>
+                            <div style="font-size: 0.75rem; color: #666; margin-top: 8px;">
+                                Agent order determines pipeline flow
+                            </div>
+                        </div>
+                        
+                        <!-- Debate config -->
+                        <div class="orch-config" data-config="debate" style="display: none;">
+                            <div class="form-group">
+                                <label>Rounds</label>
+                                <input type="number" id="debateRounds" value="3" min="1" max="10">
+                            </div>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="debateParallel" checked>
+                                Parallel responses per round
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Orchestration Area -->
+                <div class="main-content" style="max-height: none;">
+                    <div class="card" style="margin: 16px;">
+                        <div class="card-title">Input Message</div>
+                        <textarea id="orchMessage" rows="3" placeholder="Enter the task or question for the agents..." style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; resize: vertical;"></textarea>
+                        <div style="margin-top: 12px; display: flex; gap: 8px;">
+                            <button class="btn-primary" onclick="runOrchestration()" id="orchRunBtn">
+                                ▶️ Run Orchestration
+                            </button>
+                            <button class="btn-secondary" onclick="runOrchestration(true)" id="orchStreamBtn">
+                                📡 Stream
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Results Area -->
+                    <div id="orchResults" class="card" style="margin: 16px; display: none;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="card-title">Results</div>
+                            <div id="orchStats" style="font-size: 0.85rem; color: #666;"></div>
+                        </div>
+                        
+                        <!-- Progress for streaming -->
+                        <div id="orchProgress" style="display: none; margin: 16px 0;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <div class="spinner" style="width: 16px; height: 16px;"></div>
+                                <span id="orchProgressText">Running...</span>
+                            </div>
+                            <div id="orchPhase" style="font-size: 0.85rem; color: #5b4ed9; margin-top: 8px;"></div>
+                        </div>
+                        
+                        <!-- Agent Results Grid -->
+                        <div id="orchAgentResults" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px;"></div>
+                        
+                        <!-- Combined/Final Output -->
+                        <div id="orchFinalOutput" style="margin-top: 16px; display: none;">
+                            <div style="font-weight: 600; margin-bottom: 8px;">📋 Final Output</div>
+                            <div id="orchFinalContent" style="background: #f8f9fa; padding: 16px; border-radius: 8px; white-space: pre-wrap;"></div>
+                        </div>
+                        
+                        <!-- Debate Transcript -->
+                        <div id="orchTranscript" style="margin-top: 16px; display: none;">
+                            <div style="font-weight: 600; margin-bottom: 8px;">📜 Debate Transcript</div>
+                            <div id="orchTranscriptContent"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- History -->
+                    <div class="card" style="margin: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="card-title">Recent Runs</div>
+                            <button class="btn-secondary btn-small" onclick="loadOrchHistory()">Refresh</button>
+                        </div>
+                        <div id="orchHistory" style="margin-top: 12px;"></div>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -1615,6 +1957,11 @@
             
             agents = data;
             renderAgents();
+            
+            // Also refresh orchestration agent list if it exists
+            if (typeof renderOrchAgentList === 'function') {
+                renderOrchAgentList();
+            }
         }
         
         function renderAgents() {
@@ -3285,6 +3632,453 @@
         }
         
         // ===================
+        // Orchestration
+        // ===================
+        
+        let selectedOrchPattern = 'parallel';
+        let selectedOrchAgents = [];
+        
+        function selectOrchPattern(pattern) {
+            selectedOrchPattern = pattern;
+            
+            // Update UI
+            document.querySelectorAll('.pattern-card').forEach(card => {
+                card.classList.toggle('selected', card.dataset.pattern === pattern);
+            });
+            
+            // Show/hide config sections
+            document.querySelectorAll('.orch-config').forEach(config => {
+                config.style.display = config.dataset.config === pattern ? 'block' : 'none';
+            });
+            
+            // Update min agent requirements hint
+            const minAgents = pattern === 'supervisor' ? 1 : 2;
+            updateAgentCount();
+        }
+        
+        function updateAgentCount() {
+            const countEl = document.getElementById('selectedAgentCount');
+            const minAgents = selectedOrchPattern === 'supervisor' ? 1 : 2;
+            const count = selectedOrchAgents.length;
+            
+            if (count < minAgents) {
+                countEl.style.color = '#f44336';
+                countEl.textContent = `${count} agents selected (min: ${minAgents})`;
+            } else {
+                countEl.style.color = '#5b4ed9';
+                countEl.textContent = `${count} agents selected`;
+            }
+        }
+        
+        function toggleOrchAgent(agentId, agentName) {
+            const index = selectedOrchAgents.findIndex(a => a.id === agentId);
+            
+            if (index >= 0) {
+                selectedOrchAgents.splice(index, 1);
+            } else {
+                selectedOrchAgents.push({ id: agentId, name: agentName });
+            }
+            
+            renderOrchAgentList();
+            updateAgentCount();
+        }
+        
+        function renderOrchAgentList() {
+            const container = document.getElementById('orchAgentList');
+            
+            if (!agents.length) {
+                container.innerHTML = '<div style="color: #888; font-size: 0.85rem;">No agents available. Create agents in the Agents tab first.</div>';
+                return;
+            }
+            
+            container.innerHTML = agents.map(agent => {
+                const selectedIndex = selectedOrchAgents.findIndex(a => a.id === agent.id);
+                const isSelected = selectedIndex >= 0;
+                
+                return `
+                    <div class="orch-agent-item ${isSelected ? 'selected' : ''}" 
+                         onclick="toggleOrchAgent('${agent.id}', '${agent.name.replace(/'/g, "\\'")}')">
+                        ${isSelected ? `<span class="order-badge">${selectedIndex + 1}</span>` : ''}
+                        <span>${agent.name}</span>
+                        <span style="font-size: 0.75rem; color: #888; margin-left: auto;">${agent.provider}/${agent.model || 'default'}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        async function runOrchestration(stream = false) {
+            const message = document.getElementById('orchMessage').value.trim();
+            
+            if (!message) {
+                showError('Please enter a message');
+                return;
+            }
+            
+            const minAgents = selectedOrchPattern === 'supervisor' ? 1 : 2;
+            if (selectedOrchAgents.length < minAgents) {
+                showError(`Please select at least ${minAgents} agents`);
+                return;
+            }
+            
+            const resultsEl = document.getElementById('orchResults');
+            const progressEl = document.getElementById('orchProgress');
+            const agentResultsEl = document.getElementById('orchAgentResults');
+            const finalOutputEl = document.getElementById('orchFinalOutput');
+            const transcriptEl = document.getElementById('orchTranscript');
+            const statsEl = document.getElementById('orchStats');
+            
+            // Reset
+            resultsEl.style.display = 'block';
+            progressEl.style.display = stream ? 'flex' : 'none';
+            agentResultsEl.innerHTML = '';
+            finalOutputEl.style.display = 'none';
+            transcriptEl.style.display = 'none';
+            statsEl.textContent = '';
+            
+            // Build request based on pattern
+            const agentIds = selectedOrchAgents.map(a => a.id);
+            let endpoint = `/api/v1/orchestration/${selectedOrchPattern}`;
+            let body = { agent_ids: agentIds, message };
+            
+            // Add pattern-specific config
+            switch (selectedOrchPattern) {
+                case 'parallel':
+                    body.timeout = parseFloat(document.getElementById('parallelTimeout').value) || 30;
+                    body.result_format = document.getElementById('parallelFormat').value;
+                    body.fail_fast = document.getElementById('parallelFailFast').checked;
+                    break;
+                case 'supervisor':
+                    body.mode = document.getElementById('supervisorMode').value;
+                    body.max_iterations = parseInt(document.getElementById('supervisorIterations').value) || 1;
+                    break;
+                case 'pipeline':
+                    body.stop_on_error = document.getElementById('pipelineStopOnError').checked;
+                    break;
+                case 'debate':
+                    body.rounds = parseInt(document.getElementById('debateRounds').value) || 3;
+                    body.parallel_responses = document.getElementById('debateParallel').checked;
+                    break;
+            }
+            
+            if (stream) {
+                endpoint += '?stream=true';
+                await streamOrchestration(endpoint, body);
+            } else {
+                try {
+                    document.getElementById('orchRunBtn').disabled = true;
+                    document.getElementById('orchStreamBtn').disabled = true;
+                    progressEl.style.display = 'flex';
+                    document.getElementById('orchProgressText').textContent = 'Running...';
+                    
+                    const res = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                        body: JSON.stringify(body)
+                    });
+                    
+                    if (!res.ok) {
+                        const err = await res.json();
+                        throw new Error(err.detail || 'Orchestration failed');
+                    }
+                    
+                    const data = await res.json();
+                    displayOrchResults(data);
+                    
+                } catch (err) {
+                    showError(err.message);
+                } finally {
+                    document.getElementById('orchRunBtn').disabled = false;
+                    document.getElementById('orchStreamBtn').disabled = false;
+                    progressEl.style.display = 'none';
+                }
+            }
+            
+            // Refresh history
+            loadOrchHistory();
+        }
+        
+        async function streamOrchestration(endpoint, body) {
+            const progressEl = document.getElementById('orchProgress');
+            const progressText = document.getElementById('orchProgressText');
+            const phaseEl = document.getElementById('orchPhase');
+            const agentResultsEl = document.getElementById('orchAgentResults');
+            const finalOutputEl = document.getElementById('orchFinalOutput');
+            const finalContentEl = document.getElementById('orchFinalContent');
+            const transcriptEl = document.getElementById('orchTranscript');
+            const transcriptContentEl = document.getElementById('orchTranscriptContent');
+            const statsEl = document.getElementById('orchStats');
+            
+            document.getElementById('orchRunBtn').disabled = true;
+            document.getElementById('orchStreamBtn').disabled = true;
+            progressEl.style.display = 'flex';
+            
+            let debateRounds = {};
+            
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify(body)
+                });
+                
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            
+                            switch (data.type) {
+                                case 'start':
+                                    progressText.textContent = `Starting with ${data.agent_count || data.agents?.length || '?'} agents...`;
+                                    break;
+                                    
+                                case 'phase':
+                                    phaseEl.textContent = `Phase: ${data.phase}`;
+                                    break;
+                                    
+                                case 'plan':
+                                    phaseEl.textContent = `Plan: ${data.plan}`;
+                                    break;
+                                    
+                                case 'agent_result':
+                                case 'worker_result':
+                                case 'step_result':
+                                    const result = data.result;
+                                    agentResultsEl.innerHTML += renderAgentResult(result);
+                                    break;
+                                    
+                                case 'step_start':
+                                    progressText.textContent = `Step ${data.step + 1}: ${data.agent_name}`;
+                                    break;
+                                    
+                                case 'round_start':
+                                    progressText.textContent = `Round ${data.round}`;
+                                    debateRounds[data.round] = [];
+                                    break;
+                                    
+                                case 'message':
+                                    const msg = data.message;
+                                    if (!debateRounds[msg.round]) debateRounds[msg.round] = [];
+                                    debateRounds[msg.round].push(msg);
+                                    renderDebateTranscript(debateRounds, transcriptContentEl);
+                                    transcriptEl.style.display = 'block';
+                                    break;
+                                    
+                                case 'synthesis':
+                                case 'conclusion':
+                                    finalOutputEl.style.display = 'block';
+                                    finalContentEl.textContent = data.content;
+                                    break;
+                                    
+                                case 'done':
+                                    progressEl.style.display = 'none';
+                                    statsEl.textContent = `${data.total_duration_ms}ms | $${data.total_cost?.toFixed(4) || '0.0000'}`;
+                                    break;
+                                    
+                                case 'error':
+                                    showError(data.error);
+                                    progressEl.style.display = 'none';
+                                    break;
+                            }
+                        } catch (e) {
+                            console.error('Parse error:', e, line);
+                        }
+                    }
+                }
+            } catch (err) {
+                showError(err.message);
+            } finally {
+                document.getElementById('orchRunBtn').disabled = false;
+                document.getElementById('orchStreamBtn').disabled = false;
+                progressEl.style.display = 'none';
+            }
+        }
+        
+        function renderAgentResult(result) {
+            const statusClass = result.success ? 'success' : 'error';
+            const statusIcon = result.success ? '✓' : '✗';
+            
+            return `
+                <div class="orch-result-card ${statusClass}">
+                    <div class="orch-result-header">
+                        <span class="orch-result-agent">${statusIcon} ${result.agent_name}</span>
+                        <span class="orch-result-meta">${result.duration_ms}ms | $${result.cost?.toFixed(4) || '0'}</span>
+                    </div>
+                    <div class="orch-result-content">${result.success ? escapeHtml(result.content) : `Error: ${result.error}`}</div>
+                </div>
+            `;
+        }
+        
+        function renderDebateTranscript(rounds, container) {
+            let html = '';
+            
+            for (const [roundNum, messages] of Object.entries(rounds)) {
+                html += `<div class="debate-round">
+                    <div class="debate-round-header">Round ${roundNum}</div>
+                    ${messages.map(m => `
+                        <div class="debate-message">
+                            <div class="debate-message-agent">${m.agent_name}</div>
+                            <div class="debate-message-content">${escapeHtml(m.content)}</div>
+                        </div>
+                    `).join('')}
+                </div>`;
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        function displayOrchResults(data) {
+            const agentResultsEl = document.getElementById('orchAgentResults');
+            const finalOutputEl = document.getElementById('orchFinalOutput');
+            const finalContentEl = document.getElementById('orchFinalContent');
+            const transcriptEl = document.getElementById('orchTranscript');
+            const transcriptContentEl = document.getElementById('orchTranscriptContent');
+            const statsEl = document.getElementById('orchStats');
+            
+            // Stats
+            statsEl.textContent = `${data.total_duration_ms}ms | $${data.total_cost?.toFixed(4) || '0.0000'}`;
+            
+            // Pattern-specific rendering
+            switch (data.pattern) {
+                case 'parallel':
+                    agentResultsEl.innerHTML = data.results.map(r => renderAgentResult(r)).join('');
+                    if (data.combined_output) {
+                        finalOutputEl.style.display = 'block';
+                        finalContentEl.textContent = data.combined_output;
+                    }
+                    break;
+                    
+                case 'supervisor':
+                    // Show plan
+                    agentResultsEl.innerHTML = `
+                        <div class="orch-result-card" style="grid-column: 1 / -1;">
+                            <div class="orch-result-header">
+                                <span class="orch-result-agent">📋 Plan</span>
+                            </div>
+                            <div class="orch-result-content">${escapeHtml(data.plan)}</div>
+                        </div>
+                    `;
+                    // Show worker results
+                    agentResultsEl.innerHTML += data.worker_results.map(r => renderAgentResult(r)).join('');
+                    // Show synthesis
+                    finalOutputEl.style.display = 'block';
+                    finalContentEl.textContent = data.synthesis;
+                    break;
+                    
+                case 'pipeline':
+                    agentResultsEl.innerHTML = data.steps.map((r, i) => `
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <span style="font-weight: 600; color: #5b4ed9;">Step ${i + 1}</span>
+                            ${i < data.steps.length - 1 ? '<span>→</span>' : ''}
+                        </div>
+                        ${renderAgentResult(r)}
+                    `).join('');
+                    if (data.final_output) {
+                        finalOutputEl.style.display = 'block';
+                        finalContentEl.textContent = data.final_output;
+                    }
+                    break;
+                    
+                case 'debate':
+                    // Group by round
+                    const rounds = {};
+                    data.transcript.forEach(m => {
+                        if (!rounds[m.round]) rounds[m.round] = [];
+                        rounds[m.round].push(m);
+                    });
+                    
+                    transcriptEl.style.display = 'block';
+                    renderDebateTranscript(rounds, transcriptContentEl);
+                    
+                    // Show conclusion
+                    finalOutputEl.style.display = 'block';
+                    document.querySelector('#orchFinalOutput > div').textContent = `📋 Conclusion ${data.consensus_reached ? '(Consensus Reached)' : ''}`;
+                    finalContentEl.textContent = data.conclusion;
+                    break;
+            }
+        }
+        
+        async function loadOrchHistory() {
+            const container = document.getElementById('orchHistory');
+            
+            try {
+                const res = await fetch('/api/v1/orchestration/runs?limit=10', {
+                    headers: authHeaders()
+                });
+                
+                if (!res.ok) {
+                    container.innerHTML = '<div style="color: #888;">Failed to load history</div>';
+                    return;
+                }
+                
+                const runs = await res.json();
+                
+                if (!runs.length) {
+                    container.innerHTML = '<div style="color: #888;">No runs yet</div>';
+                    return;
+                }
+                
+                container.innerHTML = runs.map(run => `
+                    <div class="orch-history-item" onclick="showOrchRun('${run.id}')">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span class="orch-history-pattern ${run.pattern}">${run.pattern}</span>
+                            <span style="font-size: 0.75rem; color: #888;">${new Date(run.created_at).toLocaleString()}</span>
+                        </div>
+                        <div style="margin-top: 8px; font-size: 0.85rem; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${escapeHtml(run.input_message.substring(0, 100))}${run.input_message.length > 100 ? '...' : ''}
+                        </div>
+                        <div style="margin-top: 4px; font-size: 0.75rem; color: #666;">
+                            ${run.agent_ids.length} agents | ${run.duration_ms}ms | $${run.total_cost?.toFixed(4) || '0'}
+                        </div>
+                    </div>
+                `).join('');
+                
+            } catch (err) {
+                container.innerHTML = '<div style="color: #888;">Failed to load history</div>';
+            }
+        }
+        
+        async function showOrchRun(runId) {
+            try {
+                const res = await fetch(`/api/v1/orchestration/runs/${runId}`, {
+                    headers: authHeaders()
+                });
+                
+                if (!res.ok) {
+                    showError('Failed to load run');
+                    return;
+                }
+                
+                const run = await res.json();
+                
+                // Set message
+                document.getElementById('orchMessage').value = run.input_message;
+                
+                // Select pattern
+                selectOrchPattern(run.pattern);
+                
+                // Display results
+                document.getElementById('orchResults').style.display = 'block';
+                displayOrchResults(run.results);
+                
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+        
+        // ===================
         // Init
         // ===================
         
@@ -3297,6 +4091,10 @@
             await checkModelStatus();  // Check AI model loading status
             await loadMetrics();
             await refreshSecurityLog();
+            
+            // Initialize orchestration
+            renderOrchAgentList();
+            loadOrchHistory();
             
             // Periodic health check
             setInterval(checkHealth, 30000);

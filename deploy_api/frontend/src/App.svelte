@@ -3,8 +3,7 @@
   import { auth } from './lib/stores/auth.js'
   import { 
     currentTab, scope, 
-    serversStore, projectsStore, snapshotsStore, deploymentsStore,
-    SCOPE_BAR_TABS 
+    serversStore, projectsStore, snapshotsStore, deploymentsStore
   } from './lib/stores/app.js'
   import { toasts } from './lib/stores/toast.js'
   import { api, initAuth } from './lib/api/client.js'
@@ -20,9 +19,6 @@
   import Infrastructure from './lib/components/infra/Infrastructure.svelte'
   import Deploy from './lib/components/deploy/Deploy.svelte'
   import Deployments from './lib/components/deploy/Deployments.svelte'
-  import Logs from './lib/components/logs/Logs.svelte'
-  import Metrics from './lib/components/metrics/Metrics.svelte'
-  import Snapshots from './lib/components/snapshots/Snapshots.svelte'
   import Services from './lib/components/services/Services.svelte'
   import Settings from './lib/components/settings/Settings.svelte'
   import Architecture from './lib/components/architecture/Architecture.svelte'
@@ -30,8 +26,6 @@
   let initialized = false
   let infraRef
   let deploymentsRef
-  let logsRef
-  let metricsRef
   let architectureRef
   
   const tabs = [
@@ -39,16 +33,13 @@
     { id: 'deploy', label: 'Deploy' },
     { id: 'deployments', label: 'Deployments' },
     { id: 'architecture', label: 'Architecture' },
-    { id: 'logs', label: 'Logs' },
-    { id: 'metrics', label: 'Metrics' },
-    { id: 'snapshots', label: 'Snapshots' },
     { id: 'services', label: 'Services' },
     { id: 'settings', label: 'Settings' }
   ]
   
-  $: showScopeBar = SCOPE_BAR_TABS.includes($currentTab)
-  $: showTail = $currentTab === 'logs'
-  $: showContainer = $currentTab === 'logs'
+  $: showScopeBar = $currentTab === 'deployments'
+  $: showTail = false
+  $: showContainer = false
   
   onMount(async () => {
     const authenticated = await initAuth()
@@ -92,12 +83,6 @@
         break
       case 'deployments':
         deploymentsRef?.refresh()
-        break
-      case 'logs':
-        logsRef?.refresh()
-        break
-      case 'metrics':
-        metricsRef?.refresh()
         break
       case 'architecture':
         architectureRef?.refresh()
@@ -153,16 +138,9 @@
         <div class:hidden={$currentTab !== 'architecture'}>
           <Architecture bind:this={architectureRef} />
         </div>
-        <div class:hidden={$currentTab !== 'metrics'}>
-          <Metrics bind:this={metricsRef} />
-        </div>
         
         <!-- These can remount since they're less frequently used -->
-        {#if $currentTab === 'logs'}
-          <Logs bind:this={logsRef} />
-        {:else if $currentTab === 'snapshots'}
-          <Snapshots />
-        {:else if $currentTab === 'services'}
+        {#if $currentTab === 'services'}
           <Services />
         {:else if $currentTab === 'settings'}
           <Settings />

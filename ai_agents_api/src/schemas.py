@@ -410,3 +410,136 @@ class UserContextResponse(BaseModel):
     agent_id: Optional[str]
     context: dict[str, Any]
     updated_at: Optional[datetime] = None
+
+
+# =============================================================================
+# Orchestration Schemas
+# =============================================================================
+
+class OrchestrationPattern(str, Enum):
+    PARALLEL = "parallel"
+    SUPERVISOR = "supervisor"
+    PIPELINE = "pipeline"
+    DEBATE = "debate"
+
+
+class SupervisorMode(str, Enum):
+    ALL = "all"
+    SELECTIVE = "selective"
+    SEQUENTIAL = "sequential"
+
+
+class ParallelRequest(BaseModel):
+    """Run multiple agents in parallel on same input."""
+    agent_ids: list[str] = Field(..., min_length=2, description="Agent IDs to run in parallel")
+    message: str = Field(..., min_length=1)
+    timeout: float = Field(30.0, ge=5, le=300, description="Timeout per agent in seconds")
+    fail_fast: bool = Field(False, description="Stop on first failure")
+    result_format: str = Field("numbered", description="How to format combined results: numbered, labeled, xml")
+
+
+class SupervisorRequest(BaseModel):
+    """Supervisor pattern: plan, delegate, synthesize."""
+    agent_ids: list[str] = Field(..., min_length=1, description="Worker agent IDs")
+    message: str = Field(..., min_length=1)
+    mode: SupervisorMode = Field(SupervisorMode.SELECTIVE, description="all=use all workers, selective=planner chooses, sequential=one at a time")
+    max_iterations: int = Field(1, ge=1, le=5, description="Max planning iterations")
+    planner_agent_id: Optional[str] = Field(None, description="Custom planner agent (default: auto-created)")
+    synthesizer_agent_id: Optional[str] = Field(None, description="Custom synthesizer agent (default: auto-created)")
+
+
+class PipelineRequest(BaseModel):
+    """Sequential agent pipeline."""
+    agent_ids: list[str] = Field(..., min_length=2, description="Agent IDs in execution order")
+    message: str = Field(..., min_length=1)
+    transformers: dict[str, str] = Field(default_factory=dict, description="Transform instructions between steps. Key is step index (0-based).")
+    stop_on_error: bool = Field(True, description="Stop pipeline if a step fails")
+
+
+class DebateRequest(BaseModel):
+    """Multi-agent debate with consensus detection."""
+    agent_ids: list[str] = Field(..., min_length=2, description="Debating agent IDs")
+    message: str = Field(..., min_length=1, description="Topic/question to debate")
+    rounds: int = Field(3, ge=1, le=10, description="Number of debate rounds")
+    parallel_responses: bool = Field(True, description="Agents respond in parallel each round")
+    require_consensus: bool = Field(False, description="Continue until consensus or max rounds")
+    moderator_agent_id: Optional[str] = Field(None, description="Custom moderator agent (default: auto-created)")
+
+
+class AgentResultSchema(BaseModel):
+    """Result from a single agent in orchestration."""
+    agent_id: str
+    agent_name: str
+    content: str
+    success: bool
+    error: Optional[str] = None
+    duration_ms: int = 0
+    cost: float = 0.0
+    usage: dict[str, int] = Field(default_factory=dict)
+
+
+class ParallelResponse(BaseModel):
+    """Response from parallel execution."""
+    pattern: str = "parallel"
+    results: list[AgentResultSchema]
+    successful: int
+    failed: int
+    combined_output: str
+    total_duration_ms: int
+    total_cost: float
+
+
+class SupervisorResponse(BaseModel):
+    """Response from supervisor pattern."""
+    pattern: str = "supervisor"
+    plan: str
+    worker_results: list[AgentResultSchema]
+    synthesis: str
+    iterations: int
+    total_duration_ms: int
+    total_cost: float
+
+
+class PipelineResponse(BaseModel):
+    """Response from pipeline execution."""
+    pattern: str = "pipeline"
+    steps: list[AgentResultSchema]
+    final_output: str
+    completed_steps: int
+    total_steps: int
+    total_duration_ms: int
+    total_cost: float
+
+
+class DebateMessage(BaseModel):
+    """Single message in debate transcript."""
+    round: int
+    agent_id: str
+    agent_name: str
+    content: str
+
+
+class DebateResponse(BaseModel):
+    """Response from debate execution."""
+    pattern: str = "debate"
+    transcript: list[DebateMessage]
+    conclusion: str
+    consensus_reached: bool
+    rounds_completed: int
+    total_duration_ms: int
+    total_cost: float
+
+
+class OrchestrationRunResponse(BaseModel):
+    """Saved orchestration run."""
+    id: str
+    workspace_id: Optional[str]
+    user_id: str
+    pattern: OrchestrationPattern
+    agent_ids: list[str]
+    input_message: str
+    config: dict[str, Any]
+    results: dict[str, Any]
+    total_cost: float
+    duration_ms: int
+    created_at: datetime

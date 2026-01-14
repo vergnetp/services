@@ -97,6 +97,18 @@ billing:
 cors:
   origins: ["*"]
 
+# Observability
+observability:
+  request_metrics:
+    enabled: true
+    exclude_paths:
+      - /health
+      - /healthz
+      - /readyz
+      - /metrics
+      - /favicon.ico
+      - /static
+
 # Debug/logging
 debug: ${DEBUG:-false}
 log_level: ${LOG_LEVEL:-INFO}
