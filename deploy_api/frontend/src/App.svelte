@@ -62,6 +62,7 @@
   // Preload all core data immediately on auth
   function preloadStores() {
     // These trigger fetch immediately
+    // If DO token not set, they'll silently fail and refresh when token is configured
     serversStore.refresh()
     projectsStore.refresh()
     snapshotsStore.refresh()

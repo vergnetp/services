@@ -76,11 +76,24 @@
       // - { access_token, token_type }
       // - { token, user }
       const token = res?.access_token || res?.token
+      
+      if (!token) throw new Error('Login failed - no token returned')
 
-      // If API returns the user already (mock could), use it; otherwise fetch /auth/me
-      const user = res?.user || await apiCall('GET', '/auth/me')
+      // If API returns the user already, use it; otherwise fetch /auth/me with the new token
+      let user = res?.user
+      if (!user) {
+        // Fetch user with the token we just got
+        const meRes = await fetch('/api/v1/auth/me', {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
+        })
+        if (!meRes.ok) throw new Error('Failed to get user info')
+        user = await meRes.json()
+      }
 
-      if (!token || !user) throw new Error('Login failed')
+      if (!user) throw new Error('Login failed - no user info')
       dispatch('success', { user, token })
     } catch (err) {
       error = err.message
@@ -115,9 +128,23 @@
       })
       
       const token = res?.access_token || res?.token
-      const user = res?.user || await apiCall('GET', '/auth/me')
+      
+      if (!token) throw new Error('Signup failed - no token returned')
+      
+      // Fetch user with the token we just got
+      let user = res?.user
+      if (!user) {
+        const meRes = await fetch('/api/v1/auth/me', {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
+        })
+        if (!meRes.ok) throw new Error('Failed to get user info')
+        user = await meRes.json()
+      }
 
-      if (!token || !user) throw new Error('Signup failed')
+      if (!user) throw new Error('Signup failed - no user info')
       dispatch('success', { user, token })
     } catch (err) {
       error = err.message

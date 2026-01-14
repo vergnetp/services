@@ -5551,6 +5551,109 @@ async def list_cloudflare_zones(
         raise HTTPException(500, f"Failed to list zones: {str(e)}")
 
 
+@router.post("/cloudflare/cleanup")
+async def cleanup_orphaned_dns(
+    do_token: str = Query(..., description="DigitalOcean token"),
+    cloudflare_token: str = Query(..., description="Cloudflare API token"),
+    zone_name: str = Query(..., description="Cloudflare zone/domain name"),
+    dry_run: bool = Query(False, description="If true, only report what would be deleted"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Clean up orphaned DNS records.
+    
+    Compares Cloudflare A records against active DigitalOcean droplet IPs.
+    Deletes DNS records pointing to IPs that no longer exist.
+    
+    This helps prevent DNS clutter from old deployments.
+    """
+    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError, DOClient
+    
+    try:
+        # Get all active droplet IPs from DO
+        do_client = DOClient(do_token)
+        droplets = do_client.list_droplets()
+        active_ips = set()
+        for d in droplets:
+            if d.ip:
+                active_ips.add(d.ip)
+            # Also check networks if ip not set
+            if hasattr(d, 'networks') and d.networks:
+                for net in d.networks.get('v4', []):
+                    if net.get('type') == 'public':
+                        active_ips.add(net.get('ip_address'))
+        
+        # Get all DNS records from Cloudflare
+        cf = CloudflareClient(cloudflare_token)
+        zones = cf.list_zones()
+        zone = next((z for z in zones if z.get("name") == zone_name), None)
+        if not zone:
+            raise HTTPException(404, f"Zone '{zone_name}' not found")
+        
+        zone_id = zone["id"]
+        records = cf.list_dns_records(zone_id)
+        
+        # Find orphaned A records (IPs not in active droplets)
+        # ONLY consider proxied records - DNS-only records are manual entries
+        orphaned = []
+        kept = []
+        skipped_dns_only = []
+        for record in records:
+            if record.get("type") != "A":
+                continue
+            
+            ip = record.get("content")
+            proxied = record.get("proxied", False)
+            record_info = {
+                "id": record.get("id"),
+                "name": record.get("name"),
+                "ip": ip,
+                "proxied": proxied,
+            }
+            
+            # Skip DNS-only records (not proxied) - these are manual entries
+            if not proxied:
+                skipped_dns_only.append(record_info)
+                continue
+            
+            if ip not in active_ips:
+                orphaned.append(record_info)
+            else:
+                kept.append(record_info)
+        
+        # Delete orphaned records (unless dry_run)
+        deleted = []
+        failed = []
+        if not dry_run:
+            for record in orphaned:
+                try:
+                    cf.delete_dns_record(zone_id, record["id"])
+                    deleted.append(record)
+                except Exception as e:
+                    record["error"] = str(e)
+                    failed.append(record)
+        
+        return {
+            "success": True,
+            "dry_run": dry_run,
+            "zone": zone_name,
+            "active_droplet_ips": list(active_ips),
+            "kept_records": len(kept),
+            "skipped_dns_only": len(skipped_dns_only),
+            "orphaned_records": len(orphaned),
+            "deleted": deleted if not dry_run else orphaned,  # In dry_run, show what would be deleted
+            "failed": failed,
+            "message": f"{'Would delete' if dry_run else 'Deleted'} {len(orphaned)} orphaned DNS record(s), skipped {len(skipped_dns_only)} DNS-only",
+        }
+        
+    except CloudflareError as e:
+        raise HTTPException(400, f"Cloudflare error: {e.message}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"DNS cleanup failed: {str(e)}")
+
+
 # ==========================================
 # Nginx Load Balancer (FREE, with health checks)
 # ==========================================

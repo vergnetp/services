@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { theme } from '../../stores/app.js'
+  import { theme, serversStore, projectsStore, snapshotsStore, deploymentsStore } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'
   import { setDoToken, getDoToken, setCfToken, getCfToken } from '../../stores/auth.js'
@@ -75,6 +75,12 @@
     input.value = ''
     toasts.success('DigitalOcean token saved')
     await checkDoToken()
+    
+    // Refresh all stores now that DO token is available
+    serversStore.refresh()
+    projectsStore.refresh()
+    snapshotsStore.refresh()
+    deploymentsStore.refresh()
   }
   
   async function saveCfToken(e) {

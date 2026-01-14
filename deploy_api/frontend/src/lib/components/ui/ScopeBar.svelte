@@ -1,11 +1,23 @@
 <script>
   import { createEventDispatcher } from 'svelte'
-  import { scope, projects, servers, containers, containersStore } from '../../stores/app.js'
+  import { scope, projects, servers, containers, containersStore, deploymentHistory } from '../../stores/app.js'
 
   export let showTail = false
   export let showContainer = false
 
   const dispatch = createEventDispatcher()
+  
+  // Combine projects from infra + deployment history
+  $: allProjects = [...new Set([
+    ...($projects || []),
+    ...($deploymentHistory || []).map(d => d.project).filter(Boolean)
+  ])].sort()
+  
+  // Combine environments from deployment history + standard list
+  $: allEnvs = [...new Set([
+    'prod', 'staging', 'uat', 'test', 'dev',
+    ...($deploymentHistory || []).map(d => d.environment).filter(Boolean)
+  ])].sort()
 
   function setScope(key, value) {
     scope.update(s => ({ ...s, [key]: value }))
@@ -49,7 +61,7 @@
       <label>Project:</label>
       <select value={$scope.project} on:change={(e)=>setScope("project", e.target.value)}>
         <option value="">All</option>
-        {#each $projects || [] as project}
+        {#each allProjects as project}
           <option value={project}>{project}</option>
         {/each}
       </select>
@@ -59,9 +71,9 @@
       <label>Env:</label>
       <select value={$scope.env} on:change={(e)=>setScope("env", e.target.value)}>
         <option value="">All</option>
-        <option value="prod">prod</option>
-        <option value="staging">staging</option>
-        <option value="dev">dev</option>
+        {#each allEnvs as env}
+          <option value={env}>{env}</option>
+        {/each}
       </select>
     </div>
     

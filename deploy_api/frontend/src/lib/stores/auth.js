@@ -17,8 +17,10 @@ function deleteCookie(name) {
 
 // Auth state
 function createAuthStore() {
+  const storedToken = getCookie('jwt_token')
+  
   const { subscribe, set, update } = writable({
-    token: getCookie('jwt_token'),
+    token: storedToken,
     user: null,
     loading: false,
     error: null

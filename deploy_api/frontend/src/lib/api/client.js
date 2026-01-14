@@ -34,13 +34,19 @@ function buildRequest(path, options = {}) {
   
   // Don't add auth header for auth endpoints (login, register) or if skipAuth option
   const isAuthEndpoint = path.startsWith('/auth/login') || path.startsWith('/auth/register')
-  if (authState.token && !isAuthEndpoint && !options.skipAuth) {
+  
+  if (authState.token && authState.token.trim() !== '' && !isAuthEndpoint && !options.skipAuth) {
     headers['Authorization'] = `Bearer ${authState.token}`
   }
   
   // Add DO token for endpoints that need it
   let url = API_BASE + path
-  const needsDoToken = !options.skipDoToken && INFRA_NEEDS_DO_TOKEN.some(p => path.startsWith(p))
+  
+  // Check if this endpoint needs DO token - more permissive matching
+  const needsDoToken = !options.skipDoToken && (
+    path.startsWith('/infra/') || 
+    INFRA_NEEDS_DO_TOKEN.some(p => path.startsWith(p))
+  )
   
   if (needsDoToken) {
     const doToken = getDoToken()
@@ -284,7 +290,8 @@ export async function register(email, password) {
 export async function initAuth() {
   const authState = get(auth)
   
-  if (!authState.token) {
+  // Check for valid token (not null, not empty)
+  if (!authState.token || authState.token.trim() === '') {
     return false
   }
   

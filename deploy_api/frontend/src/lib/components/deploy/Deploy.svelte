@@ -1,5 +1,5 @@
 <script>
-  import { onMount, tick } from 'svelte'
+  import { onMount } from 'svelte'
   import { servers, snapshots, serversStore, snapshotsStore } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api, apiStreamMultipart, getDoToken, getCfToken } from '../../api/client.js'
@@ -111,6 +111,11 @@
   ]
   let excludePatternsText = excludePatterns.join('\n')
   
+  // Collapsible sections (collapsed by default for advanced options)
+  let showEnvVars = false
+  let showServiceConfig = false
+  let showProvisioning = false
+  
   const DEFAULT_EXCLUDE_PATTERNS = [...excludePatterns]
   const environments = ['dev', 'test', 'staging', 'uat', 'prod']
   
@@ -119,8 +124,6 @@
     // This fixes "servers.set is not a function" and ensures consistent refresh behavior.
     serversStore.refresh().catch(() => {})
     snapshotsStore.refresh().catch(() => {})
-    // Wait a tick so $snapshots is available before trying to auto-select.
-    autoSelectSnapshot()
     loadRegionsAndSizes()
   })
   
@@ -129,17 +132,13 @@
     loadDeployConfigSilent()
   }
   
-  async function autoSelectSnapshot() {
-    try {
-      await tick()
-      // Auto-select first snapshot if available
-      if ($snapshots?.length > 0 && !selectedSnapshot) {
-        selectedSnapshot = $snapshots[0].id || $snapshots[0].name
-      }
-    } catch (err) {
-      // non-fatal
-      console.warn('Snapshot auto-select failed:', err)
-    }
+  // Auto-select base snapshot when snapshots become available
+  $: if ($snapshots?.length > 0 && !selectedSnapshot) {
+    // Prefer snapshots with "base" in the name, otherwise first one
+    const baseSnapshot = $snapshots.find(s => 
+      (s.name || '').toLowerCase().includes('base')
+    )
+    selectedSnapshot = baseSnapshot?.id || baseSnapshot?.name || $snapshots[0].id || $snapshots[0].name
   }
   
   async function loadRegionsAndSizes() {
@@ -1452,98 +1451,114 @@ CMD ["python", "main.py"]
           <small>Port your app listens on inside the container</small>
         </div>
         
-        <!-- Environment Variables -->
-        <div class="form-group">
-          <label for="deploy-envvars">Environment Variables</label>
-          <textarea 
-            id="deploy-envvars"
-            bind:value={envVars}
-            rows="3"
-            placeholder="KEY=value&#10;ANOTHER_KEY=value"
-          ></textarea>
-          <small>One per line: KEY=value</small>
-        </div>
-        
-        <!-- Service Configuration -->
-        <div class="service-config">
-          <div class="config-header">
-            <span>🔧</span>
-            <span>Service Configuration</span>
-          </div>
-          
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={autoEnv}>
-            <span>Auto-inject service discovery</span>
-          </label>
-          <small>Injects DATABASE_URL, REDIS_URL, etc. based on dependencies</small>
-          
-          {#if autoEnv}
-            <div class="dependencies">
-              <label>Dependencies:</label>
-              <div class="dep-list">
-                <label class="dep-item">
-                  <input type="checkbox" bind:checked={dependencies.postgres}>
-                  🐘 PostgreSQL
-                </label>
-                <label class="dep-item">
-                  <input type="checkbox" bind:checked={dependencies.redis}>
-                  ⚡ Redis
-                </label>
-                <label class="dep-item">
-                  <input type="checkbox" bind:checked={dependencies.mysql}>
-                  🐬 MySQL
-                </label>
-                <label class="dep-item">
-                  <input type="checkbox" bind:checked={dependencies.mongo}>
-                  🍃 MongoDB
-                </label>
-              </div>
+        <!-- Environment Variables (collapsible) -->
+        <div class="collapsible-section" class:expanded={showEnvVars}>
+          <button type="button" class="section-toggle" on:click={() => showEnvVars = !showEnvVars}>
+            <span class="toggle-icon">{showEnvVars ? '▼' : '▶'}</span>
+            <span>Environment Variables</span>
+            {#if envVars.trim()}
+              <Badge variant="info">{envVars.trim().split('\n').filter(l => l.trim()).length} vars</Badge>
+            {/if}
+          </button>
+          {#if showEnvVars}
+            <div class="section-content">
+              <textarea 
+                id="deploy-envvars"
+                bind:value={envVars}
+                rows="3"
+                placeholder="KEY=value&#10;ANOTHER_KEY=value"
+              ></textarea>
+              <small>One per line: KEY=value</small>
             </div>
           {/if}
-          
-          <div class="config-divider"></div>
-          
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={persistData}>
-            <span>💾 Persist data (mount volume)</span>
-          </label>
-          <small>Mounts /data volume for databases and stateful services</small>
-          
-          <div class="config-divider"></div>
-          
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={setupDomain}>
-            <span>🌐 Setup domain (Cloudflare)</span>
-          </label>
-          <small>Auto-provision subdomain with SSL via Cloudflare</small>
-          
-          {#if setupDomain}
-            <div class="domain-config">
-              <div class="domain-preview">
-                <label>Domain Preview:</label>
-                <code>{domainPreview || 'app-project-env.domain.com'}</code>
-              </div>
+        </div>
+        
+        <!-- Service Configuration (collapsible) -->
+        <div class="collapsible-section" class:expanded={showServiceConfig}>
+          <button type="button" class="section-toggle" on:click={() => showServiceConfig = !showServiceConfig}>
+            <span class="toggle-icon">{showServiceConfig ? '▼' : '▶'}</span>
+            <span>🔧 Service Configuration</span>
+            {#if setupDomain || Object.values(dependencies).some(d => d)}
+              <Badge variant="info">configured</Badge>
+            {/if}
+          </button>
+          {#if showServiceConfig}
+            <div class="section-content service-config">
+              <label class="checkbox-label">
+                <input type="checkbox" bind:checked={autoEnv}>
+                <span>Auto-inject service discovery</span>
+              </label>
+              <small>Injects DATABASE_URL, REDIS_URL, etc. based on dependencies</small>
               
-              <div class="form-group">
-                <label for="base-domain">Base Domain</label>
-                <input 
-                  id="base-domain"
-                  type="text" 
-                  bind:value={baseDomain}
-                  placeholder="example.com"
-                >
-              </div>
+              {#if autoEnv}
+                <div class="dependencies">
+                  <label>Dependencies:</label>
+                  <div class="dep-list">
+                    <label class="dep-item">
+                      <input type="checkbox" bind:checked={dependencies.postgres}>
+                      🐘 PostgreSQL
+                    </label>
+                    <label class="dep-item">
+                      <input type="checkbox" bind:checked={dependencies.redis}>
+                      ⚡ Redis
+                    </label>
+                    <label class="dep-item">
+                      <input type="checkbox" bind:checked={dependencies.mysql}>
+                      🐬 MySQL
+                    </label>
+                    <label class="dep-item">
+                      <input type="checkbox" bind:checked={dependencies.mongo}>
+                      🍃 MongoDB
+                    </label>
+                  </div>
+                </div>
+              {/if}
               
-              <div class="form-group">
-                <label for="domain-aliases">Custom Aliases <small>(optional)</small></label>
-                <input 
-                  id="domain-aliases"
-                  type="text" 
-                  bind:value={domainAliases}
-                  placeholder="api.myclient.com, app.example.com"
-                >
-                <small>Comma-separated custom domains (requires DNS setup)</small>
-              </div>
+              <div class="config-divider"></div>
+              
+              <label class="checkbox-label">
+                <input type="checkbox" bind:checked={persistData}>
+                <span>💾 Persist data (mount volume)</span>
+              </label>
+              <small>Mounts /data volume for databases and stateful services</small>
+              
+              <div class="config-divider"></div>
+              
+              <label class="checkbox-label">
+                <input type="checkbox" bind:checked={setupDomain}>
+                <span>🌐 Setup domain (Cloudflare)</span>
+              </label>
+              <small>Auto-provision subdomain with SSL via Cloudflare</small>
+              
+              {#if setupDomain}
+                <div class="domain-config">
+                  <div class="domain-preview">
+                    <label>Domain Preview:</label>
+                    <code>{domainPreview || 'app-project-env.domain.com'}</code>
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="base-domain">Base Domain</label>
+                    <input 
+                      id="base-domain"
+                      type="text" 
+                      bind:value={baseDomain}
+                      placeholder="example.com"
+                    >
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="domain-aliases">Custom Aliases <small>(optional)</small></label>
+                    <input 
+                      id="domain-aliases"
+                      type="text" 
+                      bind:value={domainAliases}
+                      placeholder="api.myclient.com, app.example.com"
+                    >
+                    <small>Comma-separated custom domains (requires DNS setup)</small>
+                  </div>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -1585,46 +1600,57 @@ CMD ["python", "main.py"]
             {/if}
           </div>
           
-          <!-- Provisioning options - always visible, above new servers -->
-          <div class="provisioning-config">
-            <div class="form-row three-col">
-              <div class="form-group">
-                <label for="snapshot-select">Snapshot {#if additionalServers > 0}*{/if}</label>
-                <select id="snapshot-select" bind:value={selectedSnapshot}>
-                  <option value="">Select snapshot...</option>
-                  {#each $snapshots || [] as snap}
-                    <option value={snap.id}>{snap.name}</option>
-                  {/each}
-                </select>
+          <!-- Provisioning options (collapsible) -->
+          <div class="collapsible-section" class:expanded={showProvisioning}>
+            <button type="button" class="section-toggle" on:click={() => showProvisioning = !showProvisioning}>
+              <span class="toggle-icon">{showProvisioning ? '▼' : '▶'}</span>
+              <span>➕ New Server Provisioning</span>
+              {#if additionalServers > 0}
+                <Badge variant="warning">{additionalServers} new</Badge>
+              {/if}
+            </button>
+            {#if showProvisioning}
+              <div class="section-content provisioning-config">
+                <div class="form-row three-col">
+                  <div class="form-group">
+                    <label for="snapshot-select">Snapshot {#if additionalServers > 0}*{/if}</label>
+                    <select id="snapshot-select" bind:value={selectedSnapshot}>
+                      <option value="">Select snapshot...</option>
+                      {#each $snapshots || [] as snap}
+                        <option value={snap.id}>{snap.name}</option>
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="region-select">Region</label>
+                    <select id="region-select" bind:value={selectedRegion}>
+                      {#each regions || [] as region}
+                        <option value={region.slug}>{region.name || region.slug}</option>
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="size-select">Size</label>
+                    <select id="size-select" bind:value={selectedSize}>
+                      {#each sizes || [] as size}
+                        <option value={size.slug}>{size.description || size.slug}</option>
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+                
+                <div class="new-servers">
+                  <span>New servers to provision:</span>
+                  <div class="number-spinner">
+                    <button type="button" on:click={() => additionalServers = Math.max(0, additionalServers - 1)}>−</button>
+                    <input type="number" bind:value={additionalServers} min="0" max="10">
+                    <button type="button" on:click={() => additionalServers = Math.min(10, additionalServers + 1)}>+</button>
+                  </div>
+                  {#if additionalServers > 0 && !selectedSnapshot}
+                    <small class="warning">⚠️ Select a snapshot for new servers</small>
+                  {/if}
+                </div>
               </div>
-              <div class="form-group">
-                <label for="region-select">Region</label>
-                <select id="region-select" bind:value={selectedRegion}>
-                  {#each regions || [] as region}
-                    <option value={region.slug}>{region.name || region.slug}</option>
-                  {/each}
-                </select>
-              </div>
-              <div class="form-group">
-                <label for="size-select">Size</label>
-                <select id="size-select" bind:value={selectedSize}>
-                  {#each sizes || [] as size}
-                    <option value={size.slug}>{size.description || size.slug}</option>
-                  {/each}
-                </select>
-              </div>
-            </div>
-          </div>
-          
-          <div class="new-servers">
-            <span>➕ New servers:</span>
-            <div class="number-spinner">
-              <button type="button" on:click={() => additionalServers = Math.max(0, additionalServers - 1)}>−</button>
-              <input type="number" bind:value={additionalServers} min="0" max="10">
-              <button type="button" on:click={() => additionalServers = Math.min(10, additionalServers + 1)}>+</button>
-            </div>
-            {#if additionalServers > 0 && !selectedSnapshot}
-              <small class="warning">⚠️ Select a snapshot for new servers</small>
             {/if}
           </div>
         </div>
@@ -1796,6 +1822,69 @@ CMD ["python", "main.py"]
     gap: 16px;
   }
   
+  /* Collapsible Sections */
+  .collapsible-section {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+  }
+  
+  .collapsible-section.expanded {
+    background: var(--bg-tertiary);
+  }
+  
+  .section-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease;
+  }
+  
+  .section-toggle:hover {
+    background: var(--bg-hover);
+  }
+  
+  .toggle-icon {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    width: 12px;
+  }
+  
+  .section-content {
+    padding: 16px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  
+  .section-content textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text);
+    font-size: 0.875rem;
+    resize: vertical;
+  }
+  
+  .section-content small {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: var(--text-muted2);
+  }
+  
   .form-row {
     display: grid;
     gap: 12px;
@@ -1807,14 +1896,25 @@ CMD ["python", "main.py"]
   }
   
   .provisioning-config {
-    padding: 12px;
-    background: var(--bg-secondary);
-    border-top: 1px solid var(--border);
+    padding: 0;
   }
   
+  .provisioning-config .form-row {
+    margin-bottom: 12px;
+  }
+
   .provisioning-config select {
     min-width: 0;
     width: 100%;
+  }
+  
+  .provisioning-config .new-servers {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
   }
   
   .form-group {
