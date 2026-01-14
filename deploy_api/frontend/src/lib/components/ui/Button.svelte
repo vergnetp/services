@@ -5,11 +5,16 @@
   export let loading = false
   export let type = 'button'
   export let href = null
+  // Allow consumers to pass standard attributes without warnings
+  export let title = undefined
+  export let ariaLabel = undefined
 </script>
 
 {#if href}
   <a 
     {href}
+    {title}
+    aria-label={ariaLabel}
     class="btn btn-{variant} btn-{size}"
     class:disabled
     on:click
@@ -22,6 +27,8 @@
 {:else}
   <button
     {type}
+    {title}
+    aria-label={ariaLabel}
     class="btn btn-{variant} btn-{size}"
     {disabled}
     on:click

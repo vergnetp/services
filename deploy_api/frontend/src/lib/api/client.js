@@ -17,6 +17,10 @@ const INFRA_NEEDS_DO_TOKEN = [
   '/infra/agent',
   '/infra/architecture',
   '/infra/fleet',
+  '/infra/projects',
+  '/infra/containers',
+  '/infra/services',
+  '/infra/deployments',
 ]
 
 /**
@@ -27,7 +31,10 @@ function buildRequest(path, options = {}) {
   const authState = get(auth)
   
   const headers = { 'Content-Type': 'application/json' }
-  if (authState.token) {
+  
+  // Don't add auth header for auth endpoints (login, register) or if skipAuth option
+  const isAuthEndpoint = path.startsWith('/auth/login') || path.startsWith('/auth/register')
+  if (authState.token && !isAuthEndpoint && !options.skipAuth) {
     headers['Authorization'] = `Bearer ${authState.token}`
   }
   

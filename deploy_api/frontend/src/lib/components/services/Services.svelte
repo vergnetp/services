@@ -118,7 +118,7 @@
           <label for="svc-server">Target Server *</label>
           <select id="svc-server" bind:value={targetServer} required>
             <option value="">Select server...</option>
-            {#each $servers as server}
+            {#each $servers || [] as server}
               {@const ip = server.ip || server.networks?.v4?.[0]?.ip_address}
               {#if ip}
                 <option value={ip}>{server.name || 'unnamed'} ({ip})</option>

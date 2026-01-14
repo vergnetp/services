@@ -128,7 +128,7 @@
         <div class="empty-state">
           <p>Loading...</p>
         </div>
-      {:else if $servers.length === 0}
+      {:else if !$servers || $servers.length === 0}
         <div class="empty-state">
           <p>No servers found. Provision one to get started.</p>
         </div>

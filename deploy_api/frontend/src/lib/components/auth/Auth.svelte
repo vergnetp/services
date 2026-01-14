@@ -26,6 +26,7 @@
 -->
 <script>
   import { createEventDispatcher } from 'svelte'
+  import { api } from '../../api/client.js'
   
   // Props
   export let title = 'Welcome'
@@ -53,19 +54,11 @@
     error = null
   }
   
+  // NOTE: We route all auth through the shared API client so it works in
+  // both real backend mode and mock mode.
   async function apiCall(method, path, data) {
-    const res = await fetch(apiBase + path, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: data ? JSON.stringify(data) : undefined
-    })
-    
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Request failed' }))
-      throw new Error(err.detail || err.error || err.message || 'Request failed')
-    }
-    
-    return res.json()
+    // Keep prop for compatibility, but ignore apiBase here.
+    return await api(method, path, data, { skipDoToken: true })
   }
   
   async function handleLogin(e) {
@@ -74,19 +67,20 @@
     error = null
     
     try {
-      const res = await apiCall('POST', '/auth/login', { 
-        username: loginEmail, 
-        password: loginPassword 
+      const res = await apiCall('POST', '/auth/login', {
+        username: loginEmail,
+        password: loginPassword
       })
-      
-      const token = res.access_token
-      
-      // Get user info
-      const userRes = await fetch(apiBase + '/auth/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const user = await userRes.json()
-      
+
+      // Support both shapes:
+      // - { access_token, token_type }
+      // - { token, user }
+      const token = res?.access_token || res?.token
+
+      // If API returns the user already (mock could), use it; otherwise fetch /auth/me
+      const user = res?.user || await apiCall('GET', '/auth/me')
+
+      if (!token || !user) throw new Error('Login failed')
       dispatch('success', { user, token })
     } catch (err) {
       error = err.message
@@ -120,14 +114,10 @@
         password: signupPassword 
       })
       
-      const token = res.access_token
-      
-      // Get user info
-      const userRes = await fetch(apiBase + '/auth/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const user = await userRes.json()
-      
+      const token = res?.access_token || res?.token
+      const user = res?.user || await apiCall('GET', '/auth/me')
+
+      if (!token || !user) throw new Error('Signup failed')
       dispatch('success', { user, token })
     } catch (err) {
       error = err.message

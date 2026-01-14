@@ -26,17 +26,17 @@
     return date.toLocaleTimeString()
   }
   
-  $: selectedServer = $servers.find(s => 
+  $: selectedServer = ($servers || []).find(s => 
     (s.ip || s.networks?.v4?.[0]?.ip_address) === $scope.server
   )
   
   // Fleet metrics (derived)
   $: fleetMetrics = fleetData ? {
-    serverCount: fleetData.summary?.total || $servers.length,
+    serverCount: fleetData.summary?.total || ($servers || []).length,
     containerCount: fleetData.servers?.reduce((sum, s) => sum + (s.containers?.length || 0), 0) || 0,
     monthlyCost: (fleetData.summary?.total || 0) * 12,
     health: fleetData.summary?.healthy === fleetData.summary?.total ? 'healthy' : 'degraded'
-  } : { serverCount: $servers.length, containerCount: 0, monthlyCost: 0, health: 'unknown' }
+  } : { serverCount: ($servers || []).length, containerCount: 0, monthlyCost: 0, health: 'unknown' }
   
   // Server info from fleet health (shows container health, not CPU)
   $: serverHealth = (fleetData?.servers || []).map(s => ({

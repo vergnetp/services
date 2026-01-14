@@ -1,34 +1,42 @@
 <script>
-  import { createEventDispatcher, onMount } from 'svelte'
+  import { createEventDispatcher } from 'svelte'
   import { scope, projects, servers, containers, containersStore } from '../../stores/app.js'
-  
+
   export let showTail = false
   export let showContainer = false
-  
+
   const dispatch = createEventDispatcher()
-  
+
+  function setScope(key, value) {
+    scope.update(s => ({ ...s, [key]: value }))
+    dispatch('change')
+  }
+
+  function handleServerChange(value) {
+    // Reset container when server changes
+    scope.update(s => ({ ...s, server: value, container: '' }))
+    dispatch('change')
+  }
+
+  function toggleTail(checked) {
+    scope.update(s => ({ ...s, tail: checked }))
+    dispatch('change')
+  }
+
   // Fetch containers when server changes
   $: if ($scope.server) {
     containersStore.fetch({ server: $scope.server })
   } else {
     containersStore.clear()
-    $scope.container = ''
+    // ensure container reset via store update (do NOT mutate $scope)
+    if ($scope.container) scope.update(s => ({ ...s, container: '' }))
   }
-  
-  function handleChange() {
-    dispatch('change', $scope)
-  }
-  
-  function handleServerChange() {
-    // Reset container when server changes
-    $scope.container = ''
-    handleChange()
-  }
-  
+
   function refresh() {
     dispatch('refresh')
   }
 </script>
+
 
 <div class="scope-bar glass">
   <div class="scope-bar-inner">
@@ -39,9 +47,9 @@
     
     <div class="scope-field">
       <label>Project:</label>
-      <select bind:value={$scope.project} on:change={handleChange}>
+      <select value={$scope.project} on:change={(e)=>setScope("project", e.target.value)}>
         <option value="">All</option>
-        {#each $projects as project}
+        {#each $projects || [] as project}
           <option value={project}>{project}</option>
         {/each}
       </select>
@@ -49,7 +57,7 @@
     
     <div class="scope-field">
       <label>Env:</label>
-      <select bind:value={$scope.env} on:change={handleChange}>
+      <select value={$scope.env} on:change={(e)=>setScope("env", e.target.value)}>
         <option value="">All</option>
         <option value="prod">prod</option>
         <option value="staging">staging</option>
@@ -59,9 +67,9 @@
     
     <div class="scope-field">
       <label>Server:</label>
-      <select bind:value={$scope.server} on:change={handleServerChange}>
+      <select value={$scope.server} on:change={(e)=>handleServerChange(e.target.value)}>
         <option value="">(Fleet)</option>
-        {#each $servers as server}
+        {#each $servers || [] as server}
           {@const ip = server.ip || server.networks?.v4?.[0]?.ip_address}
           {#if ip}
             <option value={ip}>{server.name || 'unnamed'} ({ip})</option>
@@ -73,9 +81,9 @@
     {#if showContainer && $scope.server}
       <div class="scope-field">
         <label>Container:</label>
-        <select bind:value={$scope.container} on:change={handleChange}>
+        <select value={$scope.container} on:change={(e)=>setScope("container", e.target.value)}>
           <option value="">(All)</option>
-          {#each $containers as container}
+          {#each $containers || [] as container}
             <option value={container.name}>{container.name}</option>
           {/each}
         </select>
@@ -84,7 +92,7 @@
     
     <div class="scope-field">
       <label>Last</label>
-      <select bind:value={$scope.range} on:change={handleChange}>
+      <select value={$scope.range} on:change={(e)=>setScope("range", e.target.value)}>
         <option value="15m">15m</option>
         <option value="1h">1h</option>
         <option value="6h">6h</option>
@@ -104,7 +112,7 @@
   
   {#if showTail}
     <label class="tail-toggle">
-      <input type="checkbox" bind:checked={$scope.tail} on:change={handleChange}>
+      <input type="checkbox" checked={$scope.tail} on:change={(e)=>toggleTail(e.target.checked)}>
       Tail
     </label>
   {/if}

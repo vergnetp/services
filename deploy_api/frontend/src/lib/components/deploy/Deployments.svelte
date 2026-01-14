@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { deploymentsStore } from '../../stores/app.js'
+  import { deploymentsStore, scope } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api, apiStream, getDoToken } from '../../api/client.js'
   import Card from '../ui/Card.svelte'
@@ -37,6 +37,7 @@
   let logsLoading = false
   
   // Processed deployments (local)
+  let allDeployments = []
   let deployments = []
   
   // Subscribe to store loading state
@@ -51,7 +52,25 @@
   
   // Process deployments when data changes
   $: if (storeState.data) {
-    deployments = processDeployments(storeState.data)
+    allDeployments = processDeployments(storeState.data)
+  }
+  
+  // Filter deployments based on scope
+  $: deployments = filterDeployments(allDeployments, $scope)
+  
+  function filterDeployments(data, scopeFilter) {
+    if (!data) return []
+    return data.filter(d => {
+      // Filter by project
+      if (scopeFilter.project && d.project !== scopeFilter.project) {
+        return false
+      }
+      // Filter by environment
+      if (scopeFilter.env && d.environment !== scopeFilter.env) {
+        return false
+      }
+      return true
+    })
   }
   
   function processDeployments(data) {

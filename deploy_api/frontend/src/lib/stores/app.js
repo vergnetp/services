@@ -21,7 +21,7 @@ export const SCOPE_BAR_TABS = ['infra', 'metrics', 'logs', 'deployments']
 
 // Servers list
 export const serversStore = createApiStore('/infra/servers', {
-  transform: (data) => data.servers || data || [],
+  transform: (data) => data?.servers || data || [],
   refreshInterval: 60000,
   revalidateOnFocus: true,
   initialData: [],
@@ -29,21 +29,21 @@ export const serversStore = createApiStore('/infra/servers', {
 
 // Projects list
 export const projectsStore = createApiStore('/infra/projects', {
-  transform: (data) => data.projects || [],
+  transform: (data) => data?.projects || [],
   refreshInterval: 120000,
   initialData: [],
 })
 
 // Snapshots list
 export const snapshotsStore = createApiStore('/infra/snapshots', {
-  transform: (data) => data.snapshots || [],
+  transform: (data) => data?.snapshots || [],
   refreshInterval: 60000,
   initialData: [],
 })
 
 // Deployment history
 export const deploymentsStore = createApiStore('/infra/deployments/history', {
-  transform: (data) => data.deployments || [],
+  transform: (data) => data?.deployments || [],
   refreshInterval: 30000,
   initialData: [],
 })
@@ -54,8 +54,8 @@ export const containersStore = createParamStore(
   {
     transform: (data) => {
       // Docker ps returns containers with Names field
-      const containers = data.containers || data || []
-      return containers.map(c => ({
+      const containers = data?.containers || data || []
+      return (Array.isArray(containers) ? containers : []).map(c => ({
         id: c.ID || c.Id || c.id,
         name: c.Names || c.Name || c.name || 'unknown',
         image: c.Image || c.image,
@@ -71,11 +71,11 @@ export const vpcs = writable({})
 
 // ============ DERIVED STORES (for easy component access) ============
 
-export const servers = derived(serversStore, $s => $s.data || [])
-export const projects = derived(projectsStore, $s => $s.data || [])
-export const snapshots = derived(snapshotsStore, $s => $s.data || [])
-export const deploymentHistory = derived(deploymentsStore, $s => $s.data || [])
-export const containers = derived(containersStore, $s => $s.data || [])
+export const servers = derived(serversStore, $s => $s?.data || [])
+export const projects = derived(projectsStore, $s => $s?.data || [])
+export const snapshots = derived(snapshotsStore, $s => $s?.data || [])
+export const deploymentHistory = derived(deploymentsStore, $s => $s?.data || [])
+export const containers = derived(containersStore, $s => $s?.data || [])
 
 // Agent version (keep in sync with agent_code.py)
 export const EXPECTED_AGENT_VERSION = '1.9.5'

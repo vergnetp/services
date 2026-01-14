@@ -1,6 +1,6 @@
 <script>
-  import { onMount } from 'svelte'
-  import { servers, snapshots } from '../../stores/app.js'
+  import { onMount, tick } from 'svelte'
+  import { servers, snapshots, serversStore, snapshotsStore } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api, apiStreamMultipart, getDoToken, getCfToken } from '../../api/client.js'
   import { auth } from '../../stores/auth.js'
@@ -57,8 +57,9 @@
   let regions = []
   let sizes = []
   
-  // Filter servers by selected region
-  $: filteredServers = $servers.filter(s => !selectedRegion || s.region === selectedRegion)
+  // Filter servers by selected region (with safe default)
+  let filteredServers = []
+  $: filteredServers = ($servers || []).filter(s => !selectedRegion || s.region === selectedRegion)
   
   // Deployment state
   let deploying = false
@@ -114,8 +115,12 @@
   const environments = ['dev', 'test', 'staging', 'uat', 'prod']
   
   onMount(() => {
-    loadServersForDeploy()
-    loadSnapshots()
+    // Use SWR stores (serversStore/snapshotsStore) so we don't mutate derived stores.
+    // This fixes "servers.set is not a function" and ensures consistent refresh behavior.
+    serversStore.refresh().catch(() => {})
+    snapshotsStore.refresh().catch(() => {})
+    // Wait a tick so $snapshots is available before trying to auto-select.
+    autoSelectSnapshot()
     loadRegionsAndSizes()
   })
   
@@ -124,26 +129,16 @@
     loadDeployConfigSilent()
   }
   
-  async function loadServersForDeploy() {
+  async function autoSelectSnapshot() {
     try {
-      // Token is automatically added by api() client
-      const data = await api('GET', '/infra/servers')
-      servers.set(data.servers || data || [])
-    } catch (err) {
-      console.error('Failed to load servers:', err)
-    }
-  }
-  
-  async function loadSnapshots() {
-    try {
-      const data = await api('GET', '/infra/snapshots')
-      snapshots.set(data.snapshots || data || [])
+      await tick()
       // Auto-select first snapshot if available
-      if ($snapshots.length > 0 && !selectedSnapshot) {
-        selectedSnapshot = $snapshots[0].id
+      if ($snapshots?.length > 0 && !selectedSnapshot) {
+        selectedSnapshot = $snapshots[0].id || $snapshots[0].name
       }
     } catch (err) {
-      console.error('Failed to load snapshots:', err)
+      // non-fatal
+      console.warn('Snapshot auto-select failed:', err)
     }
   }
   
@@ -336,7 +331,7 @@
   function selectAllServers(select) {
     if (select) {
       // Only select servers in the current region filter
-      filteredServers.forEach(s => {
+      (filteredServers || []).forEach(s => {
         const ip = s.ip || s.networks?.v4?.[0]?.ip_address
         if (ip) selectedServers.add(ip)
       })
@@ -1567,7 +1562,7 @@ CMD ["python", "main.py"]
           </div>
           
           <div class="server-list">
-            {#if filteredServers.length === 0}
+            {#if !filteredServers || filteredServers.length === 0}
               <div class="empty">No servers in {selectedRegion || 'any region'}</div>
             {:else}
               {#each filteredServers as server}
@@ -1597,7 +1592,7 @@ CMD ["python", "main.py"]
                 <label for="snapshot-select">Snapshot {#if additionalServers > 0}*{/if}</label>
                 <select id="snapshot-select" bind:value={selectedSnapshot}>
                   <option value="">Select snapshot...</option>
-                  {#each $snapshots as snap}
+                  {#each $snapshots || [] as snap}
                     <option value={snap.id}>{snap.name}</option>
                   {/each}
                 </select>
@@ -1605,7 +1600,7 @@ CMD ["python", "main.py"]
               <div class="form-group">
                 <label for="region-select">Region</label>
                 <select id="region-select" bind:value={selectedRegion}>
-                  {#each regions as region}
+                  {#each regions || [] as region}
                     <option value={region.slug}>{region.name || region.slug}</option>
                   {/each}
                 </select>
@@ -1613,7 +1608,7 @@ CMD ["python", "main.py"]
               <div class="form-group">
                 <label for="size-select">Size</label>
                 <select id="size-select" bind:value={selectedSize}>
-                  {#each sizes as size}
+                  {#each sizes || [] as size}
                     <option value={size.slug}>{size.description || size.slug}</option>
                   {/each}
                 </select>

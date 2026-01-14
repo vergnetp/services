@@ -166,7 +166,7 @@
       
       {#if loading}
         <div class="empty-state">Loading...</div>
-      {:else if $snapshots.length === 0}
+      {:else if !$snapshots || $snapshots.length === 0}
         <div class="empty-state">No snapshots found</div>
       {:else}
         <div class="snapshot-list">

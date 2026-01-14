@@ -123,7 +123,7 @@
     <div slot="header" class="filters">
       <select bind:value={projectFilter} on:change={handleFilterChange}>
         <option value="">All Projects</option>
-        {#each $projects as project}
+        {#each $projects || [] as project}
           <option value={project}>{project}</option>
         {/each}
       </select>
