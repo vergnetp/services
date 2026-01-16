@@ -601,11 +601,14 @@ async def get_setup_status(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Check if base snapshot exists and is ready."""
-    from shared_libs.backend.infra.cloud import SnapshotService
+    from shared_libs.backend.infra.cloud import AsyncSnapshotService
     
     token = _get_do_token(do_token)
-    service = SnapshotService(token)
-    snapshots = service.list_snapshots()
+    service = AsyncSnapshotService(token)
+    try:
+        snapshots = await service.list_snapshots()
+    finally:
+        await service.close()
     
     # Look for base snapshot (created by us)
     base_snapshot = None
@@ -1990,8 +1993,7 @@ async def get_fleet_health(
 ):
     """Get health status of all servers in the fleet."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    from shared_libs.backend.infra.cloud.digitalocean import DOClient
-    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    from shared_libs.backend.infra.cloud import AsyncDOClient, generate_node_agent_key
     import asyncio
     
     token = do_token or _get_do_token(user.id)
@@ -2000,11 +2002,14 @@ async def get_fleet_health(
     
     api_key = generate_node_agent_key(token, str(user.id))
     
-    # Get all servers from DO (DOClient defaults to managed only)
+    # Get all servers from DO (AsyncDOClient defaults to managed only)
     try:
-        do_client = DOClient(token)
-        droplets = do_client.list_droplets()
-        servers = [{"ip": d.ip, "name": d.name, "region": d.region} for d in droplets if d.ip]
+        do_client = AsyncDOClient(token)
+        try:
+            droplets = await do_client.list_droplets()
+            servers = [{"ip": d.ip, "name": d.name, "region": d.region} for d in droplets if d.ip]
+        finally:
+            await do_client.close()
     except Exception as e:
         return {"servers": [], "summary": {"total": 0, "healthy": 0, "unhealthy": 0, "unreachable": 0}, "error": str(e)}
     
@@ -2537,14 +2542,18 @@ async def get_status(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """Get infrastructure status."""
-    from shared_libs.backend.infra.cloud import DOClient, SnapshotService
+    from shared_libs.backend.infra.cloud import AsyncDOClient, AsyncSnapshotService
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    snapshot_service = SnapshotService(token)
+    client = AsyncDOClient(token)
+    snapshot_service = AsyncSnapshotService(token)
     
-    droplets = client.list_droplets()
-    snapshots = snapshot_service.list_snapshots()
+    try:
+        droplets = await client.list_droplets()
+        snapshots = await snapshot_service.list_snapshots()
+    finally:
+        await client.close()
+        await snapshot_service.close()
     
     return {
         "servers": {
@@ -2884,17 +2893,20 @@ async def test_deployment_store(
 @router.post("/test/do-token")
 async def test_do_token(req: DOTokenTestRequest):
     """Test if a DigitalOcean token is valid."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     try:
-        client = DOClient(req.token)
-        account = client.get_account()
-        return {
-            "valid": True,
-            "email": account.get("email"),
-            "droplet_limit": account.get("droplet_limit"),
-            "status": account.get("status"),
-        }
+        client = AsyncDOClient(req.token)
+        try:
+            account = await client.get_account()
+            return {
+                "valid": True,
+                "email": account.get("email"),
+                "droplet_limit": account.get("droplet_limit"),
+                "status": account.get("status"),
+            }
+        finally:
+            await client.close()
     except Exception as e:
         return {"valid": False, "error": str(e)}
 
@@ -3799,54 +3811,57 @@ async def deploy_multipart(
         log(f"🆕 Provisioning {new_server_count} server(s)... (this takes 30-60 seconds)")
         
         async def provision_now():
-            from shared_libs.backend.infra.cloud import DOClient
+            from shared_libs.backend.infra.cloud import AsyncDOClient
             from shared_libs.backend.infra.utils.naming import generate_friendly_name
             
-            client = DOClient(token)
+            client = AsyncDOClient(token)
             names = [generate_friendly_name() for _ in range(new_server_count)]
             
-            # Start all droplets - infra layer handles API key via node_agent_api_key
-            droplet_ids = []
-            for name in names:
-                try:
-                    droplet = client.create_droplet(
-                        name=name,
-                        region=region,
-                        size=size,
-                        image=snapshot_id,
-                        tags=["deployed-via-api"],
-                        project=project_name,  # From query param
-                        environment=env_name,  # From query param
-                        node_agent_api_key=api_key,  # Infra auto-generates cloud-init
-                        wait=False,
-                    )
-                    droplet_ids.append((droplet.id, name))
-                    log(f"   🔄 {name} creating...")
-                except Exception as e:
-                    log(f"   ❌ {name}: {e}")
-            
-            if not droplet_ids:
-                return []
-            
-            log(f"   ⏳ Waiting for {len(droplet_ids)} server(s) to boot...")
-            
-            # Poll until ready
-            servers = []
-            for droplet_id, name in droplet_ids:
-                for _ in range(120):
+            try:
+                # Start all droplets - infra layer handles API key via node_agent_api_key
+                droplet_ids = []
+                for name in names:
                     try:
-                        droplet = client.get_droplet(droplet_id)
-                        if droplet and droplet.status == "active" and droplet.ip:
-                            log(f"   ✅ {name} ({droplet.ip})")
-                            servers.append({"ip": droplet.ip, "name": name})
-                            break
-                    except:
-                        pass
-                    await asyncio.sleep(2)
-                else:
-                    log(f"   ❌ {name}: timeout")
-            
-            return servers
+                        droplet = await client.create_droplet(
+                            name=name,
+                            region=region,
+                            size=size,
+                            image=snapshot_id,
+                            tags=["deployed-via-api"],
+                            project=project_name,  # From query param
+                            environment=env_name,  # From query param
+                            node_agent_api_key=api_key,  # Infra auto-generates cloud-init
+                            wait=False,
+                        )
+                        droplet_ids.append((droplet.id, name))
+                        log(f"   🔄 {name} creating...")
+                    except Exception as e:
+                        log(f"   ❌ {name}: {e}")
+                
+                if not droplet_ids:
+                    return []
+                
+                log(f"   ⏳ Waiting for {len(droplet_ids)} server(s) to boot...")
+                
+                # Poll until ready
+                servers = []
+                for droplet_id, name in droplet_ids:
+                    for _ in range(120):
+                        try:
+                            droplet = await client.get_droplet(droplet_id)
+                            if droplet and droplet.status == "active" and droplet.ip:
+                                log(f"   ✅ {name} ({droplet.ip})")
+                                servers.append({"ip": droplet.ip, "name": name})
+                                break
+                        except:
+                            pass
+                        await asyncio.sleep(2)
+                    else:
+                        log(f"   ❌ {name}: timeout")
+                
+                return servers
+            finally:
+                await client.close()
         
         provision_task = asyncio.create_task(provision_now())
     
@@ -4317,44 +4332,47 @@ async def deploy_prepare(
         if not data.snapshot_id:
             raise HTTPException(400, "snapshot_id required for new servers")
         
-        from shared_libs.backend.infra.cloud import DOClient
+        from shared_libs.backend.infra.cloud import AsyncDOClient
         from shared_libs.backend.infra.utils.naming import generate_friendly_name
         
-        client = DOClient(token)
+        client = AsyncDOClient(token)
         names = [generate_friendly_name() for _ in range(data.new_server_count)]
         
-        # Create droplets - infra layer handles API key via node_agent_api_key param
-        droplet_ids = []
-        for dname in names:
-            try:
-                droplet = client.create_droplet(
-                    name=dname,
-                    region=data.region,
-                    size=data.size,
-                    image=data.snapshot_id,
-                    tags=["deployed-via-api"],
-                    project=data.project,
-                    environment=data.environment,
-                    node_agent_api_key=api_key,  # Infra auto-generates cloud-init
-                    wait=False,
-                )
-                droplet_ids.append((droplet.id, dname))
-            except Exception as e:
-                raise HTTPException(500, f"Failed to create droplet {dname}: {e}")
-        
-        # Wait for droplets to be ready
-        for droplet_id, dname in droplet_ids:
-            for _ in range(120):  # 4 minute timeout
+        try:
+            # Create droplets - infra layer handles API key via node_agent_api_key param
+            droplet_ids = []
+            for dname in names:
                 try:
-                    droplet = client.get_droplet(droplet_id)
-                    if droplet and droplet.status == "active" and droplet.ip:
-                        ready_ips.append(droplet.ip)
-                        break
-                except:
-                    pass
-                await asyncio.sleep(2)
-            else:
-                raise HTTPException(500, f"Timeout waiting for droplet {dname}")
+                    droplet = await client.create_droplet(
+                        name=dname,
+                        region=data.region,
+                        size=data.size,
+                        image=data.snapshot_id,
+                        tags=["deployed-via-api"],
+                        project=data.project,
+                        environment=data.environment,
+                        node_agent_api_key=api_key,  # Infra auto-generates cloud-init
+                        wait=False,
+                    )
+                    droplet_ids.append((droplet.id, dname))
+                except Exception as e:
+                    raise HTTPException(500, f"Failed to create droplet {dname}: {e}")
+            
+            # Wait for droplets to be ready
+            for droplet_id, dname in droplet_ids:
+                for _ in range(120):  # 4 minute timeout
+                    try:
+                        droplet = await client.get_droplet(droplet_id)
+                        if droplet and droplet.status == "active" and droplet.ip:
+                            ready_ips.append(droplet.ip)
+                            break
+                    except:
+                        pass
+                    await asyncio.sleep(2)
+                else:
+                    raise HTTPException(500, f"Timeout waiting for droplet {dname}")
+        finally:
+            await client.close()
     
     if not ready_ips:
         raise HTTPException(400, "No servers specified or provisioned")
@@ -5386,25 +5404,27 @@ async def setup_domain(
         
     After this, https://api.myapp.com will work immediately.
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     try:
-        cf = CloudflareClient(req.cloudflare_token)
-        record = cf.setup_domain(
-            domain=req.domain,
-            server_ip=req.server_ip,
-            proxied=req.proxied,
-        )
-        
-        return {
-            "success": True,
-            "domain": req.domain,
-            "server_ip": req.server_ip,
-            "proxied": req.proxied,
-            "record_id": record.id,
-            "message": f"Domain {req.domain} → {req.server_ip}" + 
-                      (" (SSL via Cloudflare)" if req.proxied else " (direct, need own SSL)"),
-        }
+        cf = AsyncCloudflareClient(req.cloudflare_token)
+        try:
+            record = await cf.setup_domain(
+                domain=req.domain,
+                server_ip=req.server_ip,
+                proxied=req.proxied,
+            )
+            return {
+                "success": True,
+                "domain": req.domain,
+                "server_ip": req.server_ip,
+                "proxied": req.proxied,
+                "record_id": record.id,
+                "message": f"Domain {req.domain} → {req.server_ip}" + 
+                          (" (SSL via Cloudflare)" if req.proxied else " (direct, need own SSL)"),
+            }
+        finally:
+            await cf.close()
         
     except CloudflareError as e:
         raise HTTPException(400, f"Cloudflare error: {e.message}")
@@ -5423,11 +5443,14 @@ async def remove_domain(
     
     Call this when decommissioning a service.
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     try:
-        cf = CloudflareClient(cloudflare_token)
-        deleted = cf.remove_domain(domain)
+        cf = AsyncCloudflareClient(cloudflare_token)
+        try:
+            deleted = await cf.remove_domain(domain)
+        finally:
+            await cf.close()
         
         return {
             "success": deleted,
@@ -5465,28 +5488,30 @@ async def setup_load_balancer(
         
     After this, https://api.myapp.com distributes traffic across both servers.
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     if len(req.server_ips) < 1:
         raise HTTPException(400, "At least one server IP required")
     
     try:
-        cf = CloudflareClient(req.cloudflare_token)
-        records = cf.setup_multi_server(
-            domain=req.domain,
-            server_ips=req.server_ips,
-            proxied=req.proxied,
-        )
-        
-        return {
-            "success": True,
-            "domain": req.domain,
-            "server_ips": req.server_ips,
-            "record_count": len(records),
-            "proxied": req.proxied,
-            "message": f"Load balancing {req.domain} → {len(req.server_ips)} servers (FREE via multi-A records)" +
-                      (" + SSL via Cloudflare" if req.proxied else ""),
-        }
+        cf = AsyncCloudflareClient(req.cloudflare_token)
+        try:
+            records = await cf.setup_multi_server(
+                domain=req.domain,
+                server_ips=req.server_ips,
+                proxied=req.proxied,
+            )
+            return {
+                "success": True,
+                "domain": req.domain,
+                "server_ips": req.server_ips,
+                "record_count": len(records),
+                "proxied": req.proxied,
+                "message": f"Load balancing {req.domain} → {len(req.server_ips)} servers (FREE via multi-A records)" +
+                          (" + SSL via Cloudflare" if req.proxied else ""),
+            }
+        finally:
+            await cf.close()
         
     except CloudflareError as e:
         raise HTTPException(400, f"Cloudflare error: {e.message}")
@@ -5512,17 +5537,20 @@ async def add_server_to_lb(
             "cloudflare_token": "..."
         }
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     try:
-        cf = CloudflareClient(req.cloudflare_token)
-        record = cf.add_server(
-            domain=req.domain,
-            server_ip=req.server_ip,
-        )
-        
-        # Get total count
-        all_ips = cf.list_servers(req.domain)
+        cf = AsyncCloudflareClient(req.cloudflare_token)
+        try:
+            record = await cf.add_server(
+                domain=req.domain,
+                server_ip=req.server_ip,
+            )
+            
+            # Get total count
+            all_ips = await cf.list_servers(req.domain)
+        finally:
+            await cf.close()
         
         return {
             "success": True,
@@ -5557,17 +5585,20 @@ async def remove_server_from_lb(
             "cloudflare_token": "..."
         }
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     try:
-        cf = CloudflareClient(req.cloudflare_token)
-        deleted = cf.remove_server(
-            domain=req.domain,
-            server_ip=req.server_ip,
-        )
-        
-        # Get remaining count
-        all_ips = cf.list_servers(req.domain)
+        cf = AsyncCloudflareClient(req.cloudflare_token)
+        try:
+            deleted = await cf.remove_server(
+                domain=req.domain,
+                server_ip=req.server_ip,
+            )
+            
+            # Get remaining count
+            all_ips = await cf.list_servers(req.domain)
+        finally:
+            await cf.close()
         
         return {
             "success": deleted,
@@ -5593,11 +5624,14 @@ async def list_lb_servers(
     """
     List all servers (A records) for a domain.
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     try:
-        cf = CloudflareClient(cloudflare_token)
-        ips = cf.list_servers(domain)
+        cf = AsyncCloudflareClient(cloudflare_token)
+        try:
+            ips = await cf.list_servers(domain)
+        finally:
+            await cf.close()
         
         return {
             "success": True,
@@ -5622,11 +5656,14 @@ async def list_cloudflare_zones(
     
     Use this to verify your token works and see which domains you can manage.
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError
     
     try:
-        cf = CloudflareClient(cloudflare_token)
-        zones = cf.list_zones()
+        cf = AsyncCloudflareClient(cloudflare_token)
+        try:
+            zones = await cf.list_zones()
+        finally:
+            await cf.close()
         
         return {
             "success": True,
@@ -5663,71 +5700,77 @@ async def cleanup_orphaned_dns(
     
     This helps prevent DNS clutter from old deployments.
     """
-    from shared_libs.backend.infra.cloud import CloudflareClient, CloudflareError, DOClient
+    from shared_libs.backend.infra.cloud import AsyncCloudflareClient, CloudflareError, AsyncDOClient
     
     try:
         # Get all active droplet IPs from DO
-        do_client = DOClient(do_token)
-        droplets = do_client.list_droplets()
-        active_ips = set()
-        for d in droplets:
-            if d.ip:
-                active_ips.add(d.ip)
-            # Also check networks if ip not set
-            if hasattr(d, 'networks') and d.networks:
-                for net in d.networks.get('v4', []):
-                    if net.get('type') == 'public':
-                        active_ips.add(net.get('ip_address'))
+        do_client = AsyncDOClient(do_token)
+        try:
+            droplets = await do_client.list_droplets()
+            active_ips = set()
+            for d in droplets:
+                if d.ip:
+                    active_ips.add(d.ip)
+                # Also check networks if ip not set
+                if hasattr(d, 'networks') and d.networks:
+                    for net in d.networks.get('v4', []):
+                        if net.get('type') == 'public':
+                            active_ips.add(net.get('ip_address'))
+        finally:
+            await do_client.close()
         
         # Get all DNS records from Cloudflare
-        cf = CloudflareClient(cloudflare_token)
-        zones = cf.list_zones()
-        zone = next((z for z in zones if z.get("name") == zone_name), None)
-        if not zone:
-            raise HTTPException(404, f"Zone '{zone_name}' not found")
-        
-        zone_id = zone["id"]
-        records = cf.list_dns_records(zone_id)
-        
-        # Find orphaned A records (IPs not in active droplets)
-        # ONLY consider proxied records - DNS-only records are manual entries
-        orphaned = []
-        kept = []
-        skipped_dns_only = []
-        for record in records:
-            if record.get("type") != "A":
-                continue
+        cf = AsyncCloudflareClient(cloudflare_token)
+        try:
+            zones = await cf.list_zones()
+            zone = next((z for z in zones if z.get("name") == zone_name), None)
+            if not zone:
+                raise HTTPException(404, f"Zone '{zone_name}' not found")
             
-            ip = record.get("content")
-            proxied = record.get("proxied", False)
-            record_info = {
-                "id": record.get("id"),
-                "name": record.get("name"),
-                "ip": ip,
-                "proxied": proxied,
-            }
+            zone_id = zone["id"]
+            records = await cf.list_dns_records(zone_id)
             
-            # Skip DNS-only records (not proxied) - these are manual entries
-            if not proxied:
-                skipped_dns_only.append(record_info)
-                continue
+            # Find orphaned A records (IPs not in active droplets)
+            # ONLY consider proxied records - DNS-only records are manual entries
+            orphaned = []
+            kept = []
+            skipped_dns_only = []
+            for record in records:
+                if record.get("type") != "A":
+                    continue
+                
+                ip = record.get("content")
+                proxied = record.get("proxied", False)
+                record_info = {
+                    "id": record.get("id"),
+                    "name": record.get("name"),
+                    "ip": ip,
+                    "proxied": proxied,
+                }
+                
+                # Skip DNS-only records (not proxied) - these are manual entries
+                if not proxied:
+                    skipped_dns_only.append(record_info)
+                    continue
+                
+                if ip not in active_ips:
+                    orphaned.append(record_info)
+                else:
+                    kept.append(record_info)
             
-            if ip not in active_ips:
-                orphaned.append(record_info)
-            else:
-                kept.append(record_info)
-        
-        # Delete orphaned records (unless dry_run)
-        deleted = []
-        failed = []
-        if not dry_run:
-            for record in orphaned:
-                try:
-                    cf.delete_dns_record(zone_id, record["id"])
-                    deleted.append(record)
-                except Exception as e:
-                    record["error"] = str(e)
-                    failed.append(record)
+            # Delete orphaned records (unless dry_run)
+            deleted = []
+            failed = []
+            if not dry_run:
+                for record in orphaned:
+                    try:
+                        await cf.delete_dns_record(zone_id, record["id"])
+                        deleted.append(record)
+                    except Exception as e:
+                        record["error"] = str(e)
+                        failed.append(record)
+        finally:
+            await cf.close()
         
         return {
             "success": True,
@@ -6298,7 +6341,7 @@ async def get_architecture(
     """
     from shared_libs.backend.infra.node_agent import NodeAgentClient
     from shared_libs.backend.infra.cloud import generate_node_agent_key
-    from shared_libs.backend.infra.cloud.digitalocean import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     try:
         token = _get_do_token(do_token)
@@ -6307,10 +6350,13 @@ async def get_architecture(
         # Get server IPs
         server_ips = req.server_ips
         if not server_ips:
-            # Query all user's servers (DOClient defaults to managed only)
-            do_client = DOClient(token)
-            droplets = do_client.list_droplets()
-            server_ips = [d.ip for d in droplets if d.ip]
+            # Query all user's servers (AsyncDOClient defaults to managed only)
+            do_client = AsyncDOClient(token)
+            try:
+                droplets = await do_client.list_droplets()
+                server_ips = [d.ip for d in droplets if d.ip]
+            finally:
+                await do_client.close()
         
         if not server_ips:
             return {"nodes": [], "edges": [], "servers": [], "infrastructure": [], "message": "No servers found"}
@@ -6569,16 +6615,19 @@ async def list_architecture_projects(
     """
     from shared_libs.backend.infra.node_agent import NodeAgentClient
     from shared_libs.backend.infra.cloud import generate_node_agent_key
-    from shared_libs.backend.infra.cloud.digitalocean import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     try:
         token = _get_do_token(do_token)
         api_key = generate_node_agent_key(token, str(user.id))
         
-        # Get all servers (DOClient defaults to managed only)
-        do_client = DOClient(token)
-        droplets = do_client.list_droplets()
-        server_ips = [d.ip for d in droplets if d.ip]
+        # Get all servers (AsyncDOClient defaults to managed only)
+        do_client = AsyncDOClient(token)
+        try:
+            droplets = await do_client.list_droplets()
+            server_ips = [d.ip for d in droplets if d.ip]
+        finally:
+            await do_client.close()
         
         projects = set()
         environments = set()
@@ -6925,7 +6974,7 @@ async def rollback_deployment(
     """
     from shared_libs.backend.infra.deploy import DeploymentStatus
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    from shared_libs.backend.infra.cloud import DOClient, generate_node_agent_key
+    from shared_libs.backend.infra.cloud import generate_node_agent_key
     
     req = req or RollbackRequest()
     token = _get_do_token(do_token or req.do_token)
