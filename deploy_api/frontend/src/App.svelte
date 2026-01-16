@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { auth } from './lib/stores/auth.js'
+  import { auth, isAdmin } from './lib/stores/auth.js'
   import { 
     currentTab, scope, 
     serversStore, projectsStore, snapshotsStore, deploymentsStore
@@ -22,13 +22,15 @@
   import Services from './lib/components/services/Services.svelte'
   import Settings from './lib/components/settings/Settings.svelte'
   import Architecture from './lib/components/architecture/Architecture.svelte'
+  import Telemetry from './lib/components/telemetry/Telemetry.svelte'
   
   let initialized = false
   let infraRef
   let deploymentsRef
   let architectureRef
   
-  const tabs = [
+  // Base tabs available to all users
+  const baseTabs = [
     { id: 'infra', label: 'Infrastructure' },
     { id: 'deploy', label: 'Deploy' },
     { id: 'deployments', label: 'Deployments' },
@@ -36,6 +38,14 @@
     { id: 'services', label: 'Services' },
     { id: 'settings', label: 'Settings' }
   ]
+  
+  // Admin-only tabs
+  const adminTabs = [
+    { id: 'telemetry', label: '🔍 Telemetry', admin: true }
+  ]
+  
+  // Combined tabs (reactive based on isAdmin)
+  $: tabs = $isAdmin ? [...baseTabs, ...adminTabs] : baseTabs
   
   $: showScopeBar = $currentTab === 'deployments'
   $: showTail = false
@@ -144,6 +154,8 @@
           <Services />
         {:else if $currentTab === 'settings'}
           <Settings />
+        {:else if $currentTab === 'telemetry' && $isAdmin}
+          <Telemetry />
         {/if}
       </main>
     </div>

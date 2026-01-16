@@ -63,6 +63,15 @@ export const auth = createAuthStore()
 // Derived store for checking if authenticated
 export const isAuthenticated = derived(auth, $auth => !!$auth.token && !!$auth.user)
 
+// Admin emails (must match backend ADMIN_EMAILS)
+const ADMIN_EMAILS = ['vergnetp@yahoo.fr']
+
+// Derived store for checking if user is admin
+export const isAdmin = derived(auth, $auth => {
+  if (!$auth.user?.email) return false
+  return ADMIN_EMAILS.includes($auth.user.email.toLowerCase())
+})
+
 // DO Token (stored in cookie, not in auth store)
 export function getDoToken() {
   return getCookie('do_token_local')

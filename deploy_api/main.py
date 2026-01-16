@@ -30,6 +30,7 @@ from .src.routes import (
     projects_router,
     deployments_router,
     infra_router,
+    admin_router,
 )
 from .src.workers import TASKS
 
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
             projects_router,
             deployments_router,
             infra_router,
+            admin_router,
         ],
         
         # Background tasks (deployment jobs)
@@ -93,6 +95,12 @@ def create_app() -> FastAPI:
         on_startup=on_startup,
         on_shutdown=on_shutdown,
     )
+    
+    # NOTE: Tracing middleware is now handled by app_kernel based on manifest.yaml
+    # Enable tracing by adding to manifest.yaml:
+    #   tracing:
+    #     enabled: true
+    #     db_path: data/traces.db
     
     # API info endpoint
     @app.get("/api")

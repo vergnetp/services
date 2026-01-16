@@ -109,6 +109,11 @@ observability:
       - /favicon.ico
       - /static
 
+# Tracing (for admin telemetry dashboard) - enabled by default
+tracing:
+  enabled: ${TRACING_ENABLED:-true}
+  sample_rate: ${TRACING_SAMPLE_RATE:-1.0}
+
 # Debug/logging
 debug: ${DEBUG:-false}
 log_level: ${LOG_LEVEL:-INFO}

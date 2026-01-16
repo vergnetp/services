@@ -22,3 +22,6 @@ export { default as Snapshots } from './snapshots/Snapshots.svelte'
 export { default as Services } from './services/Services.svelte'
 export { default as Settings } from './settings/Settings.svelte'
 export { default as Architecture } from './architecture/Architecture.svelte'
+
+// Admin Components
+export { default as Telemetry } from './telemetry/Telemetry.svelte'
