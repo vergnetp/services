@@ -810,20 +810,24 @@ async def get_registry(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Get container registry info."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    registry = client.get_registry()
-    
-    if not registry:
-        return {"exists": False, "registry": None}
-    
-    return {
-        "exists": True,
-        "registry": registry,
-        "endpoint": client.get_registry_endpoint(),
-    }
+    client = AsyncDOClient(token)
+    try:
+        registry = await client.get_registry()
+        
+        if not registry:
+            return {"exists": False, "registry": None}
+        
+        endpoint = await client.get_registry_endpoint()
+        return {
+            "exists": True,
+            "registry": registry,
+            "endpoint": endpoint,
+        }
+    finally:
+        await client.close()
 
 
 @router.post("/registry")
@@ -833,16 +837,19 @@ async def create_registry(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Create or get existing container registry."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    registry = client.ensure_registry(region=region)
-    
-    return {
-        "registry": registry,
-        "endpoint": client.get_registry_endpoint(),
-    }
+    client = AsyncDOClient(token)
+    try:
+        registry = await client.ensure_registry(region=region)
+        endpoint = await client.get_registry_endpoint()
+        return {
+            "registry": registry,
+            "endpoint": endpoint,
+        }
+    finally:
+        await client.close()
 
 
 @router.get("/registry/repositories")
@@ -851,13 +858,15 @@ async def list_repositories(
     user: UserIdentity = Depends(get_current_user),
 ):
     """List repositories in registry."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    repos = client.list_registry_repositories()
-    
-    return {"repositories": repos}
+    client = AsyncDOClient(token)
+    try:
+        repos = await client.list_registry_repositories()
+        return {"repositories": repos}
+    finally:
+        await client.close()
 
 
 @router.get("/registry/credentials")
@@ -866,20 +875,24 @@ async def get_registry_credentials(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Get Docker credentials for registry login."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    # Make sure registry exists
-    registry = client.get_registry()
-    if not registry:
-        raise HTTPException(400, "No registry exists. Create one first.")
-    
-    creds = client.get_registry_credentials()
+    try:
+        # Make sure registry exists
+        registry = await client.get_registry()
+        if not registry:
+            raise HTTPException(400, "No registry exists. Create one first.")
+        
+        creds = await client.get_registry_credentials()
+        endpoint = await client.get_registry_endpoint()
+    finally:
+        await client.close()
     
     return {
-        "endpoint": client.get_registry_endpoint(),
+        "endpoint": endpoint,
         "credentials": creds,
     }
 
@@ -998,13 +1011,16 @@ async def list_images(
     user: UserIdentity = Depends(get_current_user),
 ):
     """List base image snapshots (snapshots with built-in custom images)."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    # Get all snapshots, filter for ones that look like base images
-    snapshots = client.list_snapshots()
+    try:
+        # Get all snapshots, filter for ones that look like base images
+        snapshots = await client.list_snapshots()
+    finally:
+        await client.close()
     
     # Base image snapshots have format: name-tag (e.g., ocr-ready-base)
     # Exclude standard base snapshots (base-docker-ubuntu, base-agent-v*)
@@ -1269,11 +1285,14 @@ async def list_snapshots(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """List all snapshots."""
-    from shared_libs.backend.infra.cloud import SnapshotService
+    from shared_libs.backend.infra.cloud import AsyncSnapshotService
     
     token = _get_do_token(do_token)
-    service = SnapshotService(token)
-    snapshots = service.list_snapshots()
+    service = AsyncSnapshotService(token)
+    try:
+        snapshots = await service.list_snapshots()
+    finally:
+        await service.close()
     
     return {
         "snapshots": [
@@ -1296,11 +1315,14 @@ async def delete_snapshot(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """Delete a snapshot."""
-    from shared_libs.backend.infra.cloud import SnapshotService
+    from shared_libs.backend.infra.cloud import AsyncSnapshotService
     
     token = _get_do_token(do_token)
-    service = SnapshotService(token)
-    success = service.delete_snapshot(snapshot_id)
+    service = AsyncSnapshotService(token)
+    try:
+        success = await service.delete_snapshot(snapshot_id)
+    finally:
+        await service.close()
     
     if not success:
         raise HTTPException(500, "Failed to delete snapshot")
@@ -1321,12 +1343,15 @@ async def transfer_snapshot_to_all_regions(
     This makes the snapshot available everywhere for provisioning.
     Transfers happen in parallel and typically take 5-15 minutes per region.
     """
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    result = client.transfer_snapshot_to_all_regions(snapshot_id, wait=wait)
+    try:
+        result = await client.transfer_snapshot_to_all_regions(snapshot_id, wait=wait)
+    finally:
+        await client.close()
     
     return {
         "success": True,
@@ -1348,12 +1373,15 @@ async def transfer_snapshot_to_region(
     wait: bool = Query(False, description="Wait for transfer to complete"),
 ):
     """Transfer a snapshot to a specific region."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    action = client.transfer_snapshot(snapshot_id, region, wait=wait)
+    try:
+        action = await client.transfer_snapshot(snapshot_id, region, wait=wait)
+    finally:
+        await client.close()
     
     return {
         "success": True,
@@ -1371,12 +1399,15 @@ async def get_action_status(
     do_token: Optional[str] = Query(None),
 ):
     """Get status of a DO action (transfer, snapshot, etc.)."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    action = client.get_action(action_id)
+    try:
+        action = await client.get_action(action_id)
+    finally:
+        await client.close()
     
     return {
         "id": action.get("id"),
@@ -1448,20 +1479,23 @@ async def list_servers(
     SAFETY: Only returns droplets managed by this system (tagged with 'deployed-via-api').
     Personal/unmanaged servers are never returned.
     """
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    # DOClient.list_droplets() defaults to managed droplets only
-    # Special case: tag="all" means skip tag filtering (but still only managed)
-    effective_tag = None if tag == "all" else tag
-    
-    droplets = client.list_droplets(
-        project=project,
-        environment=environment,
-        tag=effective_tag,
-    )
+    try:
+        # AsyncDOClient.list_droplets() defaults to managed droplets only
+        # Special case: tag="all" means skip tag filtering (but still only managed)
+        effective_tag = None if tag == "all" else tag
+        
+        droplets = await client.list_droplets(
+            project=project,
+            environment=environment,
+            tag=effective_tag,
+        )
+    finally:
+        await client.close()
     
     # Convert to response format
     result = []
@@ -1498,13 +1532,16 @@ async def list_projects(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """Get list of unique projects from deployed servers."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    # DOClient defaults to managed droplets only
-    droplets = client.list_droplets()
+    try:
+        # AsyncDOClient defaults to managed droplets only
+        droplets = await client.list_droplets()
+    finally:
+        await client.close()
     
     # Extract unique projects and environments
     projects = set()
@@ -1530,15 +1567,18 @@ async def list_containers(
     do_token: Optional[str] = Query(None, description="Pass-through mode"),
 ):
     """Get list of containers across all servers (for logs view)."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     from shared_libs.backend.infra.node_agent import NodeAgentClient
     
     token = _get_do_token(do_token)
     api_key = _get_node_agent_key(token, str(user.id))
-    client = DOClient(token)
+    client = AsyncDOClient(token)
     
-    # Get servers filtered by project/environment (DOClient defaults to managed only)
-    droplets = client.list_droplets(project=project, environment=environment)
+    try:
+        # Get servers filtered by project/environment (AsyncDOClient defaults to managed only)
+        droplets = await client.list_droplets(project=project, environment=environment)
+    finally:
+        await client.close()
     
     # Get containers from each server
     containers_by_server = {}
@@ -1572,89 +1612,94 @@ async def provision_server(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Provision a new server with VPC networking."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient, AsyncSnapshotService
     from shared_libs.backend.infra.utils import generate_friendly_name
     from pathlib import Path
     
     # Token from query param OR body
     token = _get_do_token(do_token or req.do_token)
-    client = DOClient(token)
-    
-    # Generate friendly name if not provided
-    server_name = req.name.strip() if req.name else generate_friendly_name()
-    
-    # Ensure 'deployed-via-api' tag is present
-    tags = list(req.tags) if req.tags else []
-    if 'deployed-via-api' not in tags:
-        tags.append('deployed-via-api')
-    
-    # SSH keys - only use if explicitly provided
-    # For SaaS/production: NO SSH keys = SSH-free management via node_agent
-    # For dev/debug: User can explicitly pass ssh_keys in request
-    ssh_keys = list(req.ssh_keys) if req.ssh_keys else []
-    
-    # VPC is auto-handled by infra layer (create_droplet auto-ensures VPC)
-    # User can still explicitly pass vpc_uuid if they want a specific one
-    
-    # Validate snapshot exists and is available in target region
-    from shared_libs.backend.infra.cloud import SnapshotService
-    snapshot_service = SnapshotService(token)
-    snapshots = snapshot_service.list_snapshots()
-    
-    # Find the snapshot
-    snapshot = None
-    for s in snapshots:
-        if str(s.get("id")) == str(req.snapshot_id):
-            snapshot = s
-            break
-    
-    if not snapshot:
-        raise HTTPException(
-            400,
-            f"Snapshot '{req.snapshot_id}' not found. Create a snapshot first."
-        )
-    
-    available_regions = snapshot.get("regions", [])
-    if req.region not in available_regions:
-        raise HTTPException(
-            400,
-            f"Snapshot '{snapshot.get('name')}' is not available in region '{req.region}'. "
-            f"Available regions: {', '.join(available_regions)}. "
-            f"Either choose a different region or transfer the snapshot first."
-        )
-    
-    # Generate API key for this user
-    api_key = _get_node_agent_key(token, str(user.id))
+    client = AsyncDOClient(token)
     
     try:
-        droplet = client.create_droplet(
-            name=server_name,
-            region=req.region,
-            size=req.size,
-            image=req.snapshot_id,
-            ssh_keys=ssh_keys,
-            tags=tags,
-            vpc_uuid=req.vpc_uuid,  # If None, infra auto-creates VPC
-            project=req.project,
-            environment=req.environment,
-            node_agent_api_key=api_key,  # Infra auto-generates cloud-init
-            wait=True,
-        )
-    except Exception as e:
-        error_msg = str(e)
-        if "not available in the selected region" in error_msg:
+        # Generate friendly name if not provided
+        server_name = req.name.strip() if req.name else generate_friendly_name()
+        
+        # Ensure 'deployed-via-api' tag is present
+        tags = list(req.tags) if req.tags else []
+        if 'deployed-via-api' not in tags:
+            tags.append('deployed-via-api')
+        
+        # SSH keys - only use if explicitly provided
+        # For SaaS/production: NO SSH keys = SSH-free management via node_agent
+        # For dev/debug: User can explicitly pass ssh_keys in request
+        ssh_keys = list(req.ssh_keys) if req.ssh_keys else []
+        
+        # VPC is auto-handled by infra layer (create_droplet auto-ensures VPC)
+        # User can still explicitly pass vpc_uuid if they want a specific one
+        
+        # Validate snapshot exists and is available in target region
+        snapshot_service = AsyncSnapshotService(token)
+        try:
+            snapshots = await snapshot_service.list_snapshots()
+        finally:
+            await snapshot_service.close()
+        
+        # Find the snapshot
+        snapshot = None
+        for s in snapshots:
+            if str(s.get("id")) == str(req.snapshot_id):
+                snapshot = s
+                break
+        
+        if not snapshot:
             raise HTTPException(
                 400,
-                f"Image/snapshot not available in region '{req.region}'. "
-                f"Try a different region or use a base image like 'ubuntu-24-04-x64'."
+                f"Snapshot '{req.snapshot_id}' not found. Create a snapshot first."
             )
-        raise
-    
-    return {
-        "success": True,
-        "server": droplet.to_dict(),
-        "vpc_uuid": droplet.vpc_uuid,
-    }
+        
+        available_regions = snapshot.get("regions", [])
+        if req.region not in available_regions:
+            raise HTTPException(
+                400,
+                f"Snapshot '{snapshot.get('name')}' is not available in region '{req.region}'. "
+                f"Available regions: {', '.join(available_regions)}. "
+                f"Either choose a different region or transfer the snapshot first."
+            )
+        
+        # Generate API key for this user
+        api_key = _get_node_agent_key(token, str(user.id))
+        
+        try:
+            droplet = await client.create_droplet(
+                name=server_name,
+                region=req.region,
+                size=req.size,
+                image=req.snapshot_id,
+                ssh_keys=ssh_keys,
+                tags=tags,
+                vpc_uuid=req.vpc_uuid,  # If None, infra auto-creates VPC
+                project=req.project,
+                environment=req.environment,
+                node_agent_api_key=api_key,  # Infra auto-generates cloud-init
+                wait=True,
+            )
+        except Exception as e:
+            error_msg = str(e)
+            if "not available in the selected region" in error_msg:
+                raise HTTPException(
+                    400,
+                    f"Image/snapshot not available in region '{req.region}'. "
+                    f"Try a different region or use a base image like 'ubuntu-24-04-x64'."
+                )
+            raise
+        
+        return {
+            "success": True,
+            "server": droplet.to_dict(),
+            "vpc_uuid": droplet.vpc_uuid,
+        }
+    finally:
+        await client.close()
 
 
 @router.delete("/servers/{server_id}")
@@ -1664,11 +1709,14 @@ async def delete_server(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """Delete a server."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    result = client.delete_droplet(server_id)
+    client = AsyncDOClient(token)
+    try:
+        result = await client.delete_droplet(server_id)
+    finally:
+        await client.close()
     
     if not result.success:
         raise HTTPException(500, result.error or "Failed to delete server")
@@ -1682,11 +1730,14 @@ async def list_ssh_keys(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """List SSH keys."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    keys = client.list_ssh_keys()
+    client = AsyncDOClient(token)
+    try:
+        keys = await client.list_ssh_keys()
+    finally:
+        await client.close()
     
     return {"ssh_keys": keys}
 
@@ -1701,11 +1752,14 @@ async def list_vpcs(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """List all VPCs."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    vpcs = client.list_vpcs()
+    client = AsyncDOClient(token)
+    try:
+        vpcs = await client.list_vpcs()
+    finally:
+        await client.close()
     
     return {"vpcs": vpcs}
 
@@ -1719,11 +1773,14 @@ async def create_vpc(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """Create a new VPC."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    vpc = client.create_vpc(name=name, region=region, ip_range=ip_range)
+    client = AsyncDOClient(token)
+    try:
+        vpc = await client.create_vpc(name=name, region=region, ip_range=ip_range)
+    finally:
+        await client.close()
     
     return {"success": True, "vpc": vpc}
 
@@ -1735,11 +1792,14 @@ async def list_vpc_members(
     do_token: Optional[str] = Query(None, description="Pass-through mode (not stored)"),
 ):
     """List all resources in a VPC."""
-    from shared_libs.backend.infra.cloud import DOClient
+    from shared_libs.backend.infra.cloud import AsyncDOClient
     
     token = _get_do_token(do_token)
-    client = DOClient(token)
-    members = client.get_vpc_members(vpc_id)
+    client = AsyncDOClient(token)
+    try:
+        members = await client.get_vpc_members(vpc_id)
+    finally:
+        await client.close()
     
     return {"members": members}
 
@@ -4617,7 +4677,7 @@ async def deploy_stream(
         else:
             # Multiple servers - TEE STREAMING: broadcast chunks to all agents simultaneously
             # This is faster than buffer-then-forward because upload and forward happen in parallel
-            import httpx
+            # import httpx  # Removed - using http_client
             
             log(f"🔀 Deploying {container_name} to {len(ready_servers)} servers (tee-streaming)...")
             
