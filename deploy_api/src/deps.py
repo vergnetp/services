@@ -9,7 +9,9 @@ Workspaces, members, and invites are handled by app_kernel.saas.
 This module provides deploy_api specific store dependencies.
 """
 
+import os
 from fastapi import Depends
+from typing import Optional
 
 # Use kernel's db_connection dependency (handles pooling correctly)
 from shared_libs.backend.app_kernel.db import db_connection
@@ -23,6 +25,38 @@ from .stores import (
     DeploymentStore,
     DeployConfigStore,
 )
+
+
+# =============================================================================
+# Queue Manager Singleton
+# =============================================================================
+
+_queue_manager = None
+
+
+def get_queue_manager():
+    """
+    Get the global QueueManager instance.
+    
+    Requires REDIS_URL environment variable.
+    Uses same key_prefix as worker to ensure jobs are routed correctly.
+    """
+    global _queue_manager
+    
+    if _queue_manager is None:
+        from shared_libs.backend.job_queue import QueueManager, QueueConfig, QueueRedisConfig
+        from ..config import get_settings
+        
+        settings = get_settings()
+        redis_url = settings.redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        key_prefix = settings.redis_key_prefix  # "deploy:" - must match worker
+        
+        redis_config = QueueRedisConfig(url=redis_url)
+        config = QueueConfig(redis=redis_config, key_prefix=key_prefix)
+        
+        _queue_manager = QueueManager(config)
+    
+    return _queue_manager
 
 
 # =============================================================================

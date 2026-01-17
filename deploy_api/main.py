@@ -30,7 +30,10 @@ from .src.routes import (
     projects_router,
     deployments_router,
     infra_router,
+    networking_router,
+    agent_router,
     admin_router,
+    deploy_router,
 )
 from .src.workers import TASKS
 
@@ -45,6 +48,23 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 async def on_startup():
     """Initialize deploy API (after kernel setup)."""
+    import os
+    
+    # Initialize streaming (for queue-based SSE)
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url:
+        try:
+            from shared_libs.backend.streaming import init_streaming
+            from shared_libs.backend.job_queue import QueueRedisConfig
+            
+            redis_config = QueueRedisConfig(url=redis_url)
+            init_streaming(redis_config)
+            get_logger().info("Streaming initialized with Redis")
+        except Exception as e:
+            get_logger().warning(f"Failed to init streaming: {e} - SSE deploys won't work")
+    else:
+        get_logger().warning("REDIS_URL not set - SSE streaming disabled")
+    
     get_logger().info("Deploy API started")
 
 
@@ -72,10 +92,14 @@ def create_app() -> FastAPI:
         description=__doc__,
         
         # Routes (workspaces handled by kernel.saas)
+        # deploy_router first so thin routes override fat ones in infra_router
         routers=[
+            deploy_router,  # Thin deploy routes (queue-based streaming)
             projects_router,
             deployments_router,
             infra_router,
+            networking_router,
+            agent_router,
             admin_router,
         ],
         

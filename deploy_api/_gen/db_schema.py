@@ -35,6 +35,8 @@ async def init_schema(db: Any) -> None:
             port INTEGER DEFAULT 8000,
             health_endpoint TEXT DEFAULT '/health',
             description TEXT,
+            is_stateful INTEGER DEFAULT 0,
+            service_type TEXT,
             created_at TEXT,
             updated_at TEXT
         )
@@ -42,6 +44,15 @@ async def init_schema(db: Any) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_services_workspace ON services(workspace_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id)")
     await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_name ON services(project_id, name)")
+    # Add new columns if missing (for existing DBs)
+    try:
+        await db.execute("ALTER TABLE services ADD COLUMN is_stateful INTEGER DEFAULT 0")
+    except:
+        pass
+    try:
+        await db.execute("ALTER TABLE services ADD COLUMN service_type TEXT")
+    except:
+        pass
 
     # Droplet
     await db.execute("""

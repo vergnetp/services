@@ -358,3 +358,13 @@ TASKS = {
     "deploy": run_deployment,
     "rollback": run_rollback,
 }
+
+# Import new streaming-based tasks from infra.deploy.orchestrator
+# These are used by job_queue workers for queue-based SSE streaming
+try:
+    from shared_libs.backend.infra.deploy.orchestrator import DEPLOY_TASKS
+    # Merge with streaming task names prefixed
+    for name, task in DEPLOY_TASKS.items():
+        TASKS[f"stream_{name}"] = task
+except ImportError:
+    pass  # infra module not available

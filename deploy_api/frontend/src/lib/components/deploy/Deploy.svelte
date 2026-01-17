@@ -9,6 +9,39 @@
   import Badge from '../ui/Badge.svelte'
   import Modal from '../ui/Modal.svelte'
   
+  // ============================================
+  // Deploy Type (determines which form fields show)
+  // ============================================
+  let deployType = 'service'  // stateful, service, worker, scheduled
+  
+  const deployTypes = [
+    { value: 'stateful', label: '🗄️ Stateful', description: 'Database or cache (postgres, redis...)' },
+    { value: 'service', label: '🌐 Service', description: 'Web app with HTTP port & domain' },
+    { value: 'worker', label: '⚙️ Worker', description: 'Background job processor' },
+    { value: 'scheduled', label: '⏰ Scheduled', description: 'Cron job / periodic task' },
+  ]
+  
+  // Stateful service config
+  let statefulType = 'redis'  // postgres, redis, mysql, mongo, opensearch, qdrant
+  // Loaded from backend - fallback if fetch fails
+  let statefulTypes = [
+    { value: 'redis', label: '⚡ Redis', port: 6379, image: 'redis:7-alpine', description: 'In-memory cache & pub/sub' },
+    { value: 'postgres', label: '🐘 PostgreSQL', port: 5432, image: 'postgres:16-alpine', description: 'Relational database' },
+    { value: 'mysql', label: '🐬 MySQL', port: 3306, image: 'mysql:8', description: 'Relational database' },
+    { value: 'mongo', label: '🍃 MongoDB', port: 27017, image: 'mongo:7', description: 'Document database' },
+    { value: 'opensearch', label: '🔍 OpenSearch', port: 9200, image: 'opensearchproject/opensearch:2', description: 'Search & analytics' },
+    { value: 'qdrant', label: '🧠 Qdrant', port: 6333, image: 'qdrant/qdrant:latest', description: 'Vector database for AI' },
+  ]
+  
+  // Auto-set service name when switching to stateful
+  $: if (deployType === 'stateful' && (!name || statefulTypes.some(s => s.value === name))) {
+    name = statefulType
+  }
+  
+  // Worker/Scheduled config
+  let customCmd = ''  // Override Dockerfile CMD
+  let cronSchedule = ''  // For scheduled type (e.g., "0 * * * *" = every hour)
+  
   // Form state
   let name = ''
   let project = ''
@@ -69,6 +102,26 @@
   let additionalServers = 0
   let deployResult = null  // Result from last deployment
   
+  // Limit to 1 server when switching to stateful/scheduled
+  $: if ((deployType === 'stateful' || deployType === 'scheduled') && selectedServers.size > 1) {
+    const firstServer = [...selectedServers][0]
+    selectedServers.clear()
+    if (firstServer) selectedServers.add(firstServer)
+    selectedServers = selectedServers // trigger reactivity
+  }
+  
+  // Also limit provisioning count
+  $: if ((deployType === 'stateful' || deployType === 'scheduled') && additionalServers > 1) {
+    additionalServers = 1
+  }
+  
+  // For stateful/scheduled: existing + new must total <= 1
+  // If provisioning new, clear existing selection
+  $: if ((deployType === 'stateful' || deployType === 'scheduled') && additionalServers > 0 && selectedServers.size > 0) {
+    selectedServers.clear()
+    selectedServers = selectedServers
+  }
+  
   // Cleanup confirmation state
   let showCleanupConfirm = false
   let cleanupServers = []  // Servers that will have containers stopped
@@ -127,9 +180,17 @@
     loadRegionsAndSizes()
   })
   
-  // Auto-load config when project/service/env changes
-  $: if (name && project) {
-    loadDeployConfigSilent()
+  // Debounce timer for config auto-load
+  let configLoadTimer = null
+  
+  // Auto-load config when project/service/env changes (debounced, non-stateful only)
+  $: if (name && project && deployType !== 'stateful') {
+    // Clear previous timer
+    if (configLoadTimer) clearTimeout(configLoadTimer)
+    // Wait 500ms after user stops typing
+    configLoadTimer = setTimeout(() => {
+      loadDeployConfigSilent()
+    }, 500)
   }
   
   // Auto-select base snapshot when snapshots become available
@@ -167,13 +228,24 @@
       } catch (e) {
         // Fallback defaults
         sizes = [
-          { slug: 's-1vcpu-512mb-10gb', description: '512MB / 1 vCPU' },
-          { slug: 's-1vcpu-1gb', description: '1GB / 1 vCPU' },
-          { slug: 's-1vcpu-2gb', description: '2GB / 1 vCPU' },
-          { slug: 's-2vcpu-2gb', description: '2GB / 2 vCPU' },
-          { slug: 's-2vcpu-4gb', description: '4GB / 2 vCPU' },
-          { slug: 's-4vcpu-8gb', description: '8GB / 4 vCPU' },
+          { slug: 's-1vcpu-512mb-10gb', description: '$4/mo - 512MB / 1 vCPU' },
+          { slug: 's-1vcpu-1gb', description: '$6/mo - 1GB / 1 vCPU' },
+          { slug: 's-1vcpu-2gb', description: '$12/mo - 2GB / 1 vCPU' },
+          { slug: 's-2vcpu-2gb', description: '$18/mo - 2GB / 2 vCPU' },
+          { slug: 's-2vcpu-4gb', description: '$24/mo - 4GB / 2 vCPU' },
+          { slug: 's-4vcpu-8gb', description: '$48/mo - 8GB / 4 vCPU' },
         ]
+      }
+      
+      // Load stateful service types
+      try {
+        const typeData = await api('GET', '/infra/stateful-types')
+        if (typeData.types?.length > 0) {
+          statefulTypes = typeData.types
+        }
+      } catch (e) {
+        // Keep fallback defaults
+        console.warn('Using fallback stateful types')
       }
     } catch (err) {
       console.error('Failed to load regions/sizes:', err)
@@ -338,6 +410,18 @@
       selectedServers.clear()
     }
     selectedServers = selectedServers
+  }
+  
+  function selectSingleServer(ip) {
+    // For stateful/scheduled - only allow one server
+    selectedServers.clear()
+    selectedServers.add(ip)
+    selectedServers = selectedServers // trigger reactivity
+    
+    // Also clear any pending provisioning (can't have both for stateful/scheduled)
+    if (deployType === 'stateful' || deployType === 'scheduled') {
+      additionalServers = 0
+    }
   }
   
   // =============================================================================
@@ -824,33 +908,53 @@ CMD ["python", "main.py"]
   async function startDeployment(e) {
     e.preventDefault()
     
+    // Cancel any pending config auto-load
+    if (configLoadTimer) {
+      clearTimeout(configLoadTimer)
+      configLoadTimer = null
+    }
+    
     if (!name) {
-      toasts.error('App name is required')
+      toasts.error('Service name is required')
       return
     }
     
-    if (sourceType === 'code' && !buildFolders.some(f => f.isMain)) {
-      toasts.error('Add a main folder with your code')
+    if (!project) {
+      toasts.error('Project name is required')
       return
     }
     
-    if (sourceType === 'git' && !gitUrl) {
-      toasts.error('Git URL is required')
-      return
+    // Stateful deployments don't need source validation
+    if (deployType !== 'stateful') {
+      if (sourceType === 'code' && !buildFolders.some(f => f.isMain)) {
+        toasts.error('Add a main folder with your code')
+        return
+      }
+      
+      if (sourceType === 'git' && !gitUrl) {
+        toasts.error('Git URL is required')
+        return
+      }
+      
+      if (sourceType === 'image' && !imageUrl) {
+        toasts.error('Docker image URL is required')
+        return
+      }
+      
+      if (sourceType === 'image_file' && !imageFile) {
+        toasts.error('Upload a Docker image file (.tar)')
+        return
+      }
+      
+      if (sourceType === 'image_file' && !imageName) {
+        toasts.error('Image name is required for local images')
+        return
+      }
     }
     
-    if (sourceType === 'image' && !imageUrl) {
-      toasts.error('Docker image URL is required')
-      return
-    }
-    
-    if (sourceType === 'image_file' && !imageFile) {
-      toasts.error('Upload a Docker image file (.tar)')
-      return
-    }
-    
-    if (sourceType === 'image_file' && !imageName) {
-      toasts.error('Image name is required for local images')
+    // Scheduled jobs need a cron schedule
+    if (deployType === 'scheduled' && !cronSchedule) {
+      toasts.error('Cron schedule is required for scheduled jobs')
       return
     }
     
@@ -869,7 +973,7 @@ CMD ["python", "main.py"]
       return
     }
     
-    if (setupDomain && !getCfToken()) {
+    if (deployType === 'service' && setupDomain && !getCfToken()) {
       toasts.error('Configure your Cloudflare Token in Settings first (required for domain setup)')
       return
     }
@@ -945,12 +1049,24 @@ CMD ["python", "main.py"]
     deployResult = null  // Reset previous result
     
     try {
-      log(`Starting deployment of ${name}...`)
+      log(`Starting ${deployType} deployment of ${name}...`)
       progress = 10
       
-      // For code uploads, generate zip blob
+      // For stateful deployments, use predefined image
+      let effectiveSourceType = sourceType
+      let effectiveImage = imageUrl
+      let effectivePort = port
+      
+      if (deployType === 'stateful') {
+        effectiveSourceType = 'image'
+        const statefulConfig = statefulTypes.find(s => s.value === statefulType)
+        effectiveImage = statefulConfig?.image || `${statefulType}:latest`
+        effectivePort = statefulConfig?.port || 5432
+      }
+      
+      // For code uploads, generate zip blob (non-stateful only)
       let codeBlob = null
-      if (sourceType === 'code') {
+      if (deployType !== 'stateful' && sourceType === 'code') {
         log('Creating code archive...')
         const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')
         const zip = new JSZip()
@@ -973,6 +1089,9 @@ CMD ["python", "main.py"]
       log('Sending deployment request... server provisioning may take 30-60s')
       progress = 20
       
+      // Domain setup only for service type
+      const effectiveSetupDomain = deployType === 'service' && setupDomain
+      
       // Build query params for multipart endpoint
       const doToken = getDoToken()
       const cfToken = getCfToken()
@@ -984,32 +1103,53 @@ CMD ["python", "main.py"]
         size: selectedSize,
         project: project || '',
         environment: environment,
-        setup_domain: String(setupDomain),
+        setup_domain: String(effectiveSetupDomain),
         base_domain: baseDomain,
         domain_aliases: JSON.stringify(domainAliases.split(',').map(d => d.trim()).filter(Boolean)),
       })
       // Add CF token if domain setup is enabled and token exists
-      if (setupDomain && cfToken) {
+      if (effectiveSetupDomain && cfToken) {
         queryParams.set('cf_token', cfToken)
       }
       
       // Build FormData
       const formData = new FormData()
       formData.append('name', name)
-      formData.append('port', String(port))
-      formData.append('source_type', sourceType)
+      formData.append('port', String(effectivePort))
+      formData.append('source_type', effectiveSourceType)
       formData.append('env_vars', envVars)
       formData.append('tags', tags)
       formData.append('server_ips', JSON.stringify(Array.from(selectedServers)))
       formData.append('depends_on', JSON.stringify(Object.entries(dependencies).filter(([_, v]) => v).map(([k]) => k)))
       formData.append('exclude_patterns', JSON.stringify(excludePatterns))
       
+      // Deploy type specific fields
+      formData.append('deploy_type', deployType)
+      if (deployType === 'stateful') {
+        formData.append('is_stateful', 'true')
+        formData.append('persist_data', 'true')
+        formData.append('image', effectiveImage)
+      } else {
+        formData.append('is_stateful', 'false')
+        formData.append('persist_data', String(persistData))
+      }
+      
+      // Worker / Scheduled: custom CMD
+      if ((deployType === 'worker' || deployType === 'scheduled') && customCmd) {
+        formData.append('custom_cmd', customCmd)
+      }
+      
+      // Scheduled: cron schedule
+      if (deployType === 'scheduled' && cronSchedule) {
+        formData.append('cron_schedule', cronSchedule)
+      }
+      
       if (dockerfile) formData.append('dockerfile', dockerfile)
       if (gitUrl) formData.append('git_url', gitUrl)
       if (gitBranch) formData.append('git_branch', gitBranch)
       if (gitToken) formData.append('git_token', gitToken)
       if (gitFolders.length) formData.append('git_folders', JSON.stringify(gitFolders))
-      if (imageUrl) formData.append('image', imageUrl)
+      if (effectiveImage && deployType !== 'stateful') formData.append('image', effectiveImage)
       if (codeBlob) formData.append('code_tar', codeBlob, 'code.zip')
       
       // For image_file source
@@ -1024,6 +1164,9 @@ CMD ["python", "main.py"]
       await apiStreamMultipart(`/infra/deploy/multipart?${queryParams}`, formData, (msg) => {
         if (msg.type === 'log') {
           log(msg.message)
+        } else if (msg.type === 'warning') {
+          // Show warning about services needing redeploy
+          log(msg.message || msg.data?.message, 'warning')
         } else if (msg.type === 'progress') {
           progress = Math.min(20 + (msg.percent || 0) * 0.8, 95)
         } else if (msg.type === 'done') {
@@ -1044,7 +1187,7 @@ CMD ["python", "main.py"]
       toasts.success('Deployment successful!')
       
       // Refresh servers list in case new servers were provisioned
-      await loadServersForDeploy()
+      await serversStore.refresh().catch(() => {})
       
     } catch (err) {
       // Handle error object properly
@@ -1075,31 +1218,47 @@ CMD ["python", "main.py"]
 <div class="deploy-page">
   <div class="deploy-grid">
     <!-- Deploy Form -->
-    <Card title="🚀 Deploy Application">
+    <Card title="🚀 Deploy">
       <form on:submit={startDeployment}>
-        <!-- App Info -->
+        
+        <!-- Deploy Type Selector -->
+        <div class="deploy-type-selector">
+          {#each deployTypes as dt}
+            <label class="deploy-type-option" class:active={deployType === dt.value}>
+              <input type="radio" bind:group={deployType} value={dt.value}>
+              <span class="dt-label">{dt.label}</span>
+              <span class="dt-desc">{dt.description}</span>
+            </label>
+          {/each}
+        </div>
+        
+        <!-- Common: Project / Service / Environment -->
         <div class="form-row three-col">
           <div class="form-group">
-            <label for="deploy-name">App Name *</label>
-            <input 
-              id="deploy-name"
-              type="text" 
-              bind:value={name}
-              placeholder="my-app"
-              required
-              pattern="[-a-z0-9]+"
-              title="Lowercase letters, numbers, hyphens only"
-            >
-          </div>
-          <div class="form-group">
-            <label for="deploy-project">Project</label>
+            <label for="deploy-project">Project *</label>
             <input 
               id="deploy-project"
               type="text" 
               bind:value={project}
               placeholder="my-project"
+              required
               pattern="[-a-z0-9]*"
             >
+          </div>
+          <div class="form-group">
+            <label for="deploy-name">Service Name *</label>
+            <input 
+              id="deploy-name"
+              type="text" 
+              bind:value={name}
+              placeholder={deployType === 'stateful' ? statefulType : 'api'}
+              required
+              pattern="[-a-z0-9]+"
+              title="Lowercase letters, numbers, hyphens only"
+            >
+            {#if deployType === 'stateful'}
+              <small>Usually same as type: {statefulType}</small>
+            {/if}
           </div>
           <div class="form-group">
             <label for="deploy-env">Environment</label>
@@ -1111,7 +1270,25 @@ CMD ["python", "main.py"]
           </div>
         </div>
         
-        <!-- Deploy Config Management -->
+        <!-- STATEFUL: Service Type -->
+        {#if deployType === 'stateful'}
+          <div class="form-group">
+            <label>Service Type *</label>
+            <div class="stateful-type-selector">
+              {#each statefulTypes as st}
+                <label class="stateful-option" class:active={statefulType === st.value}>
+                  <input type="radio" bind:group={statefulType} value={st.value}>
+                  <span class="st-label">{st.label}</span>
+                  <span class="st-port">Port {st.port}</span>
+                </label>
+              {/each}
+            </div>
+            <small>Image: {statefulTypes.find(s => s.value === statefulType)?.image} • Data persisted to /data</small>
+          </div>
+        {/if}
+        
+        <!-- Deploy Config Management (for non-stateful) -->
+        {#if deployType !== 'stateful'}
         <div class="config-bar">
           <span class="config-label">Config:</span>
           <Button variant="ghost" size="sm" on:click={loadDeployConfig} title="Load saved config">
@@ -1437,8 +1614,10 @@ CMD ["python", "main.py"]
             </div>
           </div>
         {/if}
+        {/if}
         
-        <!-- Port -->
+        <!-- Port (SERVICE only) -->
+        {#if deployType === 'service'}
         <div class="form-group">
           <label for="deploy-port">App Port</label>
           <input 
@@ -1450,8 +1629,45 @@ CMD ["python", "main.py"]
           >
           <small>Port your app listens on inside the container</small>
         </div>
+        {/if}
         
-        <!-- Environment Variables (collapsible) -->
+        <!-- Custom CMD (WORKER / SCHEDULED) -->
+        {#if deployType === 'worker' || deployType === 'scheduled'}
+        <div class="form-group">
+          <label for="custom-cmd">Command Override</label>
+          <input 
+            id="custom-cmd"
+            type="text" 
+            bind:value={customCmd}
+            placeholder="python worker.py"
+          >
+          <small>Override Dockerfile CMD (e.g., different entrypoint for worker vs webservice)</small>
+        </div>
+        {/if}
+        
+        <!-- Cron Schedule (SCHEDULED only) -->
+        {#if deployType === 'scheduled'}
+        <div class="form-group">
+          <label for="cron-schedule">Cron Schedule *</label>
+          <input 
+            id="cron-schedule"
+            type="text" 
+            bind:value={cronSchedule}
+            placeholder="0 * * * *"
+            required
+          >
+          <small>Standard cron format: minute hour day month weekday (e.g., "0 */6 * * *" = every 6 hours)</small>
+          <div class="cron-presets">
+            <button type="button" class="preset-btn" on:click={() => cronSchedule = '* * * * *'}>Every min</button>
+            <button type="button" class="preset-btn" on:click={() => cronSchedule = '0 * * * *'}>Hourly</button>
+            <button type="button" class="preset-btn" on:click={() => cronSchedule = '0 0 * * *'}>Daily</button>
+            <button type="button" class="preset-btn" on:click={() => cronSchedule = '0 0 * * 0'}>Weekly</button>
+          </div>
+        </div>
+        {/if}
+        
+        <!-- Environment Variables (collapsible) - for non-stateful -->
+        {#if deployType !== 'stateful'}
         <div class="collapsible-section" class:expanded={showEnvVars}>
           <button type="button" class="section-toggle" on:click={() => showEnvVars = !showEnvVars}>
             <span class="toggle-icon">{showEnvVars ? '▼' : '▶'}</span>
@@ -1472,13 +1688,15 @@ CMD ["python", "main.py"]
             </div>
           {/if}
         </div>
+        {/if}
         
-        <!-- Service Configuration (collapsible) -->
+        <!-- Service Configuration (SERVICE / WORKER / SCHEDULED only) -->
+        {#if deployType !== 'stateful'}
         <div class="collapsible-section" class:expanded={showServiceConfig}>
           <button type="button" class="section-toggle" on:click={() => showServiceConfig = !showServiceConfig}>
             <span class="toggle-icon">{showServiceConfig ? '▼' : '▶'}</span>
             <span>🔧 Service Configuration</span>
-            {#if setupDomain || Object.values(dependencies).some(d => d)}
+            {#if (deployType === 'service' && setupDomain) || Object.values(dependencies).some(d => d)}
               <Badge variant="info">configured</Badge>
             {/if}
           </button>
@@ -1522,6 +1740,8 @@ CMD ["python", "main.py"]
               </label>
               <small>Mounts /data volume for databases and stateful services</small>
               
+              <!-- Domain setup (SERVICE only) -->
+              {#if deployType === 'service'}
               <div class="config-divider"></div>
               
               <label class="checkbox-label">
@@ -1559,23 +1779,66 @@ CMD ["python", "main.py"]
                   </div>
                 </div>
               {/if}
+              {/if}
             </div>
           {/if}
         </div>
+        {/if}
         
         <!-- Server Selection -->
         <div class="server-selection">
           <div class="server-header">
             <div class="server-title">
-              <span>🖥️ Servers</span>
-              <Badge variant="info">{selectedServers.size} selected</Badge>
+              <span>🖥️ Server{deployType === 'service' || deployType === 'worker' ? 's' : ''}</span>
+              {#if deployType === 'stateful' || deployType === 'scheduled'}
+                <Badge variant="info">{selectedServers.size === 1 ? '1 selected' : 'select 1'}</Badge>
+              {:else}
+                <Badge variant="info">{selectedServers.size} selected</Badge>
+              {/if}
             </div>
+            {#if deployType === 'service' || deployType === 'worker'}
             <div class="server-actions">
               <Button variant="ghost" size="sm" on:click={() => selectAllServers(true)}>✓ All</Button>
               <Button variant="ghost" size="sm" on:click={() => selectAllServers(false)}>✕ None</Button>
             </div>
+            {/if}
           </div>
           
+          {#if deployType === 'stateful' || deployType === 'scheduled'}
+          <!-- Single server selection (radio) for stateful/scheduled -->
+          <div class="server-list single-select">
+            <small class="select-hint">
+              {#if deployType === 'stateful'}
+                ℹ️ Stateful services run on a single server. For replication, deploy multiple named services.
+              {:else}
+                ℹ️ Scheduled jobs run on one server to avoid duplicate execution.
+              {/if}
+            </small>
+            {#if !filteredServers || filteredServers.length === 0}
+              <div class="empty">No servers in {selectedRegion || 'any region'}</div>
+            {:else}
+              {#each filteredServers as server}
+                {@const ip = server.ip || server.networks?.v4?.[0]?.ip_address}
+                {#if ip}
+                  <label class="server-item" class:selected={selectedServers.has(ip)}>
+                    <input 
+                      type="radio" 
+                      name="single-server"
+                      checked={selectedServers.has(ip)}
+                      on:change={() => selectSingleServer(ip)}
+                    >
+                    <span class="server-name">{server.name || 'unnamed'}</span>
+                    <code class="server-ip">{ip}</code>
+                    {#if server.project}
+                      <Badge variant="info">{server.project}</Badge>
+                    {/if}
+                  </label>
+                {/if}
+              {/each}
+            {/if}
+          </div>
+          {:else}
+          <!-- Multi-server selection (checkbox) for service/worker -->
           <div class="server-list">
             {#if !filteredServers || filteredServers.length === 0}
               <div class="empty">No servers in {selectedRegion || 'any region'}</div>
@@ -1599,6 +1862,7 @@ CMD ["python", "main.py"]
               {/each}
             {/if}
           </div>
+          {/if}
           
           <!-- Provisioning options (collapsible) -->
           <div class="collapsible-section" class:expanded={showProvisioning}>
@@ -1640,12 +1904,21 @@ CMD ["python", "main.py"]
                 </div>
                 
                 <div class="new-servers">
-                  <span>New servers to provision:</span>
-                  <div class="number-spinner">
-                    <button type="button" on:click={() => additionalServers = Math.max(0, additionalServers - 1)}>−</button>
-                    <input type="number" bind:value={additionalServers} min="0" max="10">
-                    <button type="button" on:click={() => additionalServers = Math.min(10, additionalServers + 1)}>+</button>
-                  </div>
+                  <span>New server{deployType === 'service' || deployType === 'worker' ? 's' : ''} to provision:</span>
+                  {#if deployType === 'stateful' || deployType === 'scheduled'}
+                    <!-- Single server toggle for stateful/scheduled -->
+                    <label class="checkbox-label">
+                      <input type="checkbox" checked={additionalServers === 1} on:change={(e) => additionalServers = e.target.checked ? 1 : 0}>
+                      <span>Provision 1 new server</span>
+                    </label>
+                  {:else}
+                    <!-- Multi-server spinner for service/worker -->
+                    <div class="number-spinner">
+                      <button type="button" on:click={() => additionalServers = Math.max(0, additionalServers - 1)}>−</button>
+                      <input type="number" bind:value={additionalServers} min="0" max="10">
+                      <button type="button" on:click={() => additionalServers = Math.min(10, additionalServers + 1)}>+</button>
+                    </div>
+                  {/if}
                   {#if additionalServers > 0 && !selectedSnapshot}
                     <small class="warning">⚠️ Select a snapshot for new servers</small>
                   {/if}
@@ -1695,6 +1968,19 @@ CMD ["python", "main.py"]
                   <a href="https://{deployResult.domain}" target="_blank" class="result-link">
                     https://{deployResult.domain}
                   </a>
+                </div>
+              {/if}
+              
+              {#if deployResult.connection_url}
+                <div class="result-section">
+                  <span class="result-label">Connection:</span>
+                  <div class="connection-info">
+                    <code class="connection-url">{deployResult.env_var_name || 'URL'}={deployResult.connection_url}</code>
+                    <button class="copy-btn" on:click={() => {
+                      navigator.clipboard.writeText(deployResult.connection_url)
+                      toasts.success('Copied to clipboard!')
+                    }}>📋 Copy</button>
+                  </div>
                 </div>
               {/if}
               
@@ -1820,6 +2106,117 @@ CMD ["python", "main.py"]
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px;
+  }
+  
+  /* Deploy Type Selector */
+  .deploy-type-selector {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  
+  .deploy-type-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 8px;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+  }
+  
+  .deploy-type-option:hover {
+    border-color: var(--primary);
+    background: var(--bg-hover);
+  }
+  
+  .deploy-type-option.active {
+    border-color: var(--primary);
+    background: color-mix(in srgb, var(--primary) 15%, transparent);
+  }
+  
+  .deploy-type-option input[type="radio"] {
+    display: none;
+  }
+  
+  .dt-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+  }
+  
+  .dt-desc {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    line-height: 1.3;
+  }
+  
+  /* Stateful Type Selector */
+  .stateful-type-selector {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  
+  .stateful-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 8px;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .stateful-option:hover {
+    border-color: var(--primary);
+  }
+  
+  .stateful-option.active {
+    border-color: var(--primary);
+    background: color-mix(in srgb, var(--primary) 15%, transparent);
+  }
+  
+  .stateful-option input[type="radio"] {
+    display: none;
+  }
+  
+  .st-label {
+    font-weight: 500;
+    font-size: 0.85rem;
+  }
+  
+  .st-port {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+  
+  /* Cron Presets */
+  .cron-presets {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  
+  .preset-btn {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  
+  .preset-btn:hover {
+    border-color: var(--primary);
+    color: var(--primary);
   }
   
   /* Collapsible Sections */
@@ -2111,6 +2508,19 @@ CMD ["python", "main.py"]
     overflow-y: auto;
   }
   
+  .server-list.single-select {
+    max-height: 250px;
+  }
+  
+  .select-hint {
+    display: block;
+    padding: 8px 12px;
+    color: var(--text-muted);
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8rem;
+  }
+  
   .server-item {
     display: flex;
     align-items: center;
@@ -2301,6 +2711,37 @@ CMD ["python", "main.py"]
     margin-bottom: 4px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+  }
+  
+  .connection-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  
+  .connection-url {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9rem;
+    color: #4ade80;
+    word-break: break-all;
+  }
+  
+  .copy-btn {
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  
+  .copy-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
   }
   
   .result-link {

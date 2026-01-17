@@ -1,5 +1,6 @@
 import { writable, derived } from 'svelte/store'
-import { createApiStore, createParamStore } from './fetchStore.js'
+import { createApiStore, createParamStore, createFetchStore } from './fetchStore.js'
+import { api } from '../api/client.js'
 import { getDoToken } from './auth.js'
 
 // Current tab
@@ -50,12 +51,20 @@ export const serversStore = createApiStore('/infra/servers', {
   initialData: [],
 })
 
-// Projects list
-export const projectsStore = createApiStore('/infra/projects', {
-  transform: (data) => data?.projects || [],
-  refreshInterval: 120000,
-  initialData: [],
-})
+// Projects list (requires DO token)
+export const projectsStore = createFetchStore(
+  '/infra/projects',
+  async () => {
+    const token = getDoToken()
+    if (!token) return []
+    const data = await api('GET', `/infra/projects?do_token=${token}`)
+    return data?.projects || []
+  },
+  {
+    refreshInterval: 120000,
+    initialData: [],
+  }
+)
 
 // Snapshots list
 export const snapshotsStore = createApiStore('/infra/snapshots', {

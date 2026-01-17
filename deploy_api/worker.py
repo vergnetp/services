@@ -24,7 +24,7 @@ from .src.workers import TASKS
 
 
 async def init_app():
-    """Initialize database for worker processes."""
+    """Initialize database and streaming for worker processes."""
     settings = get_settings()
     # Note: Data dir creation handled by kernel based on manifest database.path
     
@@ -37,6 +37,18 @@ async def init_app():
         user=settings.database_user,
         password=settings.database_password,
     )
+    
+    # Initialize streaming (for deploy task events)
+    if settings.redis_url:
+        try:
+            from shared_libs.backend.streaming import init_streaming
+            from shared_libs.backend.job_queue import QueueRedisConfig
+            
+            redis_config = QueueRedisConfig(url=settings.redis_url)
+            init_streaming(redis_config)
+            get_logger().info("Worker streaming initialized")
+        except Exception as e:
+            get_logger().warning(f"Failed to init streaming: {e}")
     
     get_logger().info("Worker database initialized")
 

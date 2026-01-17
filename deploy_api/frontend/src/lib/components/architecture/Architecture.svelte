@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { projects } from '../../stores/app.js'
+  import { getDoToken } from '../../stores/auth.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'
   import Card from '../ui/Card.svelte'
@@ -48,9 +49,16 @@
     error = null
     
     try {
+      // Get DO token from auth store
+      const doTokenValue = getDoToken()
+      if (!doTokenValue) {
+        throw new Error('DigitalOcean token required')
+      }
+      
       const data = await api('POST', '/infra/architecture', {
         project: projectFilter || null,
-        environment: envFilter || null
+        environment: envFilter || null,
+        do_token: doTokenValue
       })
       
       nodes = data.nodes || []

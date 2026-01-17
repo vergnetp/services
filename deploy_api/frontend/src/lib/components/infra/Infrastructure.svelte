@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { servers, serversStore, snapshotsStore, doToken, projects, deploymentHistory } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
-  import { api } from '../../api/client.js'
+  import { api, apiStream } from '../../api/client.js'
   import Button from '../ui/Button.svelte'
   import Badge from '../ui/Badge.svelte'
   import Modal from '../ui/Modal.svelte'
@@ -12,6 +12,11 @@
   let filterProject = ''
   let filterEnv = ''
   let lastUpdated = null
+  
+  // Streaming logs for long operations
+  let buildLogs = []
+  let provisionLogs = []
+  let provisioning = false
   
   // Compute unique projects/envs from servers
   $: allProjects = [...new Set([
@@ -137,30 +142,49 @@
   // Provision modal
   let provisionModalOpen = false
   let provisionForm = {
-    name: '',
-    project: '',
-    env: 'prod',
     region: 'lon1',
-    size: 's-1vcpu-1gb',
-    count: 1
+    size: 's-2vcpu-2gb',
+    snapshot_id: ''  // Will be set from dropdown
   }
   
   const regions = [
-    { value: 'lon1', label: 'London' },
-    { value: 'fra1', label: 'Frankfurt' },
-    { value: 'ams3', label: 'Amsterdam' },
-    { value: 'nyc1', label: 'New York' },
-    { value: 'sfo3', label: 'San Francisco' },
-    { value: 'sgp1', label: 'Singapore' },
+    { value: 'lon1', label: 'London 1' },
+    { value: 'fra1', label: 'Frankfurt 1' },
+    { value: 'ams3', label: 'Amsterdam 3' },
+    { value: 'nyc1', label: 'New York 1' },
+    { value: 'nyc3', label: 'New York 3' },
+    { value: 'sfo3', label: 'San Francisco 3' },
+    { value: 'sgp1', label: 'Singapore 1' },
+    { value: 'blr1', label: 'Bangalore 1' },
+    { value: 'tor1', label: 'Toronto 1' },
+    { value: 'syd1', label: 'Sydney 1' },
   ]
   
-  const sizes = [
-    { value: 's-1vcpu-512mb-10gb', label: '$4 - 512MB' },
-    { value: 's-1vcpu-1gb', label: '$6 - 1GB' },
-    { value: 's-1vcpu-2gb', label: '$12 - 2GB' },
-    { value: 's-2vcpu-2gb', label: '$18 - 2vCPU/2GB' },
-    { value: 's-2vcpu-4gb', label: '$24 - 2vCPU/4GB' },
+  // Sizes loaded from server
+  let sizes = [
+    { slug: 's-1vcpu-512mb-10gb', memory: 512, vcpus: 1, price_monthly: 4, description: '$4/mo - 512MB / 1 vCPU' },
+    { slug: 's-1vcpu-1gb', memory: 1024, vcpus: 1, price_monthly: 6, description: '$6/mo - 1GB / 1 vCPU' },
+    { slug: 's-2vcpu-2gb', memory: 2048, vcpus: 2, price_monthly: 18, description: '$18/mo - 2GB / 2 vCPU' },
+    { slug: 's-2vcpu-4gb', memory: 4096, vcpus: 2, price_monthly: 24, description: '$24/mo - 4GB / 2 vCPU' },
+    { slug: 's-4vcpu-8gb', memory: 8192, vcpus: 4, price_monthly: 48, description: '$48/mo - 8GB / 4 vCPU' },
   ]
+  
+  // Load sizes from server
+  async function loadSizes() {
+    try {
+      const data = await api('GET', '/infra/sizes')
+      if (data.sizes?.length > 0) {
+        sizes = data.sizes
+      }
+    } catch (e) {
+      console.warn('Using fallback sizes')
+    }
+  }
+  
+  // Load sizes on mount
+  onMount(() => {
+    loadSizes()
+  })
   
   // Subscribe to store
   $: storeState = $serversStore || { loading: false }
@@ -218,12 +242,39 @@
   
   async function buildSnapshot() {
     building = true
+    buildLogs = []
+    
+    const addLog = (msg, type = 'info') => {
+      buildLogs = [...buildLogs, { message: msg, type, time: new Date() }]
+    }
+    
     try {
       if (snapshotType === 'base') {
-        toasts.info('Creating base snapshot... This takes ~5 minutes')
-        await api('POST', `/infra/setup/init?do_token=${$doToken}`)
-        toasts.success('Base snapshot created!')
+        addLog('Starting base snapshot creation...')
+        
+        await apiStream('POST', `/infra/setup/init/stream?do_token=${$doToken}`, {}, (msg) => {
+          // Handle various event types from backend
+          if (msg.type === 'log') {
+            addLog(msg.message || msg.data?.message, 'info')
+          } else if (msg.type === 'progress') {
+            if (msg.message) addLog(msg.message, 'info')
+            // Could show percent: msg.percent
+          } else if (msg.type === 'error') {
+            addLog(msg.message || msg.error, 'error')
+          } else if (msg.type === 'done' || msg.type === 'complete') {
+            if (msg.success) {
+              addLog('✅ Base snapshot created successfully!', 'success')
+            } else {
+              addLog(`❌ ${msg.message || msg.error || 'Failed'}`, 'error')
+            }
+          } else if (msg.message) {
+            addLog(msg.message, 'info')
+          }
+        })
+        
         await checkBaseSnapshot()
+        await loadSnapshots()
+        toasts.success('Base snapshot created!')
       } else {
         if (!snapshotName) {
           toasts.error('Snapshot name required')
@@ -235,19 +286,39 @@
           building = false
           return
         }
-        await api('POST', `/infra/snapshots/build?do_token=${$doToken}`, {
+        
+        addLog(`Starting custom snapshot "${snapshotName}"...`)
+        
+        await apiStream('POST', `/infra/snapshots/ensure/stream?do_token=${$doToken}`, {
           name: snapshotName,
           base_image: baseImage,
           install_docker: installDocker,
           install_nginx: installNginx,
           install_certbot: installCertbot
+        }, (msg) => {
+          if (msg.type === 'log') {
+            addLog(msg.message || msg.data?.message, 'info')
+          } else if (msg.type === 'progress') {
+            if (msg.message) addLog(msg.message, 'info')
+          } else if (msg.type === 'error') {
+            addLog(msg.message || msg.error, 'error')
+          } else if (msg.type === 'done' || msg.type === 'complete') {
+            if (msg.success) {
+              addLog('✅ Snapshot created successfully!', 'success')
+            } else {
+              addLog(`❌ ${msg.message || msg.error || 'Failed'}`, 'error')
+            }
+          } else if (msg.message) {
+            addLog(msg.message, 'info')
+          }
         })
-        toasts.success('Snapshot build started! Takes 5-10 min.')
+        
+        await loadSnapshots()
+        toasts.success('Custom snapshot created!')
+        snapshotName = ''
       }
-      buildModalOpen = false
-      snapshotName = ''
-      setTimeout(() => loadSnapshots(), 5000)
     } catch (err) {
+      addLog(`❌ Error: ${err.message}`, 'error')
       toasts.error(err.message)
     } finally {
       building = false
@@ -255,16 +326,45 @@
   }
   
   async function provision() {
+    provisioning = true
+    provisionLogs = []
+    
+    const addLog = (msg, type = 'info') => {
+      provisionLogs = [...provisionLogs, { message: msg, type, time: new Date() }]
+    }
+    
     try {
-      const result = await api('POST', '/infra/servers/provision', {
-        ...provisionForm,
-        do_token: $doToken
+      addLog(`Starting provisioning...`)
+      
+      await apiStream('POST', `/infra/servers/provision/stream?do_token=${$doToken}`, {
+        snapshot_id: provisionForm.snapshot_id || null,  // Let server auto-find base snapshot
+        region: provisionForm.region,
+        size: provisionForm.size
+      }, (msg) => {
+        if (msg.type === 'log') {
+          addLog(msg.message || msg.data?.message, 'info')
+        } else if (msg.type === 'progress') {
+          addLog(msg.message || `Progress: ${msg.percent || ''}%`, 'info')
+        } else if (msg.type === 'error') {
+          addLog(msg.message || msg.error, 'error')
+        } else if (msg.type === 'done' || msg.type === 'complete') {
+          if (msg.success) {
+            addLog(`✅ Server provisioned! IP: ${msg.ip || 'pending'}`, 'success')
+          } else {
+            addLog(`❌ ${msg.message || msg.error || 'Failed'}`, 'error')
+          }
+        } else if (msg.message) {
+          addLog(msg.message, 'info')
+        }
       })
-      toasts.success(`Provisioned ${result.created || 1} server(s)`)
-      provisionModalOpen = false
+      
+      toasts.success(`Server provisioned`)
       serversStore.refresh()
     } catch (e) {
+      addLog(`❌ Error: ${e.message}`, 'error')
       toasts.error('Failed: ' + e.message)
+    } finally {
+      provisioning = false
     }
   }
   
@@ -504,40 +604,59 @@
 </div>
 
 <!-- Provision Modal -->
-<Modal bind:open={provisionModalOpen} title="Provision Server" width="400px">
+<Modal bind:open={provisionModalOpen} title="Provision Server" width="500px" on:close={() => { provisionModalOpen = false; provisionLogs = [] }}>
   <div class="form-grid">
     <div class="form-group full">
-      <label>Name</label>
-      <input type="text" bind:value={provisionForm.name} placeholder="web-01">
-    </div>
-    <div class="form-group">
-      <label>Project</label>
-      <input type="text" bind:value={provisionForm.project} placeholder="myapp">
-    </div>
-    <div class="form-group">
-      <label>Env</label>
-      <select bind:value={provisionForm.env}>
-        <option value="prod">prod</option>
-        <option value="staging">staging</option>
-        <option value="dev">dev</option>
+      <label>Snapshot</label>
+      <select bind:value={provisionForm.snapshot_id} disabled={provisioning}>
+        {#each snapshots.filter(s => s.name?.startsWith('base-')) as snap}
+          <option value={snap.id}>{snap.name}</option>
+        {/each}
+        {#if snapshots.filter(s => s.name?.startsWith('base-')).length === 0}
+          <option value="">No base snapshot - create one first</option>
+        {/if}
       </select>
     </div>
     <div class="form-group">
       <label>Region</label>
-      <select bind:value={provisionForm.region}>
+      <select bind:value={provisionForm.region} disabled={provisioning}>
         {#each regions as r}<option value={r.value}>{r.label}</option>{/each}
       </select>
     </div>
     <div class="form-group">
       <label>Size</label>
-      <select bind:value={provisionForm.size}>
-        {#each sizes as s}<option value={s.value}>{s.label}</option>{/each}
+      <select bind:value={provisionForm.size} disabled={provisioning}>
+        {#each sizes as s}<option value={s.slug}>{s.description || s.slug}</option>{/each}
       </select>
     </div>
   </div>
+  
+  <!-- Provision Logs -->
+  {#if provisionLogs.length > 0 || provisioning}
+    <div class="operation-logs-section">
+      <label>📋 Progress</label>
+      <div class="operation-logs">
+        {#each provisionLogs as log}
+          <div class="log-entry log-{log.type}">
+            {log.message}
+          </div>
+        {/each}
+        {#if provisioning}
+          <div class="log-entry log-info">
+            <span class="spinner">⏳</span> Provisioning...
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+  
   <div slot="footer">
-    <Button variant="ghost" on:click={() => provisionModalOpen = false}>Cancel</Button>
-    <Button variant="primary" on:click={provision}>🚀 Provision</Button>
+    <Button variant="ghost" on:click={() => { provisionModalOpen = false; provisionLogs = [] }}>
+      {provisionLogs.length > 0 ? 'Close' : 'Cancel'}
+    </Button>
+    <Button variant="primary" on:click={provision} disabled={provisioning || !provisionForm.snapshot_id}>
+      {#if provisioning}⏳ Provisioning...{:else}🚀 Provision{/if}
+    </Button>
   </div>
 </Modal>
 
@@ -579,14 +698,15 @@
 <Modal 
   bind:open={buildModalOpen}
   title="Build Snapshot"
-  width="500px"
-  on:close={() => buildModalOpen = false}
+  width="600px"
+  on:close={() => { buildModalOpen = false; buildLogs = [] }}
 >
   <div class="snap-type-selector">
     <button 
       class="snap-type-btn" 
       class:active={snapshotType === 'base'}
       on:click={() => snapshotType = 'base'}
+      disabled={building}
     >
       🏗️ Base Snapshot
     </button>
@@ -594,6 +714,7 @@
       class="snap-type-btn" 
       class:active={snapshotType === 'custom'}
       on:click={() => snapshotType = 'custom'}
+      disabled={building}
     >
       📸 Custom Snapshot
     </button>
@@ -615,12 +736,13 @@
           type="text" 
           bind:value={snapshotName}
           placeholder="my-custom-snapshot"
+          disabled={building}
         >
       </div>
       
       <div class="form-group">
         <label for="base-image">Base Image</label>
-        <select id="base-image" bind:value={baseImage}>
+        <select id="base-image" bind:value={baseImage} disabled={building}>
           {#each baseImages as image}
             <option value={image.value}>{image.label}</option>
           {/each}
@@ -631,23 +753,44 @@
         <label>Pre-install</label>
         <div class="checkbox-list">
           <label class="checkbox-item">
-            <input type="checkbox" bind:checked={installDocker}> Docker
+            <input type="checkbox" bind:checked={installDocker} disabled={building}> Docker
           </label>
           <label class="checkbox-item">
-            <input type="checkbox" bind:checked={installNginx}> Nginx
+            <input type="checkbox" bind:checked={installNginx} disabled={building}> Nginx
           </label>
           <label class="checkbox-item">
-            <input type="checkbox" bind:checked={installCertbot}> Certbot
+            <input type="checkbox" bind:checked={installCertbot} disabled={building}> Certbot
           </label>
         </div>
       </div>
     </form>
   {/if}
   
+  <!-- Build Logs -->
+  {#if buildLogs.length > 0 || building}
+    <div class="operation-logs-section">
+      <label>📋 Progress</label>
+      <div class="operation-logs">
+        {#each buildLogs as log}
+          <div class="log-entry log-{log.type}">
+            {log.message}
+          </div>
+        {/each}
+        {#if building}
+          <div class="log-entry log-info">
+            <span class="spinner">⏳</span> Working...
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+  
   <div slot="footer">
-    <Button variant="ghost" on:click={() => buildModalOpen = false}>Cancel</Button>
+    <Button variant="ghost" on:click={() => { buildModalOpen = false; buildLogs = [] }}>
+      {buildLogs.length > 0 ? 'Close' : 'Cancel'}
+    </Button>
     <Button variant="primary" on:click={buildSnapshot} disabled={building}>
-      {#if building}Building...{:else}🔨 Build{/if}
+      {#if building}⏳ Building...{:else}🔨 Build{/if}
     </Button>
   </div>
 </Modal>
@@ -1213,5 +1356,66 @@
     font-size: 0.75rem;
     color: var(--text-muted2);
     margin-right: auto;
+  }
+  
+  /* Operation Logs (Build/Provision) */
+  .operation-logs-section {
+    margin-top: 16px;
+  }
+  
+  .operation-logs-section > label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+  
+  .operation-logs {
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--bg-dark, #1a1b26);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 0.8rem;
+  }
+  
+  .operation-logs .log-entry {
+    padding: 2px 0;
+    color: #a9b1d6;
+  }
+  
+  .operation-logs .log-entry.log-info {
+    color: #7aa2f7;
+  }
+  
+  .operation-logs .log-entry.log-success {
+    color: #9ece6a;
+  }
+  
+  .operation-logs .log-entry.log-error {
+    color: #f7768e;
+  }
+  
+  .operation-logs .log-entry.log-warning {
+    color: #e0af68;
+  }
+  
+  .operation-logs .spinner {
+    display: inline-block;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  
+  .optional {
+    font-weight: 400;
+    font-size: 0.8em;
+    color: var(--text-muted2, #666);
+    font-style: italic;
   }
 </style>

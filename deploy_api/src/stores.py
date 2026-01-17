@@ -140,6 +140,8 @@ class ServiceStore:
         port: int = 8000,
         health_endpoint: str = "/health",
         description: str = None,
+        is_stateful: bool = False,
+        service_type: str = None,
     ) -> Dict[str, Any]:
         return await self._crud.create(self.db, {
             "workspace_id": workspace_id,
@@ -148,6 +150,8 @@ class ServiceStore:
             "port": port,
             "health_endpoint": health_endpoint,
             "description": description,
+            "is_stateful": is_stateful,
+            "service_type": service_type or ("stateful" if is_stateful else "app"),
         })
     
     async def get(self, service_id: str) -> Optional[Dict[str, Any]]:
@@ -166,16 +170,32 @@ class ServiceStore:
         project_id: str,
         name: str,
         port: int = 8000,
+        is_stateful: bool = False,
+        service_type: str = None,
     ) -> Dict[str, Any]:
         existing = await self.get_by_name(project_id, name)
         if existing:
+            # Update stateful fields if changed
+            if is_stateful and not existing.get("is_stateful"):
+                await self.update(existing["id"], is_stateful=True, service_type=service_type)
+                existing["is_stateful"] = True
+                existing["service_type"] = service_type
             return existing
-        return await self.create(workspace_id, project_id, name, port)
+        return await self.create(workspace_id, project_id, name, port, is_stateful=is_stateful, service_type=service_type)
     
     async def list_for_project(self, project_id: str) -> List[Dict[str, Any]]:
         return await self._crud.list(
             self.db,
             where_clause="[project_id] = ?",
+            params=(project_id,),
+            order_by="[name] ASC",
+        )
+    
+    async def list_stateful_for_project(self, project_id: str) -> List[Dict[str, Any]]:
+        """List all stateful services (redis, postgres, etc.) for a project."""
+        return await self._crud.list(
+            self.db,
+            where_clause="[project_id] = ? AND [is_stateful] = 1",
             params=(project_id,),
             order_by="[name] ASC",
         )
@@ -326,7 +346,10 @@ class DropletStore:
 # =============================================================================
 
 class ServiceDropletStore:
-    """Junction table: which services run on which droplets (per env)."""
+    """Junction table: which services run on which droplets (per env).
+    
+    Also stores service mesh routing info (ports, IPs) for nginx stream proxy.
+    """
     
     def __init__(self, db):
         self.db = db
@@ -339,19 +362,35 @@ class ServiceDropletStore:
         droplet_id: str,
         env: str,
         container_name: str = None,
+        # Service mesh fields
+        host_port: int = None,
+        container_port: int = None,
+        internal_port: int = None,
+        private_ip: str = None,
     ) -> Dict[str, Any]:
+        """Link a service to a droplet, with optional service mesh routing info."""
         existing = await self._crud.find_one(
             self.db,
             "[service_id] = ? AND [droplet_id] = ? AND [env] = ?",
             (service_id, droplet_id, env),
         )
         if existing:
+            # Update existing link
             if container_name:
                 existing["container_name"] = container_name
-                existing["is_healthy"] = 1
-                existing["last_healthy_at"] = _now()
-                await self._crud.save(self.db, existing)
+            if host_port is not None:
+                existing["host_port"] = host_port
+            if container_port is not None:
+                existing["container_port"] = container_port
+            if internal_port is not None:
+                existing["internal_port"] = internal_port
+            if private_ip is not None:
+                existing["private_ip"] = private_ip
+            existing["is_healthy"] = 1
+            existing["last_healthy_at"] = _now()
+            await self._crud.save(self.db, existing)
             return existing
+        
         return await self._crud.create(self.db, {
             "workspace_id": workspace_id,
             "service_id": service_id,
@@ -360,6 +399,11 @@ class ServiceDropletStore:
             "container_name": container_name,
             "is_healthy": 1,
             "last_healthy_at": _now(),
+            # Service mesh fields
+            "host_port": host_port,
+            "container_port": container_port,
+            "internal_port": internal_port,
+            "private_ip": private_ip,
         })
     
     async def unlink(self, service_id: str, droplet_id: str, env: str) -> bool:
@@ -428,6 +472,132 @@ class ServiceDropletStore:
         droplet_ids = [l["droplet_id"] for l in links]
         droplets = await droplet_store.get_many(droplet_ids)
         return sorted([d["ip"] for d in droplets if d.get("ip")])
+    
+    # =========================================================================
+    # Service Mesh Methods
+    # =========================================================================
+    
+    async def get_project_server_ips(
+        self,
+        workspace_id: str,
+        project_id: str,
+        env: str,
+        droplet_store: DropletStore,
+    ) -> List[str]:
+        """
+        Get all droplet IPs for a project/env.
+        
+        Used by service mesh to update nginx on ALL servers when deploying
+        a service, so other services can reach it.
+        """
+        # Get all service_droplets for this workspace/env
+        all_links = await self._crud.list(
+            self.db,
+            where_clause="[workspace_id] = ? AND [env] = ?",
+            params=(workspace_id, env),
+        )
+        
+        # Get unique droplet IDs
+        droplet_ids = list(set(l["droplet_id"] for l in all_links))
+        if not droplet_ids:
+            return []
+        
+        # Get droplet IPs
+        droplets = await droplet_store.get_many(droplet_ids)
+        return [d["ip"] for d in droplets if d.get("ip")]
+    
+    async def find_service_locations(
+        self,
+        workspace_id: str,
+        service_name: str,
+        env: str,
+        service_store: "ServiceStore",
+        droplet_store: DropletStore,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find where a service is deployed.
+        
+        Returns list of locations with droplet IP and service mesh info.
+        Used to route traffic to a dependency service.
+        """
+        # Find service by name
+        services = await service_store.list(workspace_id)
+        service = next((s for s in services if s["name"] == service_name), None)
+        if not service:
+            return []
+        
+        # Get links for this service
+        links = await self.get_droplets_for_service(service["id"], env)
+        if not links:
+            return []
+        
+        # Enrich with droplet IPs
+        droplet_ids = [l["droplet_id"] for l in links]
+        droplets = await droplet_store.get_many(droplet_ids)
+        droplet_map = {d["id"]: d for d in droplets}
+        
+        locations = []
+        for link in links:
+            droplet = droplet_map.get(link["droplet_id"])
+            if droplet:
+                locations.append({
+                    "server_ip": droplet.get("ip"),
+                    "private_ip": link.get("private_ip") or droplet.get("private_ip"),
+                    "host_port": link.get("host_port"),
+                    "container_port": link.get("container_port"),
+                    "internal_port": link.get("internal_port"),
+                    "container_name": link.get("container_name"),
+                })
+        
+        return locations
+    
+    async def get_stateful_services_for_project(
+        self,
+        project_id: str,
+        env: str,
+        service_store: ServiceStore,
+        droplet_store: DropletStore,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all stateful services (redis, postgres, etc.) for a project/env with their locations.
+        
+        Used to auto-inject URLs when deploying any service to the same project/env.
+        
+        Returns:
+            List of dicts with {service_type, host, port, service_name, connection_info}
+        """
+        # Get all stateful services for project
+        stateful_services = await service_store.list_stateful_for_project(project_id)
+        
+        result = []
+        for svc in stateful_services:
+            # Get deployment location for this env
+            links = await self.get_droplets_for_service(svc["id"], env, healthy_only=True)
+            if not links:
+                continue  # Not deployed to this env
+            
+            # Get droplet IP
+            droplet_ids = [l["droplet_id"] for l in links]
+            droplets = await droplet_store.get_many(droplet_ids)
+            
+            for link, droplet in zip(links, droplets):
+                if not droplet:
+                    continue
+                    
+                host = droplet.get("ip")
+                port = link.get("host_port") or link.get("internal_port")
+                
+                if host and port:
+                    result.append({
+                        "service_type": svc.get("service_type") or svc.get("name"),
+                        "service_name": svc.get("name"),
+                        "host": host,
+                        "port": port,
+                        "service_id": svc["id"],
+                    })
+                    break  # One location per service is enough for URL
+        
+        return result
 
 
 # =============================================================================

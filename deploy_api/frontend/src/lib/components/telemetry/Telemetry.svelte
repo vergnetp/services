@@ -310,7 +310,7 @@
 
 <!-- Drill-down Modal -->
 {#if showDrilldown && selectedTrace}
-<Modal title="Request Detail" on:close={() => showDrilldown = false} width="800px">
+<Modal open={true} title="Request Detail" on:close={() => showDrilldown = false} width="800px">
     <div class="trace-detail">
         <div class="trace-header">
             {#if selectedTrace.service_name}
@@ -421,6 +421,7 @@
     
     .header h2 {
         margin: 0;
+        color: var(--text);
     }
     
     .controls {
@@ -432,7 +433,9 @@
     .controls select {
         padding: 0.5rem;
         border-radius: 4px;
-        border: 1px solid var(--border-color, #ddd);
+        border: 1px solid var(--border);
+        background: var(--bg-input);
+        color: var(--text);
     }
     
     .overview-grid {
@@ -450,7 +453,7 @@
     .stat .label {
         display: block;
         font-size: 0.85rem;
-        color: #666;
+        color: var(--text-muted);
         margin-bottom: 0.25rem;
     }
     
@@ -458,19 +461,20 @@
         display: block;
         font-size: 1.5rem;
         font-weight: bold;
+        color: var(--text);
     }
     
     .stat.error .value {
-        color: #dc3545;
+        color: var(--danger);
     }
     
     .stat.clickable {
         cursor: pointer;
+        border-radius: 4px;
     }
     
     .stat.clickable:hover {
-        background: #f5f5f5;
-        border-radius: 4px;
+        background: var(--table-row-hover);
     }
     
     .filters {
@@ -483,7 +487,13 @@
     .filters input, .filters select {
         padding: 0.5rem;
         border-radius: 4px;
-        border: 1px solid var(--border-color, #ddd);
+        border: 1px solid var(--border);
+        background: var(--bg-input);
+        color: var(--text);
+    }
+    
+    .filters input::placeholder {
+        color: var(--text-muted2);
     }
     
     .filters input[type="text"] {
@@ -507,25 +517,32 @@
     th, td {
         padding: 0.5rem;
         text-align: left;
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
     }
     
     th {
-        background: #f9f9f9;
+        background: var(--table-header-bg);
         font-weight: 600;
+        color: var(--text-muted);
+    }
+    
+    tr:hover {
+        background: var(--table-row-hover);
     }
     
     tr.error {
-        background: #fff5f5;
+        background: rgba(255, 77, 94, 0.1);
     }
     
     tr.warning {
-        background: #fffbeb;
+        background: rgba(245, 158, 11, 0.1);
     }
     
     .time {
         font-family: monospace;
         font-size: 0.85rem;
+        color: var(--text-muted);
     }
     
     .path {
@@ -535,6 +552,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        color: var(--text);
     }
     
     .method {
@@ -546,11 +564,11 @@
         text-transform: uppercase;
     }
     
-    .method.get { background: #e3f2fd; color: #1565c0; }
-    .method.post { background: #e8f5e9; color: #2e7d32; }
-    .method.put { background: #fff3e0; color: #ef6c00; }
-    .method.delete { background: #ffebee; color: #c62828; }
-    .method.patch { background: #f3e5f5; color: #7b1fa2; }
+    .method.get { background: rgba(45, 125, 255, 0.2); color: #5aa3ff; }
+    .method.post { background: rgba(54, 211, 124, 0.2); color: var(--success); }
+    .method.put { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+    .method.delete { background: rgba(255, 77, 94, 0.2); color: var(--danger); }
+    .method.patch { background: rgba(167, 139, 250, 0.2); color: #a78bfa; }
     
     .status {
         display: inline-block;
@@ -560,20 +578,20 @@
         font-weight: bold;
     }
     
-    .status-green { background: #e8f5e9; color: #2e7d32; }
-    .status-blue { background: #e3f2fd; color: #1565c0; }
-    .status-yellow { background: #fff3e0; color: #ef6c00; }
-    .status-red { background: #ffebee; color: #c62828; }
-    .status-gray { background: #f5f5f5; color: #666; }
+    .status-green { background: rgba(54, 211, 124, 0.2); color: var(--success); }
+    .status-blue { background: rgba(45, 125, 255, 0.2); color: #5aa3ff; }
+    .status-yellow { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+    .status-red { background: rgba(255, 77, 94, 0.2); color: var(--danger); }
+    .status-gray { background: var(--bg-input); color: var(--text-muted); }
     
     .slow {
-        color: #ef6c00;
+        color: var(--warning);
         font-weight: bold;
     }
     
     .empty {
         text-align: center;
-        color: #999;
+        color: var(--text-muted2);
         padding: 2rem !important;
     }
     
@@ -588,6 +606,7 @@
     /* Trace Detail Modal */
     .trace-detail {
         font-size: 0.9rem;
+        color: var(--text);
     }
     
     .trace-header {
@@ -595,50 +614,61 @@
         gap: 1rem;
         align-items: center;
         padding: 1rem;
-        background: #f9f9f9;
+        background: var(--panel-bg);
+        border: 1px solid var(--border);
         border-radius: 4px;
         margin-bottom: 1rem;
     }
     
     .trace-header .path {
         flex: 1;
+        color: var(--text);
     }
     
     .trace-header .duration {
         font-weight: bold;
         font-size: 1.1rem;
+        color: var(--text);
     }
     
     .error-box {
-        background: #ffebee;
-        color: #c62828;
+        background: rgba(255, 77, 94, 0.15);
+        color: var(--danger);
         padding: 0.75rem;
         border-radius: 4px;
         margin-bottom: 1rem;
+        border: 1px solid rgba(255, 77, 94, 0.3);
     }
     
     .trace-meta {
         display: flex;
         gap: 1.5rem;
         font-size: 0.85rem;
-        color: #666;
+        color: var(--text-muted);
         margin-bottom: 1rem;
     }
     
     .trace-meta code {
-        background: #f5f5f5;
+        background: var(--bg-input);
         padding: 0.1rem 0.3rem;
         border-radius: 3px;
         font-size: 0.8rem;
+        color: var(--text);
+    }
+    
+    h3 {
+        color: var(--text);
     }
     
     h4 {
         margin: 1rem 0 0.5rem;
         font-size: 0.95rem;
+        color: var(--text);
     }
     
     .spans-timeline {
-        background: #f9f9f9;
+        background: var(--panel-bg);
+        border: 1px solid var(--border);
         border-radius: 4px;
         padding: 0.5rem;
     }
@@ -662,19 +692,20 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        color: var(--text-muted);
     }
     
     .span-bar-container {
         flex: 1;
         height: 20px;
-        background: #eee;
+        background: var(--bg-input);
         border-radius: 3px;
         position: relative;
     }
     
     .span-bar {
         height: 100%;
-        background: #4caf50;
+        background: var(--success);
         border-radius: 3px;
         display: flex;
         align-items: center;
@@ -686,11 +717,11 @@
     }
     
     .span-bar.error {
-        background: #f44336;
+        background: var(--danger);
     }
     
     .span-bar.child-bar {
-        background: #81c784;
+        background: rgba(54, 211, 124, 0.7);
     }
     
     .spans-details {
@@ -699,24 +730,26 @@
     
     details {
         margin-bottom: 0.5rem;
-        border: 1px solid #eee;
+        border: 1px solid var(--border);
         border-radius: 4px;
+        background: var(--bg-card);
     }
     
     summary {
         padding: 0.5rem;
         cursor: pointer;
-        background: #f9f9f9;
+        background: var(--panel-bg);
+        color: var(--text);
     }
     
     summary:hover {
-        background: #f0f0f0;
+        background: var(--table-row-hover);
     }
     
     .span-kind {
         display: inline-block;
-        background: #e3f2fd;
-        color: #1565c0;
+        background: rgba(45, 125, 255, 0.2);
+        color: #5aa3ff;
         padding: 0.1rem 0.3rem;
         border-radius: 3px;
         font-size: 0.7rem;
@@ -724,8 +757,8 @@
     }
     
     .error-badge {
-        background: #ffebee;
-        color: #c62828;
+        background: rgba(255, 77, 94, 0.2);
+        color: var(--danger);
         padding: 0.1rem 0.3rem;
         border-radius: 3px;
         font-size: 0.7rem;
@@ -736,6 +769,7 @@
         padding: 0.5rem;
         font-family: monospace;
         font-size: 0.8rem;
+        background: var(--bg-card);
     }
     
     .attr {
@@ -743,20 +777,20 @@
     }
     
     .attr .key {
-        color: #666;
+        color: var(--text-muted);
     }
     
     .attr .value {
-        color: #333;
+        color: var(--text);
     }
     
     .attr.error .value {
-        color: #c62828;
+        color: var(--danger);
     }
     
     .service-badge {
-        background: #e3f2fd;
-        color: #1565c0;
+        background: rgba(109, 92, 255, 0.2);
+        color: var(--primary);
         padding: 0.2rem 0.5rem;
         border-radius: 4px;
         font-size: 0.75rem;
@@ -766,6 +800,6 @@
     
     td.service {
         font-size: 0.8rem;
-        color: #666;
+        color: var(--text-muted);
     }
 </style>
