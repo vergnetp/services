@@ -4,10 +4,10 @@
   import { toasts } from '../../stores/toast.js'
   import { api, apiStreamMultipart, getDoToken, getCfToken } from '../../api/client.js'
   import { auth } from '../../stores/auth.js'
-  import Card from '../ui/Card.svelte'
-  import Button from '../ui/Button.svelte'
-  import Badge from '../ui/Badge.svelte'
-  import Modal from '../ui/Modal.svelte'
+  import { Card } from '@myorg/ui'
+  import { Button } from '@myorg/ui'
+  import { Badge } from '@myorg/ui'
+  import { Modal } from '@myorg/ui'
   
   // ============================================
   // Deploy Type (determines which form fields show)
@@ -101,6 +101,19 @@
   let selectedServers = new Set()
   let additionalServers = 0
   let deployResult = null  // Result from last deployment
+  
+  // Handle deploy type change (called from radio button)
+  function handleDeployTypeChange(newType) {
+    const prevType = deployType
+    deployType = newType
+    
+    // When switching TO stateful, auto-select 1 new server if nothing selected
+    if (newType === 'stateful' && prevType !== 'stateful') {
+      if (selectedServers.size === 0 && additionalServers === 0) {
+        additionalServers = 1
+      }
+    }
+  }
   
   // Limit to 1 server when switching to stateful/scheduled
   $: if ((deployType === 'stateful' || deployType === 'scheduled') && selectedServers.size > 1) {
@@ -822,6 +835,7 @@ CMD ["python", "main.py"]
   }
   
   function updateDockerfileField(field) {
+    if (!dockerfile) return
     if (field === 'from' && dockerfileQuickFrom) {
       dockerfile = dockerfile.replace(/^FROM\s+\S+/m, `FROM ${dockerfileQuickFrom}`)
     } else if (field === 'cmd' && dockerfileQuickCmd) {
@@ -897,6 +911,7 @@ CMD ["python", "main.py"]
   
   // Convert URLs in text to clickable links
   function linkifyUrls(text) {
+    if (!text) return ''
     const urlPattern = /(https?:\/\/[^\s]+)/g
     return text.replace(urlPattern, '<a href="$1" target="_blank" class="log-link">$1</a>')
   }
@@ -929,6 +944,15 @@ CMD ["python", "main.py"]
       if (sourceType === 'code' && !buildFolders.some(f => f.isMain)) {
         toasts.error('Add a main folder with your code')
         return
+      }
+      
+      // Check that folders have actual file contents (not just saved config)
+      if (sourceType === 'code') {
+        const mainFolder = buildFolders.find(f => f.isMain)
+        if (!mainFolder?.fileContents || mainFolder.fileContents.length === 0) {
+          toasts.error('Please re-upload your folders. File contents are not loaded from previous sessions.')
+          return
+        }
       }
       
       if (sourceType === 'git' && !gitUrl) {
@@ -1068,14 +1092,38 @@ CMD ["python", "main.py"]
       let codeBlob = null
       if (deployType !== 'stateful' && sourceType === 'code') {
         log('Creating code archive...')
+        
+        // Debug: Log folder info
+        console.log('[Deploy] buildFolders:', buildFolders.map(f => ({
+          name: f.name,
+          isMain: f.isMain,
+          fileCount: f.fileCount,
+          hasContents: f.fileContents?.length || 0
+        })))
+        
+        // Validate folders have content
+        const mainFolder = buildFolders.find(f => f.isMain)
+        if (!mainFolder?.fileContents || mainFolder.fileContents.length === 0) {
+          throw new Error('No file contents in main folder. Please re-upload your folders.')
+        }
+        
         const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')
         const zip = new JSZip()
         
         // Add all folders side by side
+        let totalFiles = 0
         for (const folder of buildFolders) {
-          for (const { path, content } of folder.fileContents) {
+          const contents = folder.fileContents || []
+          for (const { path, content } of contents) {
             zip.file(`${folder.name}/${path}`, content)
+            totalFiles++
           }
+        }
+        
+        console.log('[Deploy] Total files in zip:', totalFiles)
+        
+        if (totalFiles === 0) {
+          throw new Error('No files to deploy. Please re-upload your folders.')
         }
         
         // Add dockerfile at root if multi-folder
@@ -1225,7 +1273,7 @@ CMD ["python", "main.py"]
         <div class="deploy-type-selector">
           {#each deployTypes as dt}
             <label class="deploy-type-option" class:active={deployType === dt.value}>
-              <input type="radio" bind:group={deployType} value={dt.value}>
+              <input type="radio" name="deployType" checked={deployType === dt.value} on:change={() => handleDeployTypeChange(dt.value)}>
               <span class="dt-label">{dt.label}</span>
               <span class="dt-desc">{dt.description}</span>
             </label>
@@ -1242,7 +1290,7 @@ CMD ["python", "main.py"]
               bind:value={project}
               placeholder="my-project"
               required
-              pattern="[-a-z0-9]*"
+              pattern="[a-z0-9-]*"
             >
           </div>
           <div class="form-group">
@@ -1253,7 +1301,7 @@ CMD ["python", "main.py"]
               bind:value={name}
               placeholder={deployType === 'stateful' ? statefulType : 'api'}
               required
-              pattern="[-a-z0-9]+"
+              pattern="[a-z0-9-]+"
               title="Lowercase letters, numbers, hyphens only"
             >
             {#if deployType === 'stateful'}
@@ -1986,18 +2034,29 @@ CMD ["python", "main.py"]
               
               {#if deployResult.servers && deployResult.servers.length > 0}
                 <div class="result-section">
-                  <span class="result-label">Servers:</span>
+                  <span class="result-label">{deployType === 'stateful' ? 'TCP Endpoint:' : 'Servers:'}</span>
                   <div class="server-links">
                     {#each deployResult.servers.filter(s => s.success) as server}
                       <div class="server-link-row">
-                        <a href="{server.url}" target="_blank" class="result-link">{server.url}</a>
-                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/logs/${server.ip}/${server.container_name || deployResult.container_name || name}`, '_blank')}>
+                        {#if deployType === 'stateful'}
+                          <code class="tcp-endpoint">{server.url?.replace('http://', '') || `${server.ip}:${deployResult.host_port || server.host_port}`}</code>
+                        {:else}
+                          <a href="{server.url}" target="_blank" class="result-link">{server.url}</a>
+                        {/if}
+                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
                           📋 Logs
                         </button>
                       </div>
                     {/each}
                   </div>
                 </div>
+                
+                {#if deployResult.domain}
+                  <div class="result-section">
+                    <span class="result-label">🌐 Domain:</span>
+                    <a href="https://{deployResult.domain}" target="_blank" class="result-link">https://{deployResult.domain}</a>
+                  </div>
+                {/if}
                 
                 <!-- Failed servers section -->
                 {#if deployResult.servers.some(s => !s.success)}
@@ -2006,7 +2065,7 @@ CMD ["python", "main.py"]
                     {#each deployResult.servers.filter(s => !s.success) as server}
                       <div class="server-link-row">
                         <span style="color: #fef3c7;">❌ {server.ip}: {server.error || 'Unknown error'}</span>
-                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/logs/${server.ip}/${server.container_name || deployResult.container_name || name}`, '_blank')}>
+                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
                           📋 Logs
                         </button>
                       </div>
@@ -2039,7 +2098,7 @@ CMD ["python", "main.py"]
                             ❌ {server.ip}{#if server.error}: {server.error}{/if}
                           {/if}
                         </span>
-                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/logs/${server.ip}/${server.container_name || deployResult.container_name || name}`, '_blank')}>
+                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
                           📋 Logs
                         </button>
                       </div>
@@ -2752,6 +2811,15 @@ CMD ["python", "main.py"]
   
   .result-link:hover {
     color: rgba(255, 255, 255, 0.9);
+  }
+  
+  .tcp-endpoint {
+    color: white;
+    font-family: monospace;
+    background: rgba(255, 255, 255, 0.15);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.9em;
   }
   
   .server-links {

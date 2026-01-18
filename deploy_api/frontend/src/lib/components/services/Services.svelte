@@ -1,10 +1,10 @@
 <script>
   import { onMount } from 'svelte'
-  import { servers } from '../../stores/app.js'
+  import { servers, serversStore } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'
-  import Card from '../ui/Card.svelte'
-  import Button from '../ui/Button.svelte'
+  import { Card } from '@myorg/ui'
+  import { Button } from '@myorg/ui'
   
   let serviceType = ''
   let project = ''
@@ -38,8 +38,7 @@
   
   async function loadServers() {
     try {
-      const data = await api('GET', '/infra/servers')
-      servers.set(data.servers || data || [])
+      await serversStore.refresh()
     } catch (err) {
       console.error('Failed to load servers:', err)
     }

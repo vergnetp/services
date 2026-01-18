@@ -4,6 +4,10 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 export default defineConfig({
   plugins: [svelte()],
   base: '/static/',  // Assets served from /static/ in FastAPI
+  resolve: {
+    // Ensures Svelte components resolve correctly from workspace
+    dedupe: ['svelte']
+  },
   server: {
     port: 5173,
     proxy: {

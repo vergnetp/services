@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
-from shared_libs.backend.infra.cloud import generate_node_agent_key
 
 from ..deps import get_deployment_store, get_deploy_config_store
 
@@ -20,10 +19,6 @@ def _get_do_token(do_token: str = None) -> str:
     if do_token:
         return do_token
     raise HTTPException(400, "DigitalOcean token required")
-
-
-def _get_api_key(do_token: str, user_id: str) -> str:
-    return generate_node_agent_key(do_token, user_id)
 
 
 # =============================================================================
@@ -38,7 +33,7 @@ async def get_agent_health(
 ):
     """Get agent health on a server."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.health_check()
     return result.data if result.success else {"error": result.error}
 
@@ -51,7 +46,7 @@ async def list_containers(
 ):
     """List containers on a server."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.list_containers()
     return {
         "containers": result.data if result.success else [],
@@ -68,7 +63,7 @@ async def restart_container(
 ):
     """Restart a container."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.restart_container(container_name)
     return {"success": result.success, "error": result.error}
 
@@ -82,7 +77,7 @@ async def stop_container(
 ):
     """Stop a container."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.stop_container(container_name)
     return {"success": result.success, "error": result.error}
 
@@ -96,7 +91,7 @@ async def remove_container(
 ):
     """Remove a container."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.remove_container(container_name)
     return {"success": result.success, "error": result.error}
 
@@ -111,7 +106,7 @@ async def get_container_logs(
 ):
     """Get container logs."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.get_container_logs(container_name, tail=lines)
     return {
         "logs": result.data if result.success else None,
@@ -127,7 +122,7 @@ async def get_server_metrics(
 ):
     """Get server metrics."""
     from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_api_key(_get_do_token(do_token), str(user.id)))
+    client = NodeAgentClient(server_ip, _get_do_token(do_token))
     result = await client.get_metrics()
     return result.data if result.success else {"error": result.error}
 
@@ -221,11 +216,11 @@ async def get_deploy_config(
     store = Depends(get_deploy_config_store),
 ):
     """Get a specific deploy config."""
-    config = await store.get_config(
-        user_id=str(user.id),
-        project=project,
-        service=service,
-        environment=env,
+    config = await store.get(
+        workspace_id=str(user.id),
+        project_name=project,
+        service_name=service,
+        env=env,
     )
     if not config:
         raise HTTPException(404, "Config not found")
@@ -246,11 +241,11 @@ async def save_deploy_config(
     store = Depends(get_deploy_config_store),
 ):
     """Save a deploy config."""
-    await store.save_config(
-        user_id=str(user.id),
-        project=req.project,
-        service=req.service,
-        environment=req.environment,
+    await store.save(
+        workspace_id=str(user.id),
+        project_name=req.project,
+        service_name=req.service,
+        env=req.environment,
         config=req.config,
     )
     return {"success": True}
@@ -265,11 +260,11 @@ async def delete_deploy_config(
     store = Depends(get_deploy_config_store),
 ):
     """Delete a deploy config."""
-    await store.delete_config(
-        user_id=str(user.id),
-        project=project,
-        service=service,
-        environment=env,
+    await store.delete(
+        workspace_id=str(user.id),
+        project_name=project,
+        service_name=service,
+        env=env,
     )
     return {"success": True}
 

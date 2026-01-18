@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
-from shared_libs.backend.infra.cloud import generate_node_agent_key
 
 router = APIRouter(prefix="/infra", tags=["Networking"])
 
@@ -19,10 +18,6 @@ def _get_do_token(do_token: str = None) -> str:
     if do_token:
         return do_token
     raise HTTPException(400, "DigitalOcean token required")
-
-
-def _get_api_key(do_token: str, user_id: str) -> str:
-    return generate_node_agent_key(do_token, user_id)
 
 
 # =============================================================================
@@ -207,11 +202,10 @@ async def setup_cloudflare_domain(
         raise HTTPException(400, "Cloudflare token required")
     
     token = _get_do_token(req.do_token)
-    api_key = _get_api_key(token, str(user.id))
     service = DomainService(cloudflare_token=req.cf_token)
     
     def agent_factory(ip: str) -> NodeAgentClient:
-        return NodeAgentClient(ip, api_key)
+        return NodeAgentClient(ip, token)  # NodeAgentClient generates key from do_token
     
     result = await service.provision_domain(
         container_name=req.container_name,

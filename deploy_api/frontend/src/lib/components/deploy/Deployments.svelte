@@ -3,10 +3,10 @@
   import { deploymentsStore, scope } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api, apiStream, getDoToken } from '../../api/client.js'
-  import Card from '../ui/Card.svelte'
-  import Button from '../ui/Button.svelte'
-  import Badge from '../ui/Badge.svelte'
-  import Modal from '../ui/Modal.svelte'
+  import { Card } from '@myorg/ui'
+  import { Button } from '@myorg/ui'
+  import { Badge } from '@myorg/ui'
+  import { Modal } from '@myorg/ui'
   
   let loading = false
   let rollbackModalOpen = false

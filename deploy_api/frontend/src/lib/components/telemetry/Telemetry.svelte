@@ -2,9 +2,9 @@
     import { onMount } from 'svelte';
     import { api } from '../../api/client.js';
     import { toasts } from '../../stores/toast.js';
-    import Card from '../ui/Card.svelte';
-    import Button from '../ui/Button.svelte';
-    import Modal from '../ui/Modal.svelte';
+    import { Card } from '@myorg/ui';
+    import { Button } from '@myorg/ui';
+    import { Modal } from '@myorg/ui';
     
     // State
     let loading = true;

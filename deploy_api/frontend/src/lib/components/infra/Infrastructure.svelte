@@ -3,9 +3,9 @@
   import { servers, serversStore, snapshotsStore, doToken, projects, deploymentHistory } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api, apiStream } from '../../api/client.js'
-  import Button from '../ui/Button.svelte'
-  import Badge from '../ui/Badge.svelte'
-  import Modal from '../ui/Modal.svelte'
+  import { Button } from '@myorg/ui'
+  import { Badge } from '@myorg/ui'
+  import { Modal } from '@myorg/ui'
   import ServerCard from './ServerCard.svelte'
   
   // Filtering state

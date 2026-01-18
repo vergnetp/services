@@ -1,21 +1,24 @@
 <script>
   import { onMount } from 'svelte'
-  import { auth, isAdmin } from './lib/stores/auth.js'
+  
+  // Shared components and stores from @myorg/ui
+  import { 
+    Auth, Header, Tabs, ToastContainer,
+    authStore, isAuthenticated, isAdmin, setAuthToken,
+    toasts, api,
+    presets
+  } from '@myorg/ui'
+  import '@myorg/ui/styles/base.css'
+  import './app.css'
+  
+  // App-specific stores
   import { 
     currentTab, scope, 
     serversStore, projectsStore, snapshotsStore, deploymentsStore
   } from './lib/stores/app.js'
-  import { toasts } from './lib/stores/toast.js'
-  import { api, initAuth } from './lib/api/client.js'
   
-  // Components
-  import Auth from './lib/components/auth/Auth.svelte'
-  import ToastContainer from './lib/components/ui/ToastContainer.svelte'
-  import Header from './lib/components/ui/Header.svelte'
-  import Tabs from './lib/components/ui/Tabs.svelte'
+  // App-specific components
   import ScopeBar from './lib/components/ui/ScopeBar.svelte'
-  
-  // Page components
   import Infrastructure from './lib/components/infra/Infrastructure.svelte'
   import Deploy from './lib/components/deploy/Deploy.svelte'
   import Deployments from './lib/components/deploy/Deployments.svelte'
@@ -60,10 +63,26 @@
     }
   })
   
+  // Initialize auth - check existing token
+  async function initAuth() {
+    const authState = $authStore
+    
+    if (!authState.token || authState.token.trim() === '') {
+      return false
+    }
+    
+    try {
+      const user = await api('GET', '/auth/me')
+      authStore.setUser(user)
+      return true
+    } catch (err) {
+      authStore.logout()
+      return false
+    }
+  }
+  
   // Preload all core data immediately on auth
   function preloadStores() {
-    // These trigger fetch immediately
-    // If DO token not set, they'll silently fail and refresh when token is configured
     serversStore.refresh()
     projectsStore.refresh()
     snapshotsStore.refresh()
@@ -72,8 +91,8 @@
   
   async function handleAuthSuccess(event) {
     const { user, token } = event.detail
-    auth.setToken(token)
-    auth.setUser(user)
+    setAuthToken(token)
+    authStore.setUser(user)
     preloadStores()
   }
   
@@ -107,16 +126,18 @@
   <div class="loading-screen">
     <div class="spinner"></div>
   </div>
-{:else if !$auth.token || !$auth.user}
+{:else if !$authStore.token || !$authStore.user}
   <Auth 
     title="Deploy Dashboard"
     subtitle="Sign in to manage your infrastructure"
+    {...presets.internal}
+    allowSignup={true}
     on:success={handleAuthSuccess}
   />
 {:else}
   <div class="app">
     <div class="container">
-      <Header />
+      <Header title="Deploy Dashboard" />
       
       <Tabs 
         {tabs} 
@@ -161,54 +182,3 @@
     </div>
   </div>
 {/if}
-
-<style>
-  .loading-screen {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-  }
-  
-  .spinner {
-    width: 40px;
-    height: 40px;
-    border: 3px solid var(--border);
-    border-top-color: var(--primary);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-  
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-  
-  .app {
-    min-height: 100vh;
-  }
-  
-  .container {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 24px 28px 60px;
-  }
-  
-  .content {
-    padding: 22px;
-  }
-  
-  @media (max-width: 768px) {
-    .container {
-      padding: 16px 12px 40px;
-    }
-    
-    .content {
-      padding: 16px;
-      border-radius: var(--r2);
-    }
-  }
-  
-  .hidden {
-    display: none !important;
-  }
-</style>

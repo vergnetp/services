@@ -33,7 +33,6 @@ from shared_libs.backend.infra.deploy.orchestrator import (
     rollback_with_streaming,
     stateful_deploy_with_streaming,
 )
-from shared_libs.backend.infra.cloud import generate_node_agent_key
 
 from ..deps import get_deployment_store, get_project_store, get_service_store, get_droplet_store, get_service_droplet_store
 from ..stores import DeploymentStore, ProjectStore, ServiceStore, DropletStore, ServiceDropletStore
@@ -280,8 +279,8 @@ def _build_config_snapshot(req: DeployRequest) -> Dict[str, Any]:
 
 @router.post("/deploy/multipart")
 async def deploy_multipart(
-    # File upload
-    file: Optional[UploadFile] = File(None),
+    # File upload - param name must match form field name 'code_tar'
+    code_tar: Optional[UploadFile] = File(None),
     # Query params
     do_token: str = Query(...),
     cf_token: Optional[str] = Query(None),
@@ -299,6 +298,7 @@ async def deploy_multipart(
     size: str = Query("s-1vcpu-1gb"),
     port: int = Form(8000),
     env_vars: Optional[str] = Form(None),  # JSON string
+    is_stateful: str = Form("false"),  # String from form, will parse to bool
     setup_domain: bool = Query(False),
     base_domain: str = Query("digitalpixo.com"),
     domain_aliases: Optional[str] = Query(None),  # JSON array string
@@ -322,8 +322,10 @@ async def deploy_multipart(
     import base64
     
     token = _get_do_token(do_token)
-    api_key = generate_node_agent_key(token, str(user.id))
     workspace_id = str(user.id)
+    
+    # Parse is_stateful from string (form data sends strings)
+    parsed_is_stateful = is_stateful.lower() in ('true', '1', 'yes')
     
     # Parse name (accept either form field or query param)
     svc_name = name or service_name
@@ -356,8 +358,8 @@ async def deploy_multipart(
     
     # Read uploaded file
     code_tar_b64 = None
-    if file:
-        content = await file.read()
+    if code_tar:
+        content = await code_tar.read()
         code_tar_b64 = base64.b64encode(content).decode()
     
     # Get or create project
@@ -404,6 +406,7 @@ async def deploy_multipart(
         size=size,
         port=port,
         env_vars=final_env_vars,
+        is_stateful=parsed_is_stateful,
         setup_domain=setup_domain,
         base_domain=base_domain,
         domain_aliases=parsed_aliases,
@@ -435,7 +438,6 @@ async def deploy_multipart(
         name=req.name,
         workspace_id=workspace_id,
         do_token=token,
-        agent_key=api_key,
         project=project_name,
         environment=req.environment,
         source_type=req.source_type,
@@ -505,7 +507,6 @@ async def deploy(
     Auto-injects URLs for all stateful services in the same project.
     """
     token = _get_do_token(do_token)
-    api_key = generate_node_agent_key(token, str(user.id))
     workspace_id = str(user.id)
     
     # Get or create project
@@ -560,7 +561,6 @@ async def deploy(
         name=req.name,
         workspace_id=workspace_id,
         do_token=token,
-        agent_key=api_key,
         project=project_name,
         environment=req.environment,
         source_type=req.source_type,
@@ -639,7 +639,6 @@ async def rollback(
     """
     req = req or RollbackRequest()
     token = _get_do_token(do_token)
-    api_key = generate_node_agent_key(token, str(user.id))
     workspace_id = str(user.id)
     
     # Find target deployment
@@ -698,7 +697,6 @@ async def rollback(
         name=service_name,
         workspace_id=workspace_id,
         do_token=token,
-        agent_key=api_key,
         project=project,
         environment=environment,
         source_type="image",
@@ -749,7 +747,6 @@ async def deploy_stateful(
     from shared_libs.backend.infra.deploy import get_stateful_image, get_service_container_port
     
     token = _get_do_token(do_token)
-    api_key = generate_node_agent_key(token, str(user.id))
     workspace_id = str(user.id)
     
     # Get image and port for service type
@@ -784,7 +781,6 @@ async def deploy_stateful(
         name=req.name,
         workspace_id=workspace_id,
         do_token=token,
-        agent_key=api_key,
         project=project_name,
         environment=req.environment,
         source_type="image",

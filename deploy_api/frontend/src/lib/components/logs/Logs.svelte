@@ -3,8 +3,8 @@
   import { scope, servers } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'
-  import Card from '../ui/Card.svelte'
-  import Button from '../ui/Button.svelte'
+  import { Card } from '@myorg/ui'
+  import { Button } from '@myorg/ui'
   
   let logs = ''
   let filteredLogs = ''

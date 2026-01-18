@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte'
-  import Badge from '../ui/Badge.svelte'
-  import Button from '../ui/Button.svelte'
+  import { Badge } from '@myorg/ui'
+  import { Button } from '@myorg/ui'
   import { EXPECTED_AGENT_VERSION, doToken } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'

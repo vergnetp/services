@@ -1,5 +1,5 @@
 import { get } from 'svelte/store'
-import { auth, getDoToken, getCfToken } from '../stores/auth.js'
+import { authStore as auth, getDoToken, getCfToken } from '../stores/auth.js'
 import { toasts } from '../stores/toast.js'
 
 // Re-export for convenience
