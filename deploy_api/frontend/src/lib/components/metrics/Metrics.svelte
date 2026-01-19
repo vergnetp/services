@@ -3,6 +3,7 @@
   import { scope, servers } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'
+  import { getDoToken } from '../../stores/auth.js'
   import { Card } from '@myorg/ui'
   import { Button } from '@myorg/ui'
   import { Badge } from '@myorg/ui'
@@ -109,7 +110,7 @@
       if (isFleetView) {
         fleetData = await api('GET', '/infra/fleet/health')
       } else {
-        serverData = await api('GET', `/infra/agent/${$scope.server}/metrics`)
+        serverData = await api('GET', `/infra/agent/${$scope.server}/metrics?do_token=${getDoToken()}`)
       }
       lastUpdated = new Date()
       initialLoadDone = true

@@ -8,6 +8,9 @@ The HTTP module provides sync and async HTTP clients with:
 - Automatic retries with exponential backoff
 - Circuit breaker to prevent cascade failures
 - Request/response tracing integration
+- Connection pooling for performance
+- **SSE streaming** for LLM APIs and real-time events
+- **Raw byte streaming** for large file downloads
 - Unified error handling
 - Configurable timeouts
 
@@ -16,7 +19,7 @@ The HTTP module provides sync and async HTTP clients with:
 ### Synchronous Client
 
 ```python
-from http import SyncHttpClient
+from http_client import SyncHttpClient
 
 # Basic usage
 client = SyncHttpClient(base_url="https://api.example.com")
@@ -34,7 +37,7 @@ with SyncHttpClient(base_url="https://api.example.com") as client:
 ### Asynchronous Client
 
 ```python
-from http import AsyncHttpClient
+from http_client import AsyncHttpClient
 
 async with AsyncHttpClient(base_url="https://api.example.com") as client:
     client.set_bearer_token("your-token")
@@ -71,20 +74,27 @@ async with AsyncDOClient(api_token="xxx") as client:
 ### Manual Pooling
 
 ```python
-from http_client import get_pooled_client, close_pool, get_pool_stats
+from http_client import get_pooled_client, get_pooled_sync_client, close_pool, get_pool_stats
 
-# Get a pooled client (creates or reuses)
+# Async - returns AsyncHttpClient with full features (retry, CB, tracing)
 client = await get_pooled_client("https://api.example.com")
-response = await client.get("/users", headers={"Authorization": "Bearer xxx"})
+client.set_bearer_token("xxx")
+response = await client.get("/users")
+# Do NOT close the client - pool manages lifecycle
+
+# Sync - returns SyncHttpClient
+client = get_pooled_sync_client("https://api.stripe.com/v1")
+response = client.post("/products", data=form_data)
 # Do NOT close the client - pool manages lifecycle
 
 # Check pool statistics
 stats = get_pool_stats()
-print(f"Active clients: {stats['active_clients']}")
-print(f"Cache hit rate: {stats['hit_rate']:.1%}")
+print(f"Active clients: {stats['async']['active_clients']}")
+print(f"Hit rate: {stats['async']['hit_rate']:.1%}")
 
 # Close all pools on shutdown
-await close_pool()
+await close_pool()      # Async pool
+close_sync_pool()       # Sync pool
 ```
 
 ### Pool Configuration
@@ -113,14 +123,105 @@ For manual FastAPI apps:
 ```python
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from http_client import close_pool
+from http_client import close_pool, close_sync_pool
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    await close_pool()  # Clean up on shutdown
+    await close_pool()   # Clean up async pool
+    close_sync_pool()    # Clean up sync pool
 
 app = FastAPI(lifespan=lifespan)
+```
+
+---
+
+## SSE Streaming
+
+Stream Server-Sent Events (SSE) from LLM APIs and real-time endpoints.
+
+### Basic SSE Streaming
+
+```python
+from http_client import AsyncHttpClient, SSEEvent
+
+async with AsyncHttpClient(base_url="https://api.anthropic.com") as client:
+    client.set_bearer_token("sk-ant-...")
+    
+    async for event in client.stream_sse(
+        "POST",
+        "/v1/messages",
+        json_body={
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 1024,
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello!"}],
+        },
+    ):
+        if event.event == "content_block_delta":
+            data = event.json  # Parse JSON automatically
+            print(data.get("delta", {}).get("text", ""), end="", flush=True)
+        elif event.event == "message_stop":
+            break
+```
+
+### SSEEvent Properties
+
+```python
+async for event in client.stream_sse("POST", "/stream", json_body=payload):
+    event.event   # str: Event type (default: "message")
+    event.data    # str: Raw event data
+    event.id      # Optional[str]: Event ID
+    event.retry   # Optional[int]: Retry interval in ms
+    
+    # Parse data as JSON
+    parsed = event.json  # Returns parsed dict/list, or None if not JSON
+```
+
+### SSE with Pooled Client
+
+```python
+from http_client import get_pooled_client
+
+client = await get_pooled_client("https://api.openai.com/v1")
+client.set_bearer_token("sk-...")
+
+async for event in client.stream_sse(
+    "POST",
+    "/chat/completions",
+    json_body={"model": "gpt-4", "stream": True, "messages": [...]},
+):
+    if event.data == "[DONE]":
+        break
+    chunk = event.json
+    content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+    print(content, end="", flush=True)
+```
+
+### Important: Streaming Behavior
+
+- **No retry mid-stream**: Retrying would duplicate events. Circuit breaker only applies to the initial connection.
+- **Tracing**: A single span covers the entire stream duration.
+- **Timeout**: The `timeout` parameter is for the initial connection; the stream can continue indefinitely.
+
+---
+
+## Raw Byte Streaming
+
+Stream raw bytes for large file downloads or binary data.
+
+```python
+from http_client import AsyncHttpClient
+
+async with AsyncHttpClient(base_url="https://files.example.com") as client:
+    # Download large file in chunks
+    with open("large_file.zip", "wb") as f:
+        async for chunk in client.stream_raw(
+            "GET",
+            "/downloads/large_file.zip",
+            chunk_size=16384,  # 16KB chunks
+        ):
+            f.write(chunk)
 ```
 
 ---
@@ -130,7 +231,7 @@ app = FastAPI(lifespan=lifespan)
 ### HttpConfig
 
 ```python
-from http import HttpConfig, RetryConfig, CircuitBreakerConfig
+from http_client import HttpConfig, RetryConfig, CircuitBreakerConfig
 
 config = HttpConfig(
     # Timeouts
@@ -202,7 +303,7 @@ HttpError (base)
 ### Handling Errors
 
 ```python
-from http import (
+from http_client import (
     HttpError, 
     RateLimitError, 
     TimeoutError,
@@ -401,14 +502,14 @@ Synchronous HTTP client with retry and circuit breaker.
 
 ### class `AsyncHttpClient`
 
-Asynchronous HTTP client with retry and circuit breaker.
+Asynchronous HTTP client with retry, circuit breaker, and streaming.
 
 <details>
 <summary><strong>Public Methods</strong></summary>
 
 | Decorators | Method | Args | Returns | Category | Description |
 |------------|--------|------|---------|----------|-------------|
-| | `__init__` | `config: HttpConfig=None`, `base_url: str=None`, `circuit_breaker_name: str=None` | | Initialization | Initialize async client |
+| | `__init__` | `config: HttpConfig=None`, `base_url: str=None`, `circuit_breaker_name: str=None`, `http2: bool=False` | | Initialization | Initialize async client |
 | | `set_auth_header` | `scheme: str`, `credentials: str` | `None` | Auth | Set authorization header |
 | | `set_bearer_token` | `token: str` | `None` | Auth | Set Bearer token |
 | `async` | `request` | `method: str`, `url: str`, `params: Dict=None`, `data: Any=None`, `json: Any=None`, `headers: Dict=None`, `timeout: float=None`, `raise_on_error: bool=True` | `HttpResponse` | Request | Make async HTTP request |
@@ -418,7 +519,40 @@ Asynchronous HTTP client with retry and circuit breaker.
 | `async` | `patch` | `url: str`, `data: Any=None`, `json: Any=None`, `**kwargs` | `HttpResponse` | Request | PATCH request |
 | `async` | `delete` | `url: str`, `**kwargs` | `HttpResponse` | Request | DELETE request |
 | `async` | `head` | `url: str`, `**kwargs` | `HttpResponse` | Request | HEAD request |
+| `async` | `stream_sse` | `method: str`, `url: str`, `params: Dict=None`, `data: Any=None`, `json_body: Any=None`, `headers: Dict=None`, `timeout: float=None` | `AsyncIterator[SSEEvent]` | Streaming | Stream Server-Sent Events |
+| `async` | `stream_raw` | `method: str`, `url: str`, `params: Dict=None`, `data: Any=None`, `json_body: Any=None`, `headers: Dict=None`, `timeout: float=None`, `chunk_size: int=8192` | `AsyncIterator[bytes]` | Streaming | Stream raw bytes |
 | `async` | `close` | | `None` | Lifecycle | Close underlying session |
+
+</details>
+
+</div>
+
+<div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
+
+### class `SSEEvent`
+
+Server-Sent Event dataclass.
+
+<details>
+<summary><strong>Attributes</strong></summary>
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `event` | `str` | `"message"` | Event type |
+| `data` | `str` | `""` | Raw event data |
+| `id` | `Optional[str]` | `None` | Event ID |
+| `retry` | `Optional[int]` | `None` | Retry interval in milliseconds |
+
+</details>
+
+<br>
+
+<details>
+<summary><strong>Public Methods</strong></summary>
+
+| Decorators | Method | Args | Returns | Category | Description |
+|------------|--------|------|---------|----------|-------------|
+| `@property` | `json` | | `Any` | Parsing | Parse data as JSON, returns `None` if not valid JSON |
 
 </details>
 
@@ -532,9 +666,11 @@ Connection pool limits configuration.
 
 | Function | Args | Returns | Description |
 |----------|------|---------|-------------|
-| `get_pooled_client` | `base_url: str`, `config: HttpConfig=None`, `http2: bool=False` | `httpx.AsyncClient` | Get a pooled client (creates or reuses) |
-| `close_pool` | | `None` | Close all pooled clients (call on shutdown) |
-| `get_pool_stats` | | `Dict[str, Any]` | Get pool statistics |
+| `get_pooled_client` | `base_url: str`, `config: HttpConfig=None`, `http2: bool=False` | `AsyncHttpClient` | Get a pooled async client (creates or reuses) |
+| `get_pooled_sync_client` | `base_url: str`, `config: HttpConfig=None` | `SyncHttpClient` | Get a pooled sync client (creates or reuses) |
+| `close_pool` | | `None` | Close all async pooled clients (call on shutdown) |
+| `close_sync_pool` | | `None` | Close all sync pooled clients (call on shutdown) |
+| `get_pool_stats` | | `Dict[str, Any]` | Get pool statistics for both async and sync |
 | `configure_pool_limits` | `limits: PoolLimits` | `None` | Configure pool limits (call before first use) |
 
 </div>

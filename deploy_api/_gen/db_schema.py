@@ -23,7 +23,6 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(workspace_id, name)")
 
     # Service
     await db.execute("""
@@ -42,17 +41,6 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_services_workspace ON services(workspace_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_name ON services(project_id, name)")
-    # Add new columns if missing (for existing DBs)
-    try:
-        await db.execute("ALTER TABLE services ADD COLUMN is_stateful INTEGER DEFAULT 0")
-    except:
-        pass
-    try:
-        await db.execute("ALTER TABLE services ADD COLUMN service_type TEXT")
-    except:
-        pass
 
     # Droplet
     await db.execute("""
@@ -72,9 +60,8 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_droplets_workspace ON droplets(workspace_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_droplets_do_id ON droplets(workspace_id, do_droplet_id)")
 
-    # ServiceDroplet (junction)
+    # ServiceDroplet
     await db.execute("""
         CREATE TABLE IF NOT EXISTS service_droplets (
             id TEXT PRIMARY KEY,
@@ -85,14 +72,15 @@ async def init_schema(db: Any) -> None:
             container_name TEXT,
             is_healthy INTEGER DEFAULT 1,
             last_healthy_at TEXT,
+            host_port INTEGER,
+            container_port INTEGER,
+            internal_port INTEGER,
+            private_ip TEXT,
             created_at TEXT,
             updated_at TEXT
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_service_droplets_workspace ON service_droplets(workspace_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_service_droplets_service ON service_droplets(service_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_service_droplets_droplet ON service_droplets(droplet_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_service_droplets_unique ON service_droplets(service_id, droplet_id, env)")
 
     # Deployment
     await db.execute("""
@@ -101,7 +89,6 @@ async def init_schema(db: Any) -> None:
             workspace_id TEXT,
             service_id TEXT NOT NULL,
             env TEXT NOT NULL,
-            version INTEGER,
             source_type TEXT DEFAULT 'image',
             image_name TEXT,
             image_digest TEXT,
@@ -116,22 +103,17 @@ async def init_schema(db: Any) -> None:
             comment TEXT,
             is_rollback INTEGER DEFAULT 0,
             rollback_from_id TEXT,
-            source_version INTEGER,
             config_snapshot TEXT,
             started_at TEXT,
             completed_at TEXT,
             duration_seconds REAL,
             result_json TEXT,
-            logs_json TEXT,
             error TEXT,
             created_at TEXT,
             updated_at TEXT
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_deployments_workspace ON deployments(workspace_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_deployments_service ON deployments(service_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_deployments_version ON deployments(service_id, env, version)")
 
     # DeployConfig
     await db.execute("""
@@ -158,7 +140,6 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_deploy_configs_workspace ON deploy_configs(workspace_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_deploy_configs_unique ON deploy_configs(service_id, env)")
 
     # Credential
     await db.execute("""
@@ -173,4 +154,3 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_credentials_workspace ON credentials(workspace_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_unique ON credentials(project_id, env)")

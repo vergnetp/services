@@ -97,16 +97,16 @@ async def summarize_thread(payload: Dict[str, Any], ctx: JobContext) -> Dict[str
             
             # Use LLM to summarize
             try:
-                from anthropic import AsyncAnthropic
+                from shared_libs.backend.cloud.llm import AsyncAnthropicClient
                 
-                client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-                response = await client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=500,
-                    system="Summarize the following conversation concisely, capturing the key points, decisions, and context. Be brief but comprehensive.",
-                    messages=[{"role": "user", "content": full_text}],
-                )
-                summary = response.content[0].text
+                async with AsyncAnthropicClient(api_key=settings.anthropic_api_key) as client:
+                    response = await client.chat(
+                        messages=[{"role": "user", "content": full_text}],
+                        model="claude-3-haiku-20240307",
+                        max_tokens=500,
+                        system="Summarize the following conversation concisely, capturing the key points, decisions, and context. Be brief but comprehensive.",
+                    )
+                    summary = response.content
             except Exception as e:
                 logger.warning(f"LLM summarization failed: {e}, using simple truncation")
                 summary = full_text[:500] + "..." if len(full_text) > 500 else full_text
@@ -214,16 +214,16 @@ async def compact_memory(payload: Dict[str, Any], ctx: JobContext) -> Dict[str, 
             
             # Use LLM to summarize
             try:
-                from anthropic import AsyncAnthropic
+                from shared_libs.backend.cloud.llm import AsyncAnthropicClient
                 
-                client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-                response = await client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=1000,
-                    system="Create a detailed summary of this conversation history that preserves important context, decisions, and information that would be needed to continue the conversation.",
-                    messages=[{"role": "user", "content": full_text}],
-                )
-                summary = response.content[0].text
+                async with AsyncAnthropicClient(api_key=settings.anthropic_api_key) as client:
+                    response = await client.chat(
+                        messages=[{"role": "user", "content": full_text}],
+                        model="claude-3-haiku-20240307",
+                        max_tokens=1000,
+                        system="Create a detailed summary of this conversation history that preserves important context, decisions, and information that would be needed to continue the conversation.",
+                    )
+                    summary = response.content
             except Exception as e:
                 logger.warning(f"LLM summarization failed: {e}, using simple truncation")
                 summary = full_text[:1000] + "..." if len(full_text) > 1000 else full_text

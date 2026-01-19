@@ -2,6 +2,7 @@
 Agent & Operations Routes - Node agent, containers, deployments, configs.
 
 Thin wrappers around infra.node_agent, infra.fleet services.
+Uses server ID (not IP) for VPC-aware routing.
 """
 
 from fastapi import APIRouter, HTTPException, Query, Depends
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
+from shared_libs.backend.app_kernel.db import db_connection
 
 from ..deps import get_deployment_store, get_deploy_config_store
 
@@ -21,32 +23,72 @@ def _get_do_token(do_token: str = None) -> str:
     raise HTTPException(400, "DigitalOcean token required")
 
 
+async def _get_agent_client(
+    server_id: str,
+    do_token: str,
+):
+    """
+    Get NodeAgentClient for a server with automatic VPC-aware routing.
+    
+    Args:
+        server_id: DigitalOcean droplet ID
+        do_token: DigitalOcean API token
+    
+    Routing priority:
+    1. Same droplet → 127.0.0.1 (instant, <1ms)
+    2. In VPC + target has private IP → private IP (low latency)
+    3. Otherwise → public IP
+    
+    Detection uses DO Metadata API (works inside Docker containers).
+    """
+    from shared_libs.backend.infra.node_agent import NodeAgentClient
+    from shared_libs.backend.infra.providers import AsyncDOClient, get_best_ip_for_target
+    
+    # Get droplet info directly from DO API
+    client = AsyncDOClient(do_token)
+    try:
+        droplet = await client.get_droplet(int(server_id))
+        if not droplet:
+            raise HTTPException(404, f"Server {server_id} not found")
+        
+        # Smart routing: localhost > VPC > public
+        agent_ip = get_best_ip_for_target(
+            public_ip=droplet.ip,
+            private_ip=droplet.private_ip,
+            target_droplet_id=droplet.id,
+        )
+        if not agent_ip:
+            raise HTTPException(400, f"Server {server_id} has no IP address")
+        
+        return NodeAgentClient(agent_ip, do_token)
+    finally:
+        await client.close()
+
+
 # =============================================================================
-# Agent Routes (direct node agent calls)
+# Agent Routes (direct node agent calls) - Using server ID
 # =============================================================================
 
-@router.get("/agent/{server_ip}/health")
+@router.get("/agent/{server_id}/health")
 async def get_agent_health(
-    server_ip: str,
+    server_id: str,
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """Get agent health on a server."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.health_check()
     return result.data if result.success else {"error": result.error}
 
 
-@router.get("/agent/{server_ip}/containers")
+@router.get("/agent/{server_id}/containers")
 async def list_containers(
-    server_ip: str,
+    server_id: str,
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """List containers on a server."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.list_containers()
     return {
         "containers": result.data if result.success else [],
@@ -54,59 +96,55 @@ async def list_containers(
     }
 
 
-@router.post("/agent/{server_ip}/containers/{container_name}/restart")
+@router.post("/agent/{server_id}/containers/{container_name}/restart")
 async def restart_container(
-    server_ip: str,
+    server_id: str,
     container_name: str,
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """Restart a container."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.restart_container(container_name)
     return {"success": result.success, "error": result.error}
 
 
-@router.post("/agent/{server_ip}/containers/{container_name}/stop")
+@router.post("/agent/{server_id}/containers/{container_name}/stop")
 async def stop_container(
-    server_ip: str,
+    server_id: str,
     container_name: str,
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """Stop a container."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.stop_container(container_name)
     return {"success": result.success, "error": result.error}
 
 
-@router.post("/agent/{server_ip}/containers/{container_name}/remove")
+@router.post("/agent/{server_id}/containers/{container_name}/remove")
 async def remove_container(
-    server_ip: str,
+    server_id: str,
     container_name: str,
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """Remove a container."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.remove_container(container_name)
     return {"success": result.success, "error": result.error}
 
 
-@router.get("/agent/{server_ip}/containers/{container_name}/logs")
+@router.get("/agent/{server_id}/containers/{container_name}/logs")
 async def get_container_logs(
-    server_ip: str,
+    server_id: str,
     container_name: str,
     lines: int = Query(100),
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """Get container logs."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.get_container_logs(container_name, tail=lines)
     return {
         "logs": result.data if result.success else None,
@@ -114,15 +152,14 @@ async def get_container_logs(
     }
 
 
-@router.get("/agent/{server_ip}/metrics")
+@router.get("/agent/{server_id}/metrics")
 async def get_server_metrics(
-    server_ip: str,
+    server_id: str,
     do_token: str = Query(...),
     user: UserIdentity = Depends(get_current_user),
 ):
     """Get server metrics."""
-    from shared_libs.backend.infra.node_agent import NodeAgentClient
-    client = NodeAgentClient(server_ip, _get_do_token(do_token))
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.get_metrics()
     return result.data if result.success else {"error": result.error}
 
@@ -336,7 +373,7 @@ async def get_deployment_logs(
     deployment = await store.get_deployment(deployment_id)
     if not deployment:
         raise HTTPException(404, "Deployment not found")
-    return {"logs": deployment.get("logs", [])}
+    return {"logs": deployment.logs or []}
 
 
 @router.get("/deployments/rollback/preview")

@@ -3,6 +3,7 @@
   import { scope, servers } from '../../stores/app.js'
   import { toasts } from '../../stores/toast.js'
   import { api } from '../../api/client.js'
+  import { getDoToken } from '../../stores/auth.js'
   import { Card } from '@myorg/ui'
   import { Button } from '@myorg/ui'
   
@@ -41,10 +42,10 @@
     
     loading = true
     try {
-      const serverIp = $scope.server
+      const serverId = $scope.server
       const container = $scope.container
       
-      if (!serverIp) {
+      if (!serverId) {
         logs = 'Select a server to view logs'
         filteredLogs = logs
         return
@@ -61,8 +62,9 @@
       // Use the agent logs endpoint for specific container
       const params = new URLSearchParams()
       params.set('lines', '500')
+      params.set('do_token', getDoToken())
       
-      const endpoint = `/infra/agent/${serverIp}/containers/${container}/logs?${params}`
+      const endpoint = `/infra/agent/${serverId}/containers/${container}/logs?${params}`
       
       const response = await api('GET', endpoint)
       // Handle AgentResponse format: {success, data: {logs: "..."}, error}

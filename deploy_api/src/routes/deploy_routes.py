@@ -20,15 +20,16 @@ from typing import List, Optional, Dict, Any
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
 from shared_libs.backend.app_kernel.db import db_connection
-from shared_libs.backend.infra.deploy import (
+from shared_libs.backend.deploy import (
     DeployJobConfig,
     DiscoveredService,
     InjectionContext,
     build_injection_env_vars,
     find_services_needing_redeploy,
     format_redeploy_warning,
+    DockerfileGenerator,
 )
-from shared_libs.backend.infra.deploy.orchestrator import (
+from shared_libs.backend.deploy.orchestrator import (
     deploy_with_streaming,
     rollback_with_streaming,
     stateful_deploy_with_streaming,
@@ -39,6 +40,57 @@ from ..stores import DeploymentStore, ProjectStore, ServiceStore, DropletStore, 
 
 
 router = APIRouter(prefix="/infra", tags=["Deploy"])
+
+
+# =============================================================================
+# Dockerfile Generation - Backend generates, user can edit
+# =============================================================================
+
+class DockerfileGenerateRequest(BaseModel):
+    """Request to generate a Dockerfile from file structure."""
+    files: List[str] = Field(..., description="List of file paths in the upload")
+    main_folder: str = Field(..., description="Main service folder (e.g., 'deploy_api')")
+    dep_folders: List[str] = Field(default=[], description="Dependency folders (e.g., ['shared_libs'])")
+    port: int = Field(default=8000, description="Port to expose")
+    env_vars: Dict[str, str] = Field(default={}, description="Environment variables")
+
+
+class DockerfileGenerateResponse(BaseModel):
+    """Response with generated Dockerfile."""
+    dockerfile: str
+    type: str = Field(description="Detected service type (python-fastapi, node, etc.)")
+    source: str = Field(default="generated", description="Always 'generated'")
+
+
+@router.post("/dockerfile/generate", response_model=DockerfileGenerateResponse)
+async def generate_dockerfile(
+    request: DockerfileGenerateRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Generate a Dockerfile from uploaded file structure.
+    
+    Frontend workflow:
+    1. User uploads files
+    2. Frontend extracts file list
+    3. Call this endpoint to get generated Dockerfile
+    4. Show user an editable preview
+    5. User modifies if needed
+    6. Deploy with final Dockerfile
+    """
+    result = DockerfileGenerator.generate_from_structure(
+        files=request.files,
+        main_folder=request.main_folder,
+        dep_folders=request.dep_folders,
+        port=request.port,
+        env_vars=request.env_vars,
+    )
+    
+    return DockerfileGenerateResponse(
+        dockerfile=result["dockerfile"],
+        type=result["type"],
+        source=result["source"],
+    )
 
 
 # =============================================================================
@@ -94,21 +146,33 @@ async def stream_and_save_result(
     """
     Wrap streaming deploy to:
     1. Yield events to client
-    2. Capture final 'done' event
-    3. Save result to deployment record
-    4. Save to service_droplets for service mesh
-    5. Warn about apps needing redeploy (for stateful service deploys)
+    2. Collect log messages for persistence
+    3. Capture final 'done' event
+    4. Save result and logs to deployment record
+    5. Save to service_droplets for service mesh
+    6. Warn about apps needing redeploy (for stateful service deploys)
     """
     final_result = None
+    collected_logs = []  # Collect log entries for persistence
     
     async for event in stream_fn(job_config):
-        yield f"data: {json.dumps(event.to_dict())}\n\n"
+        event_dict = event.to_dict()
+        yield f"data: {json.dumps(event_dict)}\n\n"
+        
+        # Collect log/error/progress events for persistence
+        if event.type in ("log", "error", "progress"):
+            collected_logs.append({
+                "type": event.type,
+                "message": event.message,
+                "timestamp": event.timestamp,
+                **(event.data or {}),
+            })
         
         # Capture done event
         if event.type == "done":
             final_result = event.data
     
-    # Save result to deployment
+    # Save result and logs to deployment
     if final_result:
         success = final_result.get("success", False)
         from datetime import datetime, timezone
@@ -117,6 +181,7 @@ async def stream_and_save_result(
             status="success" if success else "failed",
             completed_at=datetime.now(timezone.utc).isoformat(),
             result=final_result,
+            logs=collected_logs,  # Save collected logs
         )
         
         # Record to service_droplets for service mesh / auto-injection
@@ -710,13 +775,14 @@ async def rollback(
         rollback_from_id=target.id,
     )
     
-    # Stream rollback directly
-    async def generate():
-        async for event in rollback_with_streaming(job_config):
-            yield f"data: {json.dumps(event.to_dict())}\n\n"
-    
+    # Stream rollback using shared helper (saves logs and result)
     return StreamingResponse(
-        generate(),
+        stream_and_save_result(
+            stream_fn=rollback_with_streaming,
+            job_config=job_config,
+            deployment_store=deployment_store,
+            deployment_id=record.id,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

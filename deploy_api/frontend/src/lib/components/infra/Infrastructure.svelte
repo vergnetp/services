@@ -387,18 +387,18 @@
   
   async function handleViewLogs(event) {
     const { server, containerName } = event.detail
-    const ip = server.ip || server.networks?.v4?.[0]?.ip_address
+    const displayIp = server.ip || server.networks?.v4?.[0]?.ip_address || 'unknown'
     
-    currentLogServer = ip
+    currentLogServer = server.id  // Use ID for API calls
     currentLogContainer = containerName
-    logsTitle = `📋 ${containerName} @ ${ip}`
+    logsTitle = `📋 ${containerName} @ ${displayIp}`
     logsContent = ''
     logSearch = ''
     logsModalOpen = true
     logsLoading = true
     
     try {
-      const res = await api('GET', `/infra/agent/${ip}/containers/${containerName}/logs?do_token=${$doToken}&tail=${logTail}`)
+      const res = await api('GET', `/infra/agent/${server.id}/containers/${containerName}/logs?do_token=${$doToken}&tail=${logTail}`)
       logsContent = res.logs || 'No logs available'
     } catch (e) {
       logsContent = `Error: ${e.message}`

@@ -1,7 +1,7 @@
 """
 Infrastructure Routes - Servers, provisioning, snapshots, architecture.
 
-Thin wrappers around infra.provisioning, infra.fleet, infra.cloud services.
+Thin wrappers around infra.provisioning, infra.fleet, infra.providers services.
 """
 
 from fastapi import APIRouter, HTTPException, Query, Depends
@@ -178,7 +178,7 @@ async def list_snapshots(
     user: UserIdentity = Depends(get_current_user),
 ):
     """List available snapshots."""
-    from shared_libs.backend.infra.cloud import SnapshotService
+    from shared_libs.backend.infra.providers import SnapshotService
     service = SnapshotService(_get_do_token(do_token))
     return {"snapshots": service.list_snapshots()}
 
@@ -186,7 +186,7 @@ async def list_snapshots(
 @router.get("/snapshots/presets")
 async def get_snapshot_presets():
     """Get available snapshot presets."""
-    from shared_libs.backend.infra.cloud import SNAPSHOT_PRESETS
+    from shared_libs.backend.infra.providers import SNAPSHOT_PRESETS
     return {"presets": list(SNAPSHOT_PRESETS.keys())}
 
 
@@ -209,7 +209,7 @@ async def ensure_snapshot_stream(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Create snapshot if not exists. Returns SSE stream."""
-    from shared_libs.backend.infra.cloud import SnapshotService, SNAPSHOT_PRESETS, SnapshotConfig
+    from shared_libs.backend.infra.providers import SnapshotService, SNAPSHOT_PRESETS, SnapshotConfig
     from shared_libs.backend.infra.node_agent import AGENT_VERSION
     
     token = _get_do_token(do_token)
@@ -255,7 +255,7 @@ async def build_snapshot(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Build a snapshot (non-streaming)."""
-    from shared_libs.backend.infra.cloud import SnapshotService, SNAPSHOT_PRESETS, SnapshotConfig
+    from shared_libs.backend.infra.providers import SnapshotService, SNAPSHOT_PRESETS, SnapshotConfig
     from shared_libs.backend.infra.node_agent import AGENT_VERSION
     
     token = _get_do_token(do_token)
@@ -284,7 +284,7 @@ async def delete_snapshot(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Delete a snapshot."""
-    from shared_libs.backend.infra.cloud import SnapshotService
+    from shared_libs.backend.infra.providers import SnapshotService
     service = SnapshotService(_get_do_token(do_token))
     service.delete_snapshot(snapshot_id)
     return {"success": True, "deleted": snapshot_id}
@@ -297,7 +297,7 @@ async def transfer_snapshot_to_all_regions(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Transfer snapshot to all regions."""
-    from shared_libs.backend.infra.cloud import SnapshotService
+    from shared_libs.backend.infra.providers import SnapshotService
     service = SnapshotService(_get_do_token(do_token))
     result = service.transfer_snapshot_to_all_regions(snapshot_id, wait=False)
     return result
@@ -363,24 +363,40 @@ async def get_info():
     """Get API info."""
     from shared_libs.backend.infra.node_agent import AGENT_VERSION
     from shared_libs.backend.infra import __version__ as infra_version
+    # Import with fallback for local dev
+    try:
+        from deploy_api.config import DEPLOY_API_VERSION
+    except ModuleNotFoundError:
+        from config import DEPLOY_API_VERSION
     return {
         "api": "deploy_api",
+        "version": DEPLOY_API_VERSION,
         "infra_version": infra_version,
         "agent_version": AGENT_VERSION,
     }
 
 
+@router.get("/version")
+async def get_version():
+    """Get deploy_api version (quick check)."""
+    try:
+        from deploy_api.config import DEPLOY_API_VERSION
+    except ModuleNotFoundError:
+        from config import DEPLOY_API_VERSION
+    return {"version": DEPLOY_API_VERSION}
+
+
 @router.get("/regions")
 async def get_regions():
     """Get available DO regions."""
-    from shared_libs.backend.infra.cloud import DO_REGIONS
+    from shared_libs.backend.infra.providers import DO_REGIONS
     return {"regions": DO_REGIONS}
 
 
 @router.get("/sizes")
 async def get_sizes():
     """Get available droplet sizes with formatted descriptions."""
-    from shared_libs.backend.infra.cloud import DROPLET_SIZES
+    from shared_libs.backend.infra.providers import DROPLET_SIZES
     
     sizes = []
     for s in DROPLET_SIZES:
@@ -405,7 +421,7 @@ async def debug_agent_key(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Debug: Show what API key would be generated from DO token."""
-    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    from shared_libs.backend.infra.providers import generate_node_agent_key
     key = generate_node_agent_key(do_token)  # NO user_id - must match snapshot
     return {
         "key_prefix": key[:8],
@@ -421,7 +437,7 @@ async def debug_agent_key_raw(
     user_id: str = Query(""),
 ):
     """Debug: Show what API key would be generated (no auth required)."""
-    from shared_libs.backend.infra.cloud import generate_node_agent_key
+    from shared_libs.backend.infra.providers import generate_node_agent_key
     key_with_user = generate_node_agent_key(do_token, user_id)
     key_without_user = generate_node_agent_key(do_token, "")
     return {
@@ -481,3 +497,57 @@ async def get_registry_credentials(
         "username": os.getenv("DOCKER_USERNAME", ""),
         "configured": bool(os.getenv("DOCKER_USERNAME")),
     }
+
+
+@router.get("/debug/vpc")
+async def debug_vpc(
+    target_public_ip: str = Query(None, description="Target server public IP to test routing"),
+    target_private_ip: str = Query(None, description="Target server private IP to test routing"),
+    target_droplet_id: int = Query(None, description="Target droplet ID (for same-server detection)"),
+):
+    """
+    Debug VPC detection and routing decisions.
+    
+    Shows:
+    - Current droplet info (from DO Metadata API)
+    - VPC detection status
+    - Routing decision for a given target
+    
+    Routing priority:
+    1. Same droplet → 127.0.0.1 (instant)
+    2. In VPC + target has private IP → private IP
+    3. Otherwise → public IP
+    """
+    from shared_libs.backend.infra.providers import (
+        get_do_metadata,
+        get_routing_debug_info,
+        is_in_vpc, 
+        get_local_ips, 
+        get_best_ip_for_target,
+        get_current_droplet_id,
+    )
+    
+    # Get full metadata
+    metadata = get_do_metadata()
+    
+    result = {
+        "current_machine": {
+            "is_digitalocean": metadata["is_digitalocean"],
+            "droplet_id": metadata["droplet_id"],
+            "public_ip": metadata["public_ip"],
+            "private_ip": metadata["private_ip"],
+            "region": metadata["region"],
+            "is_in_vpc": is_in_vpc(),
+        },
+        "local_ips": get_local_ips(),
+        "detection_method": "DO Metadata API" if metadata["is_digitalocean"] else "Socket fallback",
+    }
+    
+    if target_public_ip:
+        result["routing_test"] = get_routing_debug_info(
+            target_public_ip=target_public_ip,
+            target_private_ip=target_private_ip,
+            target_droplet_id=target_droplet_id,
+        )
+    
+    return result

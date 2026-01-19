@@ -104,11 +104,11 @@
   }
   
   async function loadContainers() {
-    if (!isOnline || !$doToken) return
+    if (!isOnline || !$doToken || !server.id) return
     
     loadingContainers = true
     try {
-      const res = await api('GET', `/infra/agent/${ip}/containers?do_token=${$doToken}`)
+      const res = await api('GET', `/infra/agent/${server.id}/containers?do_token=${$doToken}`)
       containers = res.containers || []
       containersLoaded = true
     } catch (e) {
@@ -120,11 +120,11 @@
   }
   
   async function loadMetrics() {
-    if (!isOnline || !$doToken) return
+    if (!isOnline || !$doToken || !server.id) return
     
     loadingMetrics = true
     try {
-      const res = await api('GET', `/infra/agent/${ip}/metrics?do_token=${$doToken}`)
+      const res = await api('GET', `/infra/agent/${server.id}/metrics?do_token=${$doToken}`)
       metrics = {
         cpu: res.system?.load_1m || 0,
         mem: res.system?.mem_percent || 0,
@@ -148,10 +148,10 @@
   }
   
   async function restartContainer(name) {
-    if (!$doToken) return
+    if (!$doToken || !server.id) return
     actionInProgress[name] = 'restart'
     try {
-      await api('POST', `/infra/agent/${ip}/containers/${name}/restart?do_token=${$doToken}`)
+      await api('POST', `/infra/agent/${server.id}/containers/${name}/restart?do_token=${$doToken}`)
       toasts.success(`Restarted ${getShortName(name)}`)
       await loadContainers()
     } catch (e) {
@@ -162,13 +162,13 @@
   }
   
   async function removeContainer(name) {
-    if (!$doToken) return
+    if (!$doToken || !server.id) return
     if (!confirm(`Remove "${getShortName(name)}"?`)) return
     
     actionInProgress[name] = 'remove'
     try {
-      await api('POST', `/infra/agent/${ip}/containers/${name}/stop?do_token=${$doToken}`).catch(() => {})
-      await api('POST', `/infra/agent/${ip}/containers/${name}/remove?do_token=${$doToken}`)
+      await api('POST', `/infra/agent/${server.id}/containers/${name}/stop?do_token=${$doToken}`).catch(() => {})
+      await api('POST', `/infra/agent/${server.id}/containers/${name}/remove?do_token=${$doToken}`)
       toasts.success(`Removed ${getShortName(name)}`)
       await loadContainers()
     } catch (e) {

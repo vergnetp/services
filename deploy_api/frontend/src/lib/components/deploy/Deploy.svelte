@@ -598,7 +598,7 @@
     updateCodeSelectionInfo()
     
     if (buildFolders.some(f => f.isMain)) {
-      updateDockerfilePreview(existingDockerfile)
+      await updateDockerfilePreview(existingDockerfile)
     }
     
     if (rememberFolders && project && name) {
@@ -657,7 +657,7 @@
     
     // Update dockerfile preview
     if (buildFolders.some(f => f.isMain)) {
-      updateDockerfilePreview(existingDockerfile)
+      await updateDockerfilePreview(existingDockerfile)
     }
     
     // Save folder config
@@ -695,9 +695,9 @@
     }
   }
   
-  function setFolderAsMain(index) {
+  async function setFolderAsMain(index) {
     buildFolders = buildFolders.map((f, i) => ({...f, isMain: i === index}))
-    updateDockerfilePreview()
+    await updateDockerfilePreview()
   }
   
   function updateCodeSelectionInfo() {
@@ -732,24 +732,76 @@
     pendingCodeFile = await zip.generateAsync({ type: 'blob' })
   }
   
-  function updateDockerfilePreview(existingDockerfile = null) {
+  async function updateDockerfilePreview(existingDockerfile = null) {
     showDockerfilePreview = true
     
     if (existingDockerfile) {
+      // User provided Dockerfile in upload - use it
       dockerfile = existingDockerfile
       dockerfileSource = 'from folder'
-    } else if (buildFolders.length > 1) {
-      dockerfile = generateMultiFolderDockerfile()
-      dockerfileSource = 'multi-folder'
-    } else if (buildFolders.length === 1) {
-      const mainFolder = buildFolders[0]
-      dockerfile = generateDockerfileTemplate(mainFolder.fileContents.map(f => f.path))
-      dockerfileSource = 'generated'
+    } else {
+      // Generate via API
+      dockerfile = await generateDockerfileViaApi()
+      dockerfileSource = buildFolders.length > 1 ? 'multi-folder' : 'generated'
     }
     
     parseDockerfileQuickFields()
   }
   
+  async function generateDockerfileViaApi() {
+    const mainFolder = buildFolders.find(f => f.isMain)
+    if (!mainFolder) return ''
+    
+    const depFolders = buildFolders.filter(f => !f.isMain).map(f => f.name)
+    
+    // Build file list: "folder/path" for all files
+    const files = []
+    for (const folder of buildFolders) {
+      for (const file of folder.fileContents) {
+        files.push(`${folder.name}/${file.path}`)
+      }
+    }
+    
+    try {
+      const response = await api.post('/infra/dockerfile/generate', {
+        files,
+        main_folder: mainFolder.name,
+        dep_folders: depFolders,
+        port: parseInt(port) || 8000,
+      })
+      
+      return response.dockerfile || ''
+    } catch (err) {
+      console.error('[Deploy] Failed to generate Dockerfile via API:', err)
+      // Fallback to simple template
+      return generateDockerfileFallback(mainFolder)
+    }
+  }
+  
+  function generateDockerfileFallback(mainFolder) {
+    // Simple fallback if API fails
+    const hasRequirements = mainFolder.fileContents.some(f => f.path === 'requirements.txt')
+    const deps = buildFolders.filter(f => !f.isMain)
+    
+    let df = `FROM python:3.11-slim\n\nWORKDIR /app\n\n`
+    
+    for (const dep of deps) {
+      df += `COPY ${dep.name}/ ./${dep.name}/\n`
+    }
+    
+    df += `COPY ${mainFolder.name}/ ./${mainFolder.name}/\n\n`
+    
+    if (hasRequirements) {
+      df += `RUN pip install --no-cache-dir -r ${mainFolder.name}/requirements.txt\n\n`
+    }
+    
+    df += `EXPOSE ${port}\n\n`
+    df += `CMD ["uvicorn", "${mainFolder.name}.main:app", "--host", "0.0.0.0", "--port", "${port}"]\n`
+    
+    return df
+  }
+  
+  // Keep for backward compatibility but no longer primary
   function generateMultiFolderDockerfile() {
     const mainFolder = buildFolders.find(f => f.isMain)
     if (!mainFolder) return ''
@@ -2012,7 +2064,7 @@ CMD ["python", "main.py"]
               
               {#if deployResult.domain}
                 <div class="result-section">
-                  <span class="result-label">Domain:</span>
+                  <span class="result-label">🌐 Domain:</span>
                   <a href="https://{deployResult.domain}" target="_blank" class="result-link">
                     https://{deployResult.domain}
                   </a>
@@ -2043,20 +2095,13 @@ CMD ["python", "main.py"]
                         {:else}
                           <a href="{server.url}" target="_blank" class="result-link">{server.url}</a>
                         {/if}
-                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
+                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.droplet_id || server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
                           📋 Logs
                         </button>
                       </div>
                     {/each}
                   </div>
                 </div>
-                
-                {#if deployResult.domain}
-                  <div class="result-section">
-                    <span class="result-label">🌐 Domain:</span>
-                    <a href="https://{deployResult.domain}" target="_blank" class="result-link">https://{deployResult.domain}</a>
-                  </div>
-                {/if}
                 
                 <!-- Failed servers section -->
                 {#if deployResult.servers.some(s => !s.success)}
@@ -2065,7 +2110,7 @@ CMD ["python", "main.py"]
                     {#each deployResult.servers.filter(s => !s.success) as server}
                       <div class="server-link-row">
                         <span style="color: #fef3c7;">❌ {server.ip}: {server.error || 'Unknown error'}</span>
-                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
+                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.droplet_id || server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
                           📋 Logs
                         </button>
                       </div>
@@ -2098,7 +2143,7 @@ CMD ["python", "main.py"]
                             ❌ {server.ip}{#if server.error}: {server.error}{/if}
                           {/if}
                         </span>
-                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
+                        <button class="log-btn" on:click={() => window.open(`/api/v1/infra/agent/${server.droplet_id || server.ip}/containers/${server.container_name || deployResult.container_name || name}/logs?do_token=${getDoToken()}`, '_blank')}>
                           📋 Logs
                         </button>
                       </div>

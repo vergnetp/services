@@ -27,6 +27,12 @@
   import Architecture from './lib/components/architecture/Architecture.svelte'
   import Telemetry from './lib/components/telemetry/Telemetry.svelte'
   
+  // ==========================================================================
+  // BUILD VERSION - Embedded at build time by Claude
+  // ==========================================================================
+  const BUILD_VERSION = '2026-01-19 23:09 UTC'
+  // ==========================================================================
+  
   let initialized = false
   let infraRef
   let deploymentsRef
@@ -139,6 +145,9 @@
     <div class="container">
       <Header title="Deploy Dashboard" />
       
+      <!-- Version badge -->
+      <div class="version-badge" title="Build timestamp">{BUILD_VERSION}</div>
+      
       <Tabs 
         {tabs} 
         active={$currentTab} 
@@ -182,3 +191,24 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .version-badge {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: var(--bg-tertiary, #333);
+    color: var(--text-secondary, #888);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: monospace;
+    opacity: 0.7;
+    z-index: 1000;
+    cursor: default;
+  }
+  
+  .version-badge:hover {
+    opacity: 1;
+  }
+</style>

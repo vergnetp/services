@@ -83,8 +83,8 @@
         <option value="">(Fleet)</option>
         {#each $servers || [] as server}
           {@const ip = server.ip || server.networks?.v4?.[0]?.ip_address}
-          {#if ip}
-            <option value={ip}>{server.name || 'unnamed'} ({ip})</option>
+          {#if ip && server.id}
+            <option value={server.id}>{server.name || 'unnamed'} ({ip})</option>
           {/if}
         {/each}
       </select>

@@ -14,6 +14,12 @@ Note: Loaded here for worker.py, and also by create_service() for the API.
       (load_env_hierarchy is idempotent - safe to call multiple times)
 """
 
+# =============================================================================
+# BUILD TIMESTAMP - Auto-generated when Claude creates deploy_api.zip
+# =============================================================================
+DEPLOY_API_VERSION = "2026-01-19 23:09 UTC"
+# =============================================================================
+
 import os
 from pathlib import Path
 from functools import lru_cache

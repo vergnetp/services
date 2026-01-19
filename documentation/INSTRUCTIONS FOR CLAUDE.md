@@ -31,6 +31,12 @@ Building a deployment platform (like Heroku/Railway) using DigitalOcean infrastr
 - Don't waste time on migration paths - clean slate is fine
 
 ### 📦 ALWAYS BUILD BEFORE ZIPPING
+### Version Stamping
+When providing deploy_api.zip:
+1. Run `date -u +"%Y-%m-%d %H:%M UTC"` 
+2. Update `config.py` → `DEPLOY_API_VERSION = "..."`
+3. Update `App.svelte` → `BUILD_VERSION = "..."`
+4. Build frontend, then zip
 Before providing `deploy_api.zip`:
 1. `npm install` (from workspace root to link @myorg/ui)
 2. `npm run build` (in services/deploy_api/frontend)
