@@ -1,36 +1,39 @@
-1. ui errors:
-installHook.js:1 [Deploy] Failed to generate Dockerfile via API: TypeError: He.post is not a function
-    at Ke (index-BkFcNO69.js:38:4209)
-    at $e (index-BkFcNO69.js:38:3924)
-    at hl (index-BkFcNO69.js:38:2447)
-    at async rl (index-BkFcNO69.js:38:1930)
-    at async HTMLDivElement.vl (index-BkFcNO69.js:38:1658)
-overrideMethod @ installHook.js:1
-Ke @ index-BkFcNO69.js:38
-$e @ index-BkFcNO69.js:38
-hl @ index-BkFcNO69.js:38
-await in hl
-rl @ index-BkFcNO69.js:38
-await in rl
-vl @ index-BkFcNO69.js:38Understand this error
-index-BkFcNO69.js:11  GET http://localhost:8000/api/v1/infra/deploy-configs/deployer/deploy_api/prod?do_token=d** 404 (Not Found)
- -> to test
+# Deploy API - TODO & Known Issues
 
-2. Ui improvements:
-* should clear service name /project/env when switching from stateful to service etc -> validated
-* should put new server to zero after hitting deploy (so as not to provision by mistake later) -> validated
-* we used to show the containers (and some quick action icons) in the server box in the infrastructure tab. bring it back! -> validated but need to fix log
-* deploy tab is overwhelming: Change as per chatgpt mockup
-* Available snapshot is not fired in teh background like other data (servers etc) -> validated
+## ✅ COMPLETED
 
-3.  domain slow to work
-What should teh user expect in term of latency to be able to use his new domain? Maybe we should either give a heads up or even automat ethe domain ready status for him?
-once available, then re-deploy are immediate, right?
-c62610-default-prod-deploy-api is the subdomain (why default? should have been my project name - "Deployer")
- -> to test
+4. Backend logs for admin - DONE (2026-01-20)
+   - Added /api/v1/admin/logs endpoint
+   - Telemetry tab in frontend shows logs when admin
 
-4. should show the backend log if admin
+## 🔧 IN PROGRESS / TO TEST
+
+1. UI errors (to test):
+   - TypeError: He.post is not a function (Dockerfile generation)
+   - 404 on deploy-configs endpoint
+
+3. Domain latency:
+   - What should user expect for new domain availability?
+   - Consider auto-checking domain ready status
+   - Subdomain naming: uses "default" instead of project name
+
+## 📋 BACKLOG
+
+2. UI improvements:
+   - [x] Clear service name/project/env when switching deployment types
+   - [x] Reset new server count after deploy
+   - [x] Container list in server boxes (need to fix logs)
+   - [x] Available snapshot loading in background
+   - [ ] Deploy tab redesign (per ChatGPT mockup)
 
 5. Fix ai_agents_api
 
-6. code deleted A record that were not proxied -> BIG NO
+6. DNS cleanup safety:
+   - CRITICAL: Code deleted A records that were not proxied - BIG NO
+   - Need to add safety check before DNS record deletion
+
+## 🚀 FUTURE
+
+- Auto-scaling
+- Docker image cleanup on servers
+- Migration scripts (when leaving dev phase)
