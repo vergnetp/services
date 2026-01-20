@@ -25,6 +25,27 @@ Building a deployment platform (like Heroku/Railway) using DigitalOcean infrastr
 
 ## ⚠️ Critical Instructions for Claude
 
+### 🚫 NO ASSUMPTIONS ABOUT CODE
+**NEVER assume code exists based on memory or past conversations.**
+
+Before modifying or importing from ANY module:
+1. **Ask for the latest upload** of that module
+2. **Don't trust documentation alone** - code may have changed
+3. **Don't trust memory** - it may be stale
+
+**Example - WRONG approach:**
+> "I see from the docs that `app_kernel.db` has `get_db_connection`, so I'll import it..."
+
+**Example - CORRECT approach:**
+> "I need to import from `app_kernel.db`. Can you upload `shared_libs/backend/app_kernel/` so I can verify the current API?"
+
+**This applies to:**
+- `shared_libs/backend/*` (app_kernel, infra, cloud, etc.)
+- `shared_libs/frontend/*`
+- Any module not in the current uploads
+
+**Only trust code that is physically in `/home/claude/work/` from current session uploads.**
+
 ### 🧪 DEV PHASE MINDSET
 - **We are in dev phase** - happy to delete all servers/snapshots and retest
 - Give **proper fixes**, not workarounds for existing data

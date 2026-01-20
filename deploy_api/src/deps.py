@@ -16,6 +16,10 @@ from typing import Optional
 # Use kernel's db_connection dependency (handles pooling correctly)
 from shared_libs.backend.app_kernel.db import db_connection
 
+# Also export get_db_connection as get_db for async context manager usage in routes
+# This is used when routes need manual DB access outside of FastAPI dependency injection
+from shared_libs.backend.app_kernel.db import get_db_connection as get_db
+
 from .stores import (
     ProjectStore,
     ServiceStore,
