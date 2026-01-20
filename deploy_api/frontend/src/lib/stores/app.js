@@ -101,7 +101,7 @@ export const deploymentHistory = derived(deploymentsStore, $s => $s?.data || [])
 export const containers = derived(containersStore, $s => $s?.data || [])
 
 // Agent version (keep in sync with agent_code.py)
-export const EXPECTED_AGENT_VERSION = '1.9.8'
+export const EXPECTED_AGENT_VERSION = '1.9.9'
 
 // Theme
 function createThemeStore() {
