@@ -21,7 +21,7 @@ index-BkFcNO69.js:11  GET http://localhost:8000/api/v1/infra/deploy-configs/depl
 * should put new server to zero after hitting deploy (so as not to provision by mistake later) -> validated
 * we used to show the containers (and some quick action icons) in the server box in the infrastructure tab. bring it back! -> validated but need to fix log
 * deploy tab is overwhelming: Change as per chatgpt mockup
-* Available snapshot is not fired in teh background like other data (servers etc)
+* Available snapshot is not fired in teh background like other data (servers etc) -> validated
 
 3.  domain slow to work
 What should teh user expect in term of latency to be able to use his new domain? Maybe we should either give a heads up or even automat ethe domain ready status for him?

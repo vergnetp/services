@@ -105,13 +105,23 @@
   // Handle deploy type change (called from radio button)
   function handleDeployTypeChange(newType) {
     const prevType = deployType
+    if (prevType === newType) return
+    
     deployType = newType
     
-    // When switching TO stateful, auto-select 1 new server if nothing selected
-    if (newType === 'stateful' && prevType !== 'stateful') {
-      if (selectedServers.size === 0 && additionalServers === 0) {
-        additionalServers = 1
-      }
+    // Clear form fields when switching deploy types to avoid confusion
+    name = ''
+    project = ''
+    environment = 'prod'  // Reset to default environment
+    
+    // Clear server selection (user should re-select for new deploy type)
+    selectedServers.clear()
+    selectedServers = selectedServers
+    additionalServers = 0
+    
+    // When switching TO stateful, auto-select 1 new server
+    if (newType === 'stateful') {
+      additionalServers = 1
     }
   }
   
@@ -1311,6 +1321,8 @@ CMD ["python", "main.py"]
       toasts.error(errorMsg)
     } finally {
       deploying = false
+      // Reset new servers count to prevent accidental re-provisioning
+      additionalServers = 0
     }
   }
 </script>
