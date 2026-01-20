@@ -352,8 +352,8 @@ async def deploy_multipart(
     # Form fields (or query params for compatibility)
     name: str = Form(None),
     service_name: str = Query(None),  # Alias
-    project: Optional[str] = Form(None),
-    environment: str = Form("prod"),
+    project: Optional[str] = Query(None),
+    environment: str = Query("prod"),
     source_type: str = Form("code"),
     image: Optional[str] = Form(None),
     server_ips: Optional[str] = Form(None),  # Comma-separated or JSON
