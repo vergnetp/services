@@ -13,7 +13,7 @@
   
   // App-specific stores
   import { 
-    currentTab, scope, 
+    currentTab, scope, doToken,
     serversStore, projectsStore, snapshotsStore, deploymentsStore
   } from './lib/stores/app.js'
   
@@ -30,13 +30,14 @@
   // ==========================================================================
   // BUILD VERSION - Embedded at build time by Claude
   // ==========================================================================
-  const BUILD_VERSION = '2026-01-20 16:48 UTC'
+  const BUILD_VERSION = '2026-01-20 17:38 UTC'
   // ==========================================================================
   
   let initialized = false
   let infraRef
   let deploymentsRef
   let architectureRef
+  let lastDoToken = null
   
   // Base tabs available to all users
   const baseTabs = [
@@ -60,11 +61,19 @@
   $: showTail = false
   $: showContainer = false
   
+  // Reactive: reload stores when DO token changes (after initial auth)
+  $: if (initialized && $authStore.user && $doToken && $doToken !== lastDoToken) {
+    lastDoToken = $doToken
+    preloadStores()
+  }
+  
   onMount(async () => {
     const authenticated = await initAuth()
     initialized = true
     
     if (authenticated) {
+      // Initialize lastDoToken to prevent double-fetch on mount
+      lastDoToken = $doToken
       preloadStores()
     }
   })
@@ -99,6 +108,7 @@
     const { user, token } = event.detail
     setAuthToken(token)
     authStore.setUser(user)
+    lastDoToken = $doToken
     preloadStores()
   }
   

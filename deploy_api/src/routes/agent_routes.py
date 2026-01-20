@@ -91,7 +91,7 @@ async def list_containers(
     client = await _get_agent_client(server_id, _get_do_token(do_token))
     result = await client.list_containers()
     return {
-        "containers": result.data if result.success else [],
+        "containers": result.data.get("containers", []) if result.success else [],
         "error": result.error if not result.success else None,
     }
 
@@ -145,9 +145,9 @@ async def get_container_logs(
 ):
     """Get container logs."""
     client = await _get_agent_client(server_id, _get_do_token(do_token))
-    result = await client.get_container_logs(container_name, tail=lines)
+    result = await client.container_logs(container_name, lines=lines)
     return {
-        "logs": result.data if result.success else None,
+        "logs": result.data.get("logs", "") if result.success else None,
         "error": result.error if not result.success else None,
     }
 
