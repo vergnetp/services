@@ -219,6 +219,16 @@ def create_app():
         is_admin=is_admin_user,
     )
     
+    # Root health endpoint (for simple monitoring that expects /health)
+    @app.get("/health")
+    async def health():
+        """Simple health check for monitoring tools."""
+        db_ok, db_msg = await check_database()
+        return {
+            "status": "ok" if db_ok else "degraded",
+            "database": db_msg
+        }
+    
     # Jobs router
     if settings.redis_url:
         jobs_router = create_jobs_router(

@@ -32,6 +32,19 @@ from shared_libs.backend.databases.connections import AsyncConnection
 get_db = db_connection      # FastAPI dependency: Depends(get_db)
 get_db_context = get_db_connection     # Worker context: async with get_db_context() as db:
 
+# Lazy proxy for websocket/long-lived connections
+# Can't call get_db_manager() at import time - DB not initialized yet
+class _LazyDbManager:
+    """Lazy proxy that defers get_db_manager() call until first use."""
+    def __getattr__(self, name):
+        return getattr(get_db_manager(), name)
+    def __aenter__(self):
+        return get_db_manager().__aenter__()
+    def __aexit__(self, *args):
+        return get_db_manager().__aexit__(*args)
+
+_db_manager = _LazyDbManager()
+
 # =============================================================================
 # AI Agents
 # =============================================================================
