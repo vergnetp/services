@@ -20,7 +20,7 @@ from typing import List, Optional, Dict, Any
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
 from shared_libs.backend.app_kernel.db import db_connection
-from shared_libs.backend.deploy import (
+from shared_libs.backend.infra.deploy import (
     DeployJobConfig,
     DiscoveredService,
     InjectionContext,
@@ -29,7 +29,7 @@ from shared_libs.backend.deploy import (
     format_redeploy_warning,
     DockerfileGenerator,
 )
-from shared_libs.backend.deploy.orchestrator import (
+from shared_libs.backend.infra.deploy.orchestrator import (
     deploy_with_streaming,
     rollback_with_streaming,
     stateful_deploy_with_streaming,

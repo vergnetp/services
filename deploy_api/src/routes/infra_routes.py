@@ -355,6 +355,143 @@ async def get_projects(
 
 
 # =============================================================================
+# Deploy Config Routes (saved deployment settings)
+# =============================================================================
+
+class DeployConfigRequest(BaseModel):
+    project_name: str
+    service_name: str
+    env: str
+    source_type: Optional[str] = "folder"
+    git_url: Optional[str] = None
+    git_branch: Optional[str] = "main"
+    exclude_patterns: Optional[List[str]] = None
+    port: int = 8000
+    env_vars: Optional[Dict[str, str]] = None
+    server_ips: Optional[List[str]] = None
+
+
+@router.get("/deploy-configs/{project}/{name}/{environment}")
+async def get_deploy_config(
+    project: str,
+    name: str,
+    environment: str,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get saved deploy config for a service/env."""
+    from .._gen.crud import EntityCRUD
+    from ..deps import get_db
+    
+    async with get_db() as db:
+        # Find service by project name and service name
+        service_crud = EntityCRUD("service")
+        project_crud = EntityCRUD("project")
+        config_crud = EntityCRUD("deploy_config")
+        
+        # First find the project
+        proj = await project_crud.find_one(
+            db,
+            where_clause="[name] = ? AND [workspace_id] = ?",
+            params=(project, str(user.workspace_id)),
+        )
+        if not proj:
+            raise HTTPException(404, f"Project '{project}' not found")
+        
+        # Find the service
+        service = await service_crud.find_one(
+            db,
+            where_clause="[project_id] = ? AND [name] = ? AND [workspace_id] = ?",
+            params=(proj["id"], name, str(user.workspace_id)),
+        )
+        if not service:
+            raise HTTPException(404, f"Service '{name}' not found in project '{project}'")
+        
+        # Find the config
+        config = await config_crud.find_one(
+            db,
+            where_clause="[service_id] = ? AND [env] = ? AND [workspace_id] = ?",
+            params=(service["id"], environment, str(user.workspace_id)),
+        )
+        if not config:
+            raise HTTPException(404, f"No saved config for {project}/{name}/{environment}")
+        
+        return config
+
+
+@router.post("/deploy-configs")
+async def save_deploy_config(
+    req: DeployConfigRequest,
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Save deploy config for a service/env."""
+    from .._gen.crud import EntityCRUD
+    from ..deps import get_db
+    import uuid
+    
+    async with get_db() as db:
+        project_crud = EntityCRUD("project")
+        service_crud = EntityCRUD("service")
+        config_crud = EntityCRUD("deploy_config")
+        
+        # Find or create project
+        proj = await project_crud.find_one(
+            db,
+            where_clause="[name] = ? AND [workspace_id] = ?",
+            params=(req.project_name, str(user.workspace_id)),
+        )
+        if not proj:
+            # Create the project
+            proj = await project_crud.create(db, {
+                "name": req.project_name,
+                "workspace_id": str(user.workspace_id),
+                "created_by": str(user.id),
+            })
+        
+        # Find or create service
+        service = await service_crud.find_one(
+            db,
+            where_clause="[project_id] = ? AND [name] = ? AND [workspace_id] = ?",
+            params=(proj["id"], req.service_name, str(user.workspace_id)),
+        )
+        if not service:
+            # Create the service
+            service = await service_crud.create(db, {
+                "project_id": proj["id"],
+                "name": req.service_name,
+                "workspace_id": str(user.workspace_id),
+                "port": req.port,
+            })
+        
+        # Find existing config or create new
+        existing = await config_crud.find_one(
+            db,
+            where_clause="[service_id] = ? AND [env] = ? AND [workspace_id] = ?",
+            params=(service["id"], req.env, str(user.workspace_id)),
+        )
+        
+        config_data = {
+            "service_id": service["id"],
+            "env": req.env,
+            "workspace_id": str(user.workspace_id),
+            "source_type": req.source_type,
+            "git_url": req.git_url,
+            "git_branch": req.git_branch,
+            "exclude_patterns": req.exclude_patterns,
+            "port": req.port,
+            "env_vars": req.env_vars,
+        }
+        
+        if existing:
+            config_data["id"] = existing["id"]
+            result = await config_crud.save(db, config_data)
+        else:
+            config_data["id"] = str(uuid.uuid4())
+            result = await config_crud.create(db, config_data)
+        
+        return {"success": True, "config_id": result["id"]}
+
+
+# =============================================================================
 # Info Routes
 # =============================================================================
 

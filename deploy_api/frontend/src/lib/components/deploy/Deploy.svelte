@@ -1342,7 +1342,7 @@ CMD ["python", "main.py"]
               bind:value={project}
               placeholder="my-project"
               required
-              pattern="[a-z0-9-]*"
+              pattern="[-a-z0-9]*"
             >
           </div>
           <div class="form-group">
@@ -1353,7 +1353,7 @@ CMD ["python", "main.py"]
               bind:value={name}
               placeholder={deployType === 'stateful' ? statefulType : 'api'}
               required
-              pattern="[a-z0-9-]+"
+              pattern="[-a-z0-9]+"
               title="Lowercase letters, numbers, hyphens only"
             >
             {#if deployType === 'stateful'}

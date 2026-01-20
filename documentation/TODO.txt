@@ -1,0 +1,31 @@
+1. ui errors:
+installHook.js:1 [Deploy] Failed to generate Dockerfile via API: TypeError: He.post is not a function
+    at Ke (index-BkFcNO69.js:38:4209)
+    at $e (index-BkFcNO69.js:38:3924)
+    at hl (index-BkFcNO69.js:38:2447)
+    at async rl (index-BkFcNO69.js:38:1930)
+    at async HTMLDivElement.vl (index-BkFcNO69.js:38:1658)
+overrideMethod @ installHook.js:1
+Ke @ index-BkFcNO69.js:38
+$e @ index-BkFcNO69.js:38
+hl @ index-BkFcNO69.js:38
+await in hl
+rl @ index-BkFcNO69.js:38
+await in rl
+vl @ index-BkFcNO69.js:38Understand this error
+index-BkFcNO69.js:11  GET http://localhost:8000/api/v1/infra/deploy-configs/deployer/deploy_api/prod?do_token=d** 404 (Not Found)
+
+
+2. Ui improvements:
+* should clear service name /project/env when switching from stateful to service etc
+* should put new server to zero after hitting deploy (so as not to provision by mistake later)
+ * we used to show the containers (and some cquick action icons) in the server box in the infrastructure tab. bring it back!
+
+3.  domain slow to work
+What should teh user expect in term of latency to be able to use his new domain? Maybe we should either give a heads up or even automat ethe domain ready status for him?
+once available, then re-deploy are immediate, right?
+c62610-default-prod-deploy-api is the subdomain (why default? should have been my project name - "Deployer")
+
+4. should show the backend log if admin
+
+5. Fix ai_agents_api
