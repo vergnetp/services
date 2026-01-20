@@ -107,14 +107,6 @@
     const prevType = deployType
     deployType = newType
     
-    // Clear form fields when switching deploy types
-    if (prevType !== newType) {
-      name = ''
-      project = ''
-      environment = 'prod'
-      configStatus = ''
-    }
-    
     // When switching TO stateful, auto-select 1 new server if nothing selected
     if (newType === 'stateful' && prevType !== 'stateful') {
       if (selectedServers.size === 0 && additionalServers === 0) {
@@ -281,13 +273,13 @@
     
     configStatus = 'Loading...'
     try {
-      const proj = project || ''
+      const proj = project || 'default'
       const response = await api('GET', `/infra/deploy-configs/${proj}/${name}/${environment}`)
       applyConfig(response)
       configStatus = '✓ Loaded'
       toasts.success('Config loaded')
     } catch (err) {
-      if (err.message?.toLowerCase().includes('not found')) {
+      if (err.message?.includes('404')) {
         configStatus = 'No saved config'
         toasts.info('No saved config found')
       } else {
@@ -299,7 +291,7 @@
   
   async function loadDeployConfigSilent() {
     try {
-      const proj = project || ''
+      const proj = project || 'default'
       const response = await api('GET', `/infra/deploy-configs/${proj}/${name}/${environment}`)
       applyConfig(response)
       configStatus = '✓ Auto-loaded'
@@ -334,10 +326,6 @@
       toasts.warning('Enter app name first')
       return
     }
-    if (!project) {
-      toasts.warning('Enter project name first')
-      return
-    }
     
     configStatus = 'Saving...'
     
@@ -355,7 +343,7 @@
     const patterns = excludePatternsText.split('\n').map(s => s.trim()).filter(Boolean)
     
     const config = {
-      project_name: project,
+      project_name: project || 'default',
       service_name: name,
       env: environment,
       source_type: sourceType === 'code' ? 'folder' : sourceType,
@@ -775,7 +763,7 @@
     }
     
     try {
-      const response = await api('POST', '/infra/dockerfile/generate', {
+      const response = await api.post('/infra/dockerfile/generate', {
         files,
         main_folder: mainFolder.name,
         dep_folders: depFolders,
@@ -1323,9 +1311,6 @@ CMD ["python", "main.py"]
       toasts.error(errorMsg)
     } finally {
       deploying = false
-      // Reset provisioning count to avoid accidental re-provisioning
-      // (servers may have been created even if deploy failed)
-      additionalServers = 0
     }
   }
 </script>
@@ -1892,10 +1877,6 @@ CMD ["python", "main.py"]
                     >
                     <small>Comma-separated custom domains (requires DNS setup)</small>
                   </div>
-                  
-                  <div class="domain-info">
-                    <small>💡 <strong>First deploy:</strong> DNS propagation takes 1-5 minutes. Subsequent deploys are instant.</small>
-                  </div>
                 </div>
               {/if}
               {/if}
@@ -2087,9 +2068,6 @@ CMD ["python", "main.py"]
                   <a href="https://{deployResult.domain}" target="_blank" class="result-link">
                     https://{deployResult.domain}
                   </a>
-                </div>
-                <div class="dns-notice">
-                  <small>⏱️ DNS may take 1-5 minutes to propagate. If the domain doesn't load yet, wait and refresh.</small>
                 </div>
               {/if}
               
@@ -2822,19 +2800,6 @@ CMD ["python", "main.py"]
   
   .result-section:last-child {
     margin-bottom: 0;
-  }
-  
-  .dns-notice {
-    margin: 8px 0 12px 0;
-    padding: 8px 12px;
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 6px;
-    border-left: 3px solid rgba(255, 255, 255, 0.4);
-  }
-  
-  .dns-notice small {
-    color: rgba(255, 255, 255, 0.85);
-    font-size: 0.8rem;
   }
   
   .failed-servers-section {

@@ -30,19 +30,32 @@ Building a deployment platform (like Heroku/Railway) using DigitalOcean infrastr
 - Give **proper fixes**, not workarounds for existing data
 - Don't waste time on migration paths - clean slate is fine
 
-### 📦 BEFORE PROVIDING deploy_api.zip (DO ALL 5 STEPS!)
+### 📦 BEFORE PROVIDING deploy_api.zip (MANDATORY CHECKLIST)
 
-**⚠️ STOP! Did you bump versions? Don't skip steps 1-3!**
+**⚠️ DO ALL STEPS IN ORDER - NO SKIPPING!**
 
-| Step | Action | File |
-|------|--------|------|
-| 1 | `date -u +"%Y-%m-%d %H:%M UTC"` | Get timestamp |
-| 2 | `DEPLOY_API_VERSION = "..."` | `config.py` |
-| 3 | `BUILD_VERSION = '...'` | `App.svelte` |
-| 4 | `npm run build` | `frontend/` |
-| 5 | `zip -r deploy_api.zip deploy_api` | Output |
+| Step | Command/Action | Verify |
+|------|----------------|--------|
+| 1 | `date -u +"%Y-%m-%d %H:%M UTC"` | Get timestamp (e.g., `2026-01-20 12:39 UTC`) |
+| 2 | Update `config.py`: `DEPLOY_API_VERSION = "..."` | ✓ |
+| 3 | Update `App.svelte`: `BUILD_VERSION = '...'` | ✓ |
+| 4 | `cd frontend && npm run build` | Must see "built in X.XXs" |
+| 5 | **VERIFY:** `ls -la static/assets/` | Check JS file timestamp is NOW |
+| 6 | `zip -r deploy_api.zip deploy_api ...` | Create zip |
+| 7 | **VERIFY:** `unzip -p deploy_api.zip deploy_api/config.py \| grep VERSION` | Confirm version in zip |
 
-Before step 4, run `npm install` from workspace root if @myorg/ui changed.
+**Common mistakes to avoid:**
+- ❌ Updating versions but not running `npm run build`
+- ❌ Running build but zipping old files (forgot to re-zip after build)
+- ❌ Zipping before build completes
+
+**One-liner for steps 4-7:**
+```bash
+cd /home/claude/work/deploy_api/frontend && npm run build && \
+cd /home/claude/work && rm -f /mnt/user-data/outputs/deploy_api.zip && \
+zip -r /mnt/user-data/outputs/deploy_api.zip deploy_api -x "*.pyc" -x "*__pycache__*" -x "*.git*" -x "*node_modules*" -x "*.svelte-kit*" && \
+echo "=== VERIFY ===" && unzip -p /mnt/user-data/outputs/deploy_api.zip deploy_api/config.py | grep VERSION
+```
 
 ### 🔄 THINK REUSABILITY
 Before adding code, ask: "Could other services/projects use this?"

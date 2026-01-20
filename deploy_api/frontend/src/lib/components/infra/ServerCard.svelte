@@ -24,7 +24,6 @@
   let containers = []
   let loadingContainers = false
   let containersLoaded = false
-  let containersError = false  // Track if loading failed
   let actionInProgress = {}
   
   // Metrics state
@@ -108,17 +107,15 @@
     if (!isOnline || !$doToken || !server.id) return
     
     loadingContainers = true
-    containersError = false
     try {
       const res = await api('GET', `/infra/agent/${server.id}/containers?do_token=${$doToken}`)
       containers = res.containers || []
+      containersLoaded = true
     } catch (e) {
       console.error('Failed to load containers:', e)
       containers = []
-      containersError = true
     } finally {
       loadingContainers = false
-      containersLoaded = true  // Always mark as loaded to prevent infinite retry
     }
   }
   
@@ -243,8 +240,6 @@
   <div class="containers">
     {#if loadingContainers && containers.length === 0}
       <span class="loading-text">Loading...</span>
-    {:else if containersError}
-      <span class="error-text" title="Click to retry">⚠️ <button class="retry-btn" on:click={loadContainers}>retry</button></span>
     {:else if containers.length === 0 && containersLoaded}
       <span class="empty-text">No containers</span>
     {:else}

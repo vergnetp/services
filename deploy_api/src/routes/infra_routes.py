@@ -379,7 +379,7 @@ async def get_deploy_config(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Get saved deploy config for a service/env."""
-    from ..._gen.crud import EntityCRUD
+    from .._gen.crud import EntityCRUD
     from ..deps import get_db
     
     async with get_db() as db:
@@ -424,7 +424,7 @@ async def save_deploy_config(
     user: UserIdentity = Depends(get_current_user),
 ):
     """Save deploy config for a service/env."""
-    from ..._gen.crud import EntityCRUD
+    from .._gen.crud import EntityCRUD
     from ..deps import get_db
     import uuid
     
