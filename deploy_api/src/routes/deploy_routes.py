@@ -107,6 +107,9 @@ async def discover_stateful_services(
     """
     Query DB for stateful services in project/env.
     Returns list of DiscoveredService for use with injection module.
+    
+    Stateful services are scoped to project - if you need Redis,
+    deploy it in the same project as the services that use it.
     """
     records = await service_droplet_store.get_stateful_services_for_project(
         project_id=project_id,
@@ -454,9 +457,6 @@ async def deploy_multipart(
     # Merge auto-injected with user-provided (user takes precedence)
     final_env_vars = {**auto_injected_env, **parsed_env_vars}
     
-    # Merge auto-injected with user-provided (user takes precedence)
-    final_env_vars = {**auto_injected_env, **parsed_env_vars}
-    
     # Build DeployRequest
     req = DeployRequest(
         name=svc_name,
@@ -581,7 +581,7 @@ async def deploy(
         project = await project_store.create(workspace_id, project_name)
     project_id = project["id"]
     
-    # Auto-inject URLs for stateful services in this project
+    # Auto-inject URLs for ALL stateful services in this workspace
     # (only for non-stateful deploys - stateful services don't need this)
     auto_injected_env = {}
     if not req.is_stateful:
@@ -589,7 +589,8 @@ async def deploy(
             service_droplet_store=service_droplet_store,
             service_store=service_store,
             droplet_store=droplet_store,
-            project_id=project_id,
+            project_store=project_store,
+            workspace_id=workspace_id,
             env=req.environment,
         )
         if discovered:
