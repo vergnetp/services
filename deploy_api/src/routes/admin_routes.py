@@ -435,3 +435,100 @@ async def get_admin_info(
 
 # Update the SpanInfo model to support recursion
 SpanInfo.model_rebuild()
+
+
+# =============================================================================
+# Backend Logs (In-Memory Buffer)
+# =============================================================================
+
+import logging
+from collections import deque
+from threading import Lock
+
+# In-memory log buffer
+_log_buffer: deque = deque(maxlen=1000)  # Keep last 1000 entries
+_log_lock = Lock()
+
+
+class MemoryLogHandler(logging.Handler):
+    """Handler that stores log records in memory for admin viewing."""
+    
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            with _log_lock:
+                _log_buffer.append({
+                    "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": msg,
+                    "module": record.module,
+                    "funcName": record.funcName,
+                    "lineno": record.lineno,
+                })
+        except Exception:
+            pass
+
+
+def setup_memory_logging():
+    """Attach memory handler to root logger."""
+    handler = MemoryLogHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(handler)
+    # Also add to uvicorn loggers
+    for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error', 'fastapi']:
+        logging.getLogger(logger_name).addHandler(handler)
+
+
+# Initialize on module load
+setup_memory_logging()
+
+
+class LogEntry(BaseModel):
+    timestamp: str
+    level: str
+    logger: str
+    message: str
+    module: Optional[str] = None
+    funcName: Optional[str] = None
+    lineno: Optional[int] = None
+
+
+@router.get("/logs", response_model=List[LogEntry])
+async def get_backend_logs(
+    user: UserIdentity = Depends(require_admin),
+    level: Optional[str] = Query(None, description="Filter by level: DEBUG, INFO, WARNING, ERROR"),
+    search: Optional[str] = Query(None, description="Search in message"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """
+    Get recent backend logs from memory buffer.
+    
+    Useful for debugging deployment issues without SSH access.
+    """
+    with _log_lock:
+        logs = list(_log_buffer)
+    
+    # Reverse to show newest first
+    logs = logs[::-1]
+    
+    # Filter by level
+    if level:
+        level_upper = level.upper()
+        logs = [l for l in logs if l["level"] == level_upper]
+    
+    # Filter by search term
+    if search:
+        search_lower = search.lower()
+        logs = [l for l in logs if search_lower in l["message"].lower()]
+    
+    return logs[:limit]
+
+
+@router.delete("/logs")
+async def clear_backend_logs(user: UserIdentity = Depends(require_admin)):
+    """Clear the in-memory log buffer."""
+    with _log_lock:
+        _log_buffer.clear()
+    return {"status": "cleared"}

@@ -6,6 +6,9 @@
     import { Button } from '@myorg/ui';
     import { Modal } from '@myorg/ui';
     
+    // Tab state
+    let activeTab = 'tracing';  // 'tracing' or 'logs'
+    
     // State
     let loading = true;
     let overview = null;
@@ -24,6 +27,67 @@
     let minDuration = '';
     let statusClass = '';
     let limit = 50;
+    
+    // Backend Logs state
+    let backendLogs = [];
+    let logsLoading = false;
+    let logLevel = '';
+    let logSearch = '';
+    let logLimit = 200;
+    let autoRefreshLogs = false;
+    let logsInterval = null;
+    
+    // Load backend logs
+    async function loadBackendLogs() {
+        logsLoading = true;
+        try {
+            const params = new URLSearchParams({ limit: logLimit.toString() });
+            if (logLevel) params.set('level', logLevel);
+            if (logSearch) params.set('search', logSearch);
+            
+            backendLogs = await api('GET', `/admin/logs?${params}`);
+        } catch (err) {
+            toasts.error(`Failed to load logs: ${err.message}`);
+            backendLogs = [];
+        }
+        logsLoading = false;
+    }
+    
+    // Toggle auto-refresh for logs
+    function toggleAutoRefresh() {
+        autoRefreshLogs = !autoRefreshLogs;
+        if (autoRefreshLogs) {
+            logsInterval = setInterval(loadBackendLogs, 3000);
+            toasts.info('Auto-refresh enabled (3s)');
+        } else {
+            clearInterval(logsInterval);
+            logsInterval = null;
+            toasts.info('Auto-refresh disabled');
+        }
+    }
+    
+    // Clear logs
+    async function clearLogs() {
+        try {
+            await api('DELETE', '/admin/logs');
+            backendLogs = [];
+            toasts.info('Logs cleared');
+        } catch (err) {
+            toasts.error(`Failed to clear logs: ${err.message}`);
+        }
+    }
+    
+    // Log level color
+    function logLevelColor(level) {
+        switch (level) {
+            case 'DEBUG': return '#888';
+            case 'INFO': return '#4CAF50';
+            case 'WARNING': return '#ff9800';
+            case 'ERROR': return '#f44336';
+            case 'CRITICAL': return '#9c27b0';
+            default: return '#888';
+        }
+    }
     
     // Load available services
     async function loadServices() {
@@ -148,13 +212,42 @@
     
     onMount(() => {
         refresh();
+        return () => {
+            // Cleanup on destroy
+            if (logsInterval) clearInterval(logsInterval);
+        };
     });
+    
+    // Handle tab change
+    function switchTab(tab) {
+        activeTab = tab;
+        if (tab === 'logs' && backendLogs.length === 0) {
+            loadBackendLogs();
+        }
+    }
 </script>
 
 <div class="telemetry">
     <div class="header">
         <h2>🔍 Telemetry Dashboard</h2>
+        <div class="tabs">
+            <button 
+                class="tab" 
+                class:active={activeTab === 'tracing'} 
+                on:click={() => switchTab('tracing')}
+            >
+                📊 Request Tracing
+            </button>
+            <button 
+                class="tab" 
+                class:active={activeTab === 'logs'} 
+                on:click={() => switchTab('logs')}
+            >
+                📝 Backend Logs
+            </button>
+        </div>
         <div class="controls">
+            {#if activeTab === 'tracing'}
             <select bind:value={hours} on:change={refresh}>
                 <option value={1}>Last 1 hour</option>
                 <option value={6}>Last 6 hours</option>
@@ -164,8 +257,34 @@
             <Button on:click={refresh} disabled={loading}>
                 {loading ? '⏳' : '🔄'} Refresh
             </Button>
+            {:else}
+            <select bind:value={logLevel} on:change={loadBackendLogs}>
+                <option value="">All Levels</option>
+                <option value="DEBUG">DEBUG</option>
+                <option value="INFO">INFO</option>
+                <option value="WARNING">WARNING</option>
+                <option value="ERROR">ERROR</option>
+            </select>
+            <input 
+                type="text" 
+                placeholder="Search logs..." 
+                bind:value={logSearch}
+                on:keyup={(e) => e.key === 'Enter' && loadBackendLogs()}
+            />
+            <Button on:click={loadBackendLogs} disabled={logsLoading}>
+                {logsLoading ? '⏳' : '🔄'} Refresh
+            </Button>
+            <Button on:click={toggleAutoRefresh} variant={autoRefreshLogs ? 'primary' : 'secondary'}>
+                {autoRefreshLogs ? '⏸️ Stop' : '▶️ Auto'}
+            </Button>
+            <Button on:click={clearLogs} variant="danger">
+                🗑️ Clear
+            </Button>
+            {/if}
         </div>
     </div>
+    
+    {#if activeTab === 'tracing'}
     
     <!-- Overview Cards -->
     {#if overview}
@@ -306,6 +425,44 @@
             </table>
         </div>
     </Card>
+    
+    {/if}
+    <!-- End of tracing tab -->
+    
+    <!-- Backend Logs Tab -->
+    {#if activeTab === 'logs'}
+    <Card>
+        <div class="logs-header">
+            <h3>📝 Backend Logs</h3>
+            <span class="log-count">{backendLogs.length} entries</span>
+        </div>
+        
+        {#if logsLoading}
+        <div class="loading-logs">Loading logs...</div>
+        {:else if backendLogs.length === 0}
+        <div class="empty-logs">
+            <p>No logs found.</p>
+            <p class="hint">Logs are captured in memory. They reset when the server restarts.</p>
+        </div>
+        {:else}
+        <div class="logs-container">
+            {#each backendLogs as log}
+            <div class="log-entry" class:error={log.level === 'ERROR' || log.level === 'CRITICAL'} class:warning={log.level === 'WARNING'}>
+                <span class="log-time">{log.timestamp?.split('T')[1]?.split('.')[0] || log.timestamp}</span>
+                <span class="log-level" style="color: {logLevelColor(log.level)}">[{log.level}]</span>
+                <span class="log-logger">{log.logger}</span>
+                <span class="log-message">{log.message}</span>
+                {#if log.module && log.funcName}
+                <span class="log-location">({log.module}.{log.funcName}:{log.lineno})</span>
+                {/if}
+            </div>
+            {/each}
+        </div>
+        {/if}
+    </Card>
+    {/if}
+    <!-- End of logs tab -->
+    
 </div>
 
 <!-- Drill-down Modal -->
@@ -801,5 +958,152 @@
     td.service {
         font-size: 0.8rem;
         color: var(--text-muted);
+    }
+    
+    /* Tabs */
+    .tabs {
+        display: flex;
+        gap: 0.25rem;
+        background: var(--bg-input);
+        padding: 0.25rem;
+        border-radius: 8px;
+    }
+    
+    .tab {
+        padding: 0.5rem 1rem;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        transition: all 0.2s;
+    }
+    
+    .tab:hover {
+        color: var(--text);
+        background: var(--panel-bg);
+    }
+    
+    .tab.active {
+        background: var(--primary);
+        color: white;
+    }
+    
+    /* Controls input */
+    .controls input[type="text"] {
+        padding: 0.5rem 0.75rem;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg-input);
+        color: var(--text);
+        min-width: 150px;
+    }
+    
+    .controls input[type="text"]::placeholder {
+        color: var(--text-muted);
+    }
+    
+    /* Logs Section */
+    .logs-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+    
+    .logs-header h3 {
+        margin: 0;
+        color: var(--text);
+    }
+    
+    .log-count {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        background: var(--bg-input);
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+    }
+    
+    .loading-logs {
+        text-align: center;
+        padding: 2rem;
+        color: var(--text-muted);
+    }
+    
+    .empty-logs {
+        text-align: center;
+        padding: 2rem;
+        color: var(--text-muted);
+    }
+    
+    .empty-logs .hint {
+        font-size: 0.85rem;
+        margin-top: 0.5rem;
+        opacity: 0.7;
+    }
+    
+    .logs-container {
+        max-height: 600px;
+        overflow-y: auto;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 0.8rem;
+        background: var(--bg-input);
+        border-radius: 8px;
+        padding: 0.5rem;
+    }
+    
+    .log-entry {
+        display: flex;
+        gap: 0.5rem;
+        padding: 0.35rem 0.5rem;
+        border-radius: 4px;
+        line-height: 1.4;
+        flex-wrap: wrap;
+        align-items: baseline;
+    }
+    
+    .log-entry:hover {
+        background: var(--panel-bg);
+    }
+    
+    .log-entry.error {
+        background: rgba(244, 67, 54, 0.1);
+    }
+    
+    .log-entry.warning {
+        background: rgba(255, 152, 0, 0.1);
+    }
+    
+    .log-time {
+        color: var(--text-muted);
+        flex-shrink: 0;
+        font-size: 0.75rem;
+    }
+    
+    .log-level {
+        font-weight: 600;
+        flex-shrink: 0;
+        min-width: 70px;
+    }
+    
+    .log-logger {
+        color: var(--primary);
+        flex-shrink: 0;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .log-message {
+        color: var(--text);
+        flex: 1;
+        word-break: break-word;
+    }
+    
+    .log-location {
+        color: var(--text-muted);
+        font-size: 0.7rem;
+        flex-shrink: 0;
     }
 </style>
