@@ -24,6 +24,16 @@ const INFRA_NEEDS_DO_TOKEN = [
 ]
 
 /**
+ * Validate JWT format (must have 3 dot-separated parts)
+ * @private
+ */
+function isValidJwtFormat(token) {
+  if (!token || typeof token !== 'string') return false
+  const parts = token.split('.')
+  return parts.length === 3
+}
+
+/**
  * Build headers and URL for API request (internal helper)
  * @private
  */
@@ -36,6 +46,13 @@ function buildRequest(path, options = {}) {
   const isAuthEndpoint = path.startsWith('/auth/login') || path.startsWith('/auth/register')
   
   if (authState.token && authState.token.trim() !== '' && !isAuthEndpoint && !options.skipAuth) {
+    // Validate token format before sending
+    if (!isValidJwtFormat(authState.token)) {
+      console.error('Invalid JWT format detected - token may be corrupted')
+      // Force logout to clear corrupted token
+      auth.logout()
+      return { error: 'Session corrupted - please login again', url: null, headers: null }
+    }
     headers['Authorization'] = `Bearer ${authState.token}`
   }
   
@@ -184,6 +201,13 @@ export async function apiStream(method, path, data = null, onMessage, options = 
  */
 export async function apiStreamMultipart(path, formData, onMessage, options = {}) {
   const authState = get(auth)
+  
+  // Validate token format before sending
+  if (authState.token && !isValidJwtFormat(authState.token)) {
+    console.error('Invalid JWT format detected - token may be corrupted')
+    auth.logout()
+    throw new Error('Session corrupted - please login again')
+  }
   
   // Build URL with DO token if needed
   let url = API_BASE + path

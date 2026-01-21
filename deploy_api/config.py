@@ -17,7 +17,7 @@ Note: Loaded here for worker.py, and also by create_service() for the API.
 # =============================================================================
 # BUILD TIMESTAMP - Auto-generated when Claude creates deploy_api.zip
 # =============================================================================
-DEPLOY_API_VERSION = "2026-01-21 14:44 UTC"
+DEPLOY_API_VERSION = "2026-01-21 15:33 UTC"
 # =============================================================================
 
 import os

@@ -359,6 +359,35 @@ entities:
       - name: encrypted_blob
         type: text
 
+  # Health check records - tracking droplet/container health
+  - name: health_check
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: droplet_id
+        type: string
+        required: true
+      - name: container_name
+        type: string
+        # null = droplet-level check, non-null = container-level check
+      - name: status
+        type: string
+        required: true
+        # Values: healthy, degraded, unhealthy, unreachable
+      - name: response_time_ms
+        type: int
+      - name: error_message
+        type: text
+      - name: action_taken
+        type: string
+        # Values: null, restarted, restart_failed, rebooted, reboot_failed
+      - name: attempt_count
+        type: int
+        default: 0
+      - name: checked_at
+        type: datetime
+        required: true
+
 # =============================================================================
 # Custom routes (not auto-generated, live in src/routes/)
 # =============================================================================

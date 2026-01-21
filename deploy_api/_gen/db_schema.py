@@ -154,3 +154,22 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_credentials_workspace ON credentials(workspace_id)")
+
+    # HealthCheck
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS health_checks (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            droplet_id TEXT NOT NULL,
+            container_name TEXT,
+            status TEXT NOT NULL,
+            response_time_ms INTEGER,
+            error_message TEXT,
+            action_taken TEXT,
+            attempt_count INTEGER DEFAULT 0,
+            checked_at TEXT NOT NULL,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_health_checks_workspace ON health_checks(workspace_id)")

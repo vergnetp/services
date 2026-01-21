@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { api } from '../../api/client.js';
     import { toasts } from '../../stores/toast.js';
+    import { getAuthToken } from '../../stores/auth.js';
     import { Card } from '@myorg/ui';
     import { Button } from '@myorg/ui';
     import { Modal } from '@myorg/ui';
@@ -49,7 +50,7 @@
         try {
             dbInfo = await api('GET', '/admin/db/info');
         } catch (err) {
-            toasts.error(`Failed to load db info: ${err.message}`);
+            toasts.error(`Failed to load DB info: ${err.message}`);
             dbInfo = null;
         }
         dbLoading = false;
@@ -58,21 +59,30 @@
     // Download database
     async function downloadDb() {
         try {
-            // Use fetch directly for file download
-            const token = localStorage.getItem('token');
-            const response = await fetch(`${window.API_BASE_URL || ''}/api/v1/admin/db/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            
-            if (!response.ok) {
-                throw new Error(`Download failed: ${response.status}`);
+            const token = getAuthToken();
+            if (!token) {
+                throw new Error('Not authenticated');
             }
+            
+            // Validate token looks like a JWT (3 parts separated by dots)
+            const parts = token.split('.');
+            if (parts.length !== 3) {
+                console.error('Invalid token format - clearing and requiring re-login');
+                throw new Error('Session corrupted - please logout and login again');
+            }
+            
+            const response = await fetch('/api/v1/admin/db/download', {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (!response.ok) throw new Error('Download failed');
             
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'deploy.db';
+            a.download = `deploy_backup_${new Date().toISOString().slice(0, 10)}.db`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -86,18 +96,18 @@
     
     // Upload database
     async function uploadDb() {
-        const file = fileInput?.files?.[0];
-        if (!file) {
+        if (!fileInput?.files?.[0]) {
             toasts.error('Please select a file first');
             return;
         }
         
+        const file = fileInput.files[0];
         if (!file.name.endsWith('.db')) {
-            toasts.error('File must be a .db SQLite database');
+            toasts.error('File must have .db extension');
             return;
         }
         
-        if (!confirm('This will REPLACE the entire database! Make sure you downloaded a backup first. Continue?')) {
+        if (!confirm('⚠️ This will REPLACE the entire database! Are you sure?')) {
             return;
         }
         
@@ -106,28 +116,36 @@
             const formData = new FormData();
             formData.append('file', file);
             
-            const token = localStorage.getItem('token');
-            const response = await fetch(`${window.API_BASE_URL || ''}/api/v1/admin/db/upload`, {
+            // Get auth token from store
+            const token = getAuthToken();
+            if (!token) {
+                throw new Error('Not authenticated');
+            }
+            
+            // Validate token looks like a JWT (3 parts separated by dots)
+            const parts = token.split('.');
+            if (parts.length !== 3) {
+                console.error('Invalid token format - clearing and requiring re-login');
+                throw new Error('Session corrupted - please logout and login again');
+            }
+            
+            const response = await fetch('/api/v1/admin/db/upload', {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
                 body: formData
             });
             
             if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(errData.detail || `Upload failed: ${response.status}`);
+                const err = await response.json();
+                throw new Error(err.detail || 'Upload failed');
             }
             
             const result = await response.json();
-            toasts.success(result.message || 'Database uploaded successfully');
-            toasts.info('Restart the service for changes to take effect');
-            
-            // Refresh db info
+            toasts.success(`Database replaced! Backup: ${result.backup_path || 'none'}`);
+            fileInput.value = '';
             await loadDbInfo();
-            
-            // Clear file input
-            if (fileInput) fileInput.value = '';
-            
         } catch (err) {
             toasts.error(`Upload failed: ${err.message}`);
         }
@@ -344,20 +362,6 @@
                 on:click={() => switchTab('logs')}
             >
                 📝 Backend Logs
-            </button>
-            <button 
-                class="tab" 
-                class:active={activeTab === 'database'} 
-                on:click={() => switchTab('database')}
-            >
-                🗄️ Database
-            </button>
-            <button 
-                class="tab" 
-                class:active={activeTab === 'database'} 
-                on:click={() => switchTab('database')}
-            >
-                🗄️ Database
             </button>
             <button 
                 class="tab" 
@@ -587,70 +591,70 @@
     <!-- Database Tab -->
     {#if activeTab === 'database'}
     <Card>
-        <div class="db-section">
+        <div class="db-header">
             <h3>🗄️ Database Management</h3>
-            <p class="db-warning">⚠️ Dev phase only - Use with caution!</p>
-            
-            {#if dbLoading}
-            <div class="loading-db">Loading database info...</div>
-            {:else if dbInfo}
-            <div class="db-info">
-                <div class="db-info-row">
+            <Button size="small" on:click={loadDbInfo} disabled={dbLoading}>
+                {dbLoading ? 'Loading...' : '🔄 Refresh'}
+            </Button>
+        </div>
+        
+        {#if dbLoading && !dbInfo}
+        <div class="loading-db">Loading database info...</div>
+        {:else if dbInfo}
+        <div class="db-info">
+            <div class="db-stats">
+                <div class="stat">
                     <span class="label">Path:</span>
                     <code>{dbInfo.path}</code>
                 </div>
-                <div class="db-info-row">
+                <div class="stat">
+                    <span class="label">Size:</span>
+                    <span>{dbInfo.size_mb ? dbInfo.size_mb.toFixed(2) + ' MB' : 'N/A'}</span>
+                </div>
+                <div class="stat">
+                    <span class="label">Modified:</span>
+                    <span>{dbInfo.modified || 'N/A'}</span>
+                </div>
+                <div class="stat">
                     <span class="label">Status:</span>
-                    <span class="status-badge" class:exists={dbInfo.exists}>
-                        {dbInfo.exists ? '✅ Exists' : '❌ Not found'}
+                    <span class="status-badge" class:success={dbInfo.exists} class:error={!dbInfo.exists}>
+                        {dbInfo.exists ? '✓ Exists' : '✗ Not Found'}
                     </span>
                 </div>
-                {#if dbInfo.exists}
-                <div class="db-info-row">
-                    <span class="label">Size:</span>
-                    <span>{dbInfo.size_human}</span>
-                </div>
-                <div class="db-info-row">
-                    <span class="label">Modified:</span>
-                    <span>{dbInfo.modified}</span>
-                </div>
-                {/if}
             </div>
-            {/if}
             
             <div class="db-actions">
                 <div class="action-group">
                     <h4>📥 Download</h4>
-                    <p>Download the current database to your local machine.</p>
-                    <Button on:click={downloadDb} disabled={!dbInfo?.exists}>
-                        📥 Download Database
+                    <p class="hint">Download the SQLite database for backup or offline editing.</p>
+                    <Button on:click={downloadDb} variant="secondary">
+                        Download Database
                     </Button>
                 </div>
                 
                 <div class="action-group">
-                    <h4>📤 Upload</h4>
-                    <p>Upload a database file to replace the server's database.</p>
-                    <div class="upload-controls">
+                    <h4>📤 Upload & Replace</h4>
+                    <p class="hint warning">⚠️ This will REPLACE the entire database. A backup will be created automatically.</p>
+                    <div class="upload-row">
                         <input 
                             type="file" 
-                            accept=".db"
+                            accept=".db" 
                             bind:this={fileInput}
                             class="file-input"
                         />
-                        <Button on:click={uploadDb} disabled={dbUploading} variant="danger">
-                            {dbUploading ? '⏳ Uploading...' : '📤 Upload & Replace'}
+                        <Button on:click={uploadDb} variant="danger" disabled={dbUploading}>
+                            {dbUploading ? 'Uploading...' : 'Upload & Replace'}
                         </Button>
                     </div>
-                    <p class="upload-warning">⚠️ This will REPLACE the entire database. Download a backup first!</p>
                 </div>
             </div>
-            
-            <div class="db-footer">
-                <Button on:click={loadDbInfo} disabled={dbLoading}>
-                    🔄 Refresh Info
-                </Button>
-            </div>
         </div>
+        {:else}
+        <div class="empty-db">
+            <p>Could not load database info.</p>
+            <Button on:click={loadDbInfo}>Try Again</Button>
+        </div>
+        {/if}
     </Card>
     {/if}
     <!-- End of database tab -->
@@ -1299,90 +1303,101 @@
         flex-shrink: 0;
     }
     
-    /* Database Tab */
-    .db-section {
-        padding: 1rem;
-    }
-    
-    .db-section h3 {
-        margin: 0 0 0.5rem 0;
-    }
-    
-    .db-warning {
-        color: var(--warning, #ff9800);
-        font-size: 0.9rem;
+    /* Database Tab Styles */
+    .db-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         margin-bottom: 1.5rem;
     }
     
-    .loading-db {
+    .db-header h3 {
+        margin: 0;
+    }
+    
+    .loading-db, .empty-db {
         text-align: center;
         padding: 2rem;
         color: var(--text-muted);
     }
     
     .db-info {
-        background: var(--bg-input);
-        border-radius: 8px;
-        padding: 1rem;
-        margin-bottom: 1.5rem;
-    }
-    
-    .db-info-row {
         display: flex;
+        flex-direction: column;
+        gap: 2rem;
+    }
+    
+    .db-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 1rem;
-        padding: 0.5rem 0;
-        border-bottom: 1px solid var(--border);
+        padding: 1rem;
+        background: var(--panel-bg);
+        border-radius: 8px;
     }
     
-    .db-info-row:last-child {
-        border-bottom: none;
+    .db-stats .stat {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
     }
     
-    .db-info-row .label {
+    .db-stats .label {
+        font-size: 0.75rem;
         color: var(--text-muted);
-        min-width: 80px;
+        text-transform: uppercase;
     }
     
-    .db-info-row code {
-        font-family: monospace;
+    .db-stats code {
         font-size: 0.85rem;
-        color: var(--primary);
+        word-break: break-all;
     }
     
-    .status-badge {
-        color: var(--danger, #f44336);
+    .db-stats .status-badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        font-weight: 500;
     }
     
-    .status-badge.exists {
-        color: var(--success, #4caf50);
+    .db-stats .status-badge.success {
+        background: rgba(76, 175, 80, 0.2);
+        color: #4CAF50;
+    }
+    
+    .db-stats .status-badge.error {
+        background: rgba(244, 67, 54, 0.2);
+        color: #f44336;
     }
     
     .db-actions {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
         gap: 2rem;
-        margin-bottom: 1.5rem;
     }
     
     .action-group {
+        padding: 1.5rem;
         background: var(--panel-bg);
-        border: 1px solid var(--border);
         border-radius: 8px;
-        padding: 1rem;
     }
     
     .action-group h4 {
         margin: 0 0 0.5rem 0;
-        color: var(--text);
     }
     
-    .action-group p {
+    .action-group .hint {
         font-size: 0.85rem;
         color: var(--text-muted);
         margin: 0 0 1rem 0;
     }
     
-    .upload-controls {
+    .action-group .hint.warning {
+        color: #ff9800;
+    }
+    
+    .upload-row {
         display: flex;
         gap: 0.5rem;
         align-items: center;
@@ -1397,16 +1412,5 @@
         border-radius: 4px;
         background: var(--bg-input);
         color: var(--text);
-    }
-    
-    .upload-warning {
-        margin-top: 0.75rem !important;
-        color: var(--danger, #f44336) !important;
-        font-size: 0.8rem !important;
-    }
-    
-    .db-footer {
-        display: flex;
-        justify-content: flex-end;
     }
 </style>

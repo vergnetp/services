@@ -19,6 +19,22 @@
    - This caused stateful service discovery to fail silently
    - Now REDIS_URL, POSTGRES_URL etc. should be properly injected
 
+8. Database admin endpoints - DONE (2026-01-21)
+   - GET /admin/db/info - Show database info (size, tables, path)
+   - GET /admin/db/download - Download database as zip
+   - POST /admin/db/upload - Upload and replace database (with backup)
+   - Database tab in Telemetry UI (admin only)
+
+9. Redis health check fix - DONE (2026-01-21)
+   - Fixed async_redis_client.ping() check in service.py
+   - Proper error handling for Redis unavailable
+
+10. JWT format validation - DONE (2026-01-21)
+   - Added client-side JWT format validation to prevent "Not enough segments" errors
+   - Validates token has 3 parts (header.payload.signature) before API calls
+   - Auto-logout with clear error message if token is corrupted
+   - Applied to client.js, Telemetry.svelte database functions
+
 ## 🔧 IN PROGRESS / TO TEST
 
 1. UI errors (to test):

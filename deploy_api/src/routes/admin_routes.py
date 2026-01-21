@@ -535,128 +535,158 @@ async def clear_backend_logs(user: UserIdentity = Depends(require_admin)):
 
 
 # =============================================================================
-# Database Admin (Dev Phase)
+# Database Management (Dev Phase)
 # =============================================================================
 
-from fastapi import UploadFile, File
+from pathlib import Path
 from fastapi.responses import FileResponse
-from pathlib import Path as FilePath
+from fastapi import UploadFile, File
+import shutil
+import sqlite3
 
 
-def _get_db_path() -> FilePath:
-    """Get database path from settings."""
-    from deploy_api.config import get_settings
-    settings = get_settings()
-    return FilePath(settings.database_path).resolve()
+def get_db_path() -> Path:
+    """Get the database file path from config."""
+    try:
+        from deploy_api.config import settings
+        return Path(settings.database_path)
+    except Exception:
+        # Fallback
+        return Path("data/deploy.db")
+
+
+@router.get("/db/info")
+async def get_database_info(user: UserIdentity = Depends(require_admin)):
+    """
+    Get database file information.
+    
+    Returns path, size, modification time.
+    """
+    db_path = get_db_path()
+    
+    if not db_path.exists():
+        return {
+            "path": str(db_path),
+            "exists": False,
+            "size": 0,
+            "size_human": "N/A",
+            "modified": None,
+        }
+    
+    stat = db_path.stat()
+    size = stat.st_size
+    
+    # Human readable size
+    if size < 1024:
+        size_human = f"{size} B"
+    elif size < 1024 * 1024:
+        size_human = f"{size / 1024:.1f} KB"
+    else:
+        size_human = f"{size / (1024 * 1024):.1f} MB"
+    
+    modified = datetime.fromtimestamp(stat.st_mtime).isoformat()
+    
+    return {
+        "path": str(db_path),
+        "exists": True,
+        "size": size,
+        "size_human": size_human,
+        "modified": modified,
+    }
 
 
 @router.get("/db/download")
 async def download_database(user: UserIdentity = Depends(require_admin)):
     """
-    Download the current SQLite database file.
+    Download the current database file.
     
-    Useful for backing up or syncing db between local and server.
+    Use this to backup the database or edit it locally.
     """
-    db_path = _get_db_path()
+    db_path = get_db_path()
     
     if not db_path.exists():
-        raise HTTPException(404, f"Database not found at {db_path}")
+        raise HTTPException(404, f"Database file not found: {db_path}")
     
-    if not db_path.suffix == ".db":
-        raise HTTPException(400, "Only SQLite databases (.db) are supported")
+    # Use timestamp in filename for clarity
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"deploy_backup_{timestamp}.db"
     
     return FileResponse(
         path=str(db_path),
-        filename=db_path.name,
-        media_type="application/octet-stream",
+        filename=filename,
+        media_type="application/x-sqlite3",
     )
 
 
 @router.post("/db/upload")
 async def upload_database(
-    file: UploadFile = File(...),
     user: UserIdentity = Depends(require_admin),
+    file: UploadFile = File(...),
 ):
     """
-    Upload and replace the SQLite database file.
+    Upload and replace the database file.
     
-    WARNING: This replaces the entire database! Make sure to download
-    the current one first if needed.
+    ⚠️ WARNING: This REPLACES the entire database!
+    A backup of the current database is created first.
     
-    After upload, you should restart the service for connections to refresh.
+    The uploaded file must be a valid SQLite database.
     """
-    db_path = _get_db_path()
+    db_path = get_db_path()
     
-    # Validate file
-    if not file.filename.endswith(".db"):
-        raise HTTPException(400, "File must be a .db SQLite database")
+    # Validate file extension
+    if not file.filename.endswith('.db'):
+        raise HTTPException(400, "File must have .db extension")
     
-    # Read uploaded file
+    # Read uploaded content
     content = await file.read()
     
-    if len(content) < 100:
-        raise HTTPException(400, "File too small to be a valid SQLite database")
+    # Validate it's a valid SQLite database
+    # SQLite files start with "SQLite format 3\x00"
+    if not content.startswith(b"SQLite format 3\x00"):
+        raise HTTPException(400, "Invalid SQLite database file")
     
-    # Check SQLite header magic
-    if content[:16] != b'SQLite format 3\x00':
-        raise HTTPException(400, "Invalid SQLite database file (bad header)")
+    # Additional validation: try to open it
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
     
-    # Ensure directory exists
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        conn = sqlite3.connect(tmp_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        conn.close()
+        
+        if not tables:
+            os.unlink(tmp_path)
+            raise HTTPException(400, "Database file contains no tables")
+            
+    except sqlite3.Error as e:
+        os.unlink(tmp_path)
+        raise HTTPException(400, f"Invalid SQLite database: {e}")
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
     
-    # Backup current db if exists
+    # Create backup of current database
     backup_path = None
     if db_path.exists():
-        backup_path = db_path.with_suffix(".db.backup")
-        import shutil
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = db_path.with_suffix(f".backup_{timestamp}.db")
         shutil.copy2(db_path, backup_path)
     
+    # Ensure parent directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
     # Write new database
-    try:
-        with open(db_path, "wb") as f:
-            f.write(content)
-        
-        return {
-            "status": "success",
-            "message": f"Database uploaded to {db_path}",
-            "size_bytes": len(content),
-            "backup_created": str(backup_path) if backup_path else None,
-            "note": "Restart the service for connections to refresh",
-        }
-    except Exception as e:
-        # Restore backup on failure
-        if backup_path and backup_path.exists():
-            import shutil
-            shutil.copy2(backup_path, db_path)
-        raise HTTPException(500, f"Failed to write database: {e}")
-
-
-@router.get("/db/info")
-async def get_database_info(user: UserIdentity = Depends(require_admin)):
-    """Get information about the current database."""
-    db_path = _get_db_path()
+    with open(db_path, 'wb') as f:
+        f.write(content)
     
-    info = {
-        "path": str(db_path),
-        "exists": db_path.exists(),
-        "size_bytes": None,
-        "size_human": None,
-        "modified": None,
+    return {
+        "status": "success",
+        "message": "Database replaced successfully",
+        "backup_path": str(backup_path) if backup_path else None,
+        "new_size": len(content),
+        "tables_found": len(tables),
     }
-    
-    if db_path.exists():
-        stat = db_path.stat()
-        info["size_bytes"] = stat.st_size
-        info["size_human"] = _format_size(stat.st_size)
-        info["modified"] = datetime.fromtimestamp(stat.st_mtime).isoformat()
-    
-    return info
-
-
-def _format_size(size_bytes: int) -> str:
-    """Format bytes as human readable string."""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"

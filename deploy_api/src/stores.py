@@ -1611,3 +1611,172 @@ class DeployConfigStore:
         if existing:
             return await self._crud.delete(self.db, existing["id"], permanent=True)
         return False
+
+
+# =============================================================================
+# Health Check Store
+# =============================================================================
+
+class HealthCheckStore:
+    """Store for health check records."""
+    
+    def __init__(self, db):
+        self.db = db
+        self._crud = EntityCRUD("health_checks", soft_delete=False)
+    
+    async def record(
+        self,
+        workspace_id: str,
+        droplet_id: str,
+        status: str,  # healthy, degraded, unhealthy, unreachable
+        container_name: str = None,
+        response_time_ms: int = None,
+        error_message: str = None,
+        action_taken: str = None,
+        attempt_count: int = 0,
+    ) -> dict:
+        """Record a health check result."""
+        from datetime import datetime, timezone
+        
+        data = {
+            "workspace_id": workspace_id,
+            "droplet_id": droplet_id,
+            "container_name": container_name,
+            "status": status,
+            "response_time_ms": response_time_ms,
+            "error_message": error_message,
+            "action_taken": action_taken,
+            "attempt_count": attempt_count,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return await self._crud.create(self.db, data)
+    
+    async def get_latest_for_droplet(
+        self,
+        droplet_id: str,
+        container_name: str = None,
+    ) -> Optional[dict]:
+        """Get the most recent health check for a droplet/container."""
+        if container_name:
+            where = "[droplet_id] = ? AND [container_name] = ?"
+            params = (droplet_id, container_name)
+        else:
+            where = "[droplet_id] = ? AND [container_name] IS NULL"
+            params = (droplet_id,)
+        
+        results = await self._crud.list(
+            self.db,
+            where_clause=where,
+            params=params,
+            order_by="[checked_at] DESC",
+            limit=1,
+        )
+        return results[0] if results else None
+    
+    async def get_recent_failures(
+        self,
+        droplet_id: str,
+        container_name: str = None,
+        limit: int = 10,
+    ) -> List[dict]:
+        """Get recent failed health checks (unhealthy or unreachable)."""
+        if container_name:
+            where = "[droplet_id] = ? AND [container_name] = ? AND [status] IN ('unhealthy', 'unreachable')"
+            params = (droplet_id, container_name)
+        else:
+            where = "[droplet_id] = ? AND [container_name] IS NULL AND [status] IN ('unhealthy', 'unreachable')"
+            params = (droplet_id,)
+        
+        return await self._crud.list(
+            self.db,
+            where_clause=where,
+            params=params,
+            order_by="[checked_at] DESC",
+            limit=limit,
+        )
+    
+    async def count_consecutive_failures(
+        self,
+        droplet_id: str,
+        container_name: str = None,
+    ) -> int:
+        """Count consecutive failures from the most recent check backward.
+        
+        Returns the number of consecutive unhealthy/unreachable checks.
+        Stops counting when a healthy check is found.
+        """
+        if container_name:
+            where = "[droplet_id] = ? AND [container_name] = ?"
+            params = (droplet_id, container_name)
+        else:
+            where = "[droplet_id] = ? AND [container_name] IS NULL"
+            params = (droplet_id,)
+        
+        # Get recent checks in order
+        recent = await self._crud.list(
+            self.db,
+            where_clause=where,
+            params=params,
+            order_by="[checked_at] DESC",
+            limit=20,  # Look back up to 20 checks
+        )
+        
+        count = 0
+        for check in recent:
+            if check["status"] in ("unhealthy", "unreachable"):
+                count += 1
+            else:
+                break  # Stop at first healthy check
+        
+        return count
+    
+    async def list_for_droplet(
+        self,
+        droplet_id: str,
+        limit: int = 50,
+    ) -> List[dict]:
+        """List recent health checks for a droplet (all containers)."""
+        return await self._crud.list(
+            self.db,
+            where_clause="[droplet_id] = ?",
+            params=(droplet_id,),
+            order_by="[checked_at] DESC",
+            limit=limit,
+        )
+    
+    async def list_for_workspace(
+        self,
+        workspace_id: str,
+        limit: int = 100,
+    ) -> List[dict]:
+        """List recent health checks for a workspace."""
+        return await self._crud.list(
+            self.db,
+            workspace_id=workspace_id,
+            order_by="[checked_at] DESC",
+            limit=limit,
+        )
+    
+    async def cleanup_old(
+        self,
+        days: int = 7,
+    ) -> int:
+        """Delete health checks older than N days. Returns count deleted."""
+        from datetime import datetime, timezone, timedelta
+        
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        
+        # Find old records
+        old_records = await self.db.find_entities(
+            "health_checks",
+            where_clause="[checked_at] < ?",
+            params=(cutoff,),
+            limit=10000,
+        )
+        
+        count = 0
+        for record in old_records:
+            await self._crud.delete(self.db, record["id"], permanent=True)
+            count += 1
+        
+        return count
