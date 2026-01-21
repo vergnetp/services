@@ -588,7 +588,7 @@ async def deploy(
         project = await project_store.create(workspace_id, project_name)
     project_id = project["id"]
     
-    # Auto-inject URLs for ALL stateful services in this workspace
+    # Auto-inject URLs for stateful services in this project/env
     # (only for non-stateful deploys - stateful services don't need this)
     auto_injected_env = {}
     if not req.is_stateful:
@@ -596,8 +596,7 @@ async def deploy(
             service_droplet_store=service_droplet_store,
             service_store=service_store,
             droplet_store=droplet_store,
-            project_store=project_store,
-            workspace_id=workspace_id,
+            project_id=project_id,
             env=req.environment,
         )
         if discovered:

@@ -13,6 +13,12 @@
    - Unified deploy pipeline: provision temp droplet → deploy image → tag as base:latest → power off → snapshot → cleanup
    - Skips service_droplet recording for snapshot deployments
 
+6. REDIS_URL auto-injection bug fix - DONE (2026-01-21)
+   - Fixed discover_stateful_services() call in deploy_routes.py line 595
+   - Was passing wrong args (project_store, workspace_id) instead of (project_id, env)
+   - This caused stateful service discovery to fail silently
+   - Now REDIS_URL, POSTGRES_URL etc. should be properly injected
+
 ## 🔧 IN PROGRESS / TO TEST
 
 1. UI errors (to test):
@@ -24,10 +30,10 @@
    - Consider auto-checking domain ready status
    - Subdomain naming: uses "default" instead of project name
 
-6. Test snapshot creation via unified deploy:
-   - POST /infra/deploy with deployment_type="snapshot"
-   - Verify create_snapshot_with_streaming() is called
-   - Verify snapshot appears in DigitalOcean
+7. Test REDIS_URL auto-injection:
+   - Deploy a stateful redis first (project X, env prod)
+   - Deploy a regular service in same project/env
+   - Verify REDIS_URL is in container env vars
 
 ## 📋 BACKLOG
 
