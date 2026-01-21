@@ -64,6 +64,7 @@ Before modifying or importing from ANY module:
 | 5 | **VERIFY:** `ls -la static/assets/` | Check JS file timestamp is NOW |
 | 6 | `zip -r deploy_api.zip deploy_api ...` | Create zip |
 | 7 | **VERIFY:** `unzip -p deploy_api.zip deploy_api/config.py \| grep VERSION` | Confirm version in zip |
+| 8 | **UPDATE BACLKOG.txt:** | update the document with what was done and what might still be done | |
 
 **Common mistakes to avoid:**
 - ❌ Updating versions but not running `npm run build`

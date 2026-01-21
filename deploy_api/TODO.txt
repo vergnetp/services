@@ -1,0 +1,52 @@
+# Deploy API - TODO & Known Issues
+
+## ✅ COMPLETED
+
+4. Backend logs for admin - DONE (2026-01-20)
+   - Added /api/v1/admin/logs endpoint
+   - Telemetry tab in frontend shows logs when admin
+
+5. Snapshot API wiring - DONE (2026-01-21)
+   - Wired create_snapshot_with_streaming() to POST /infra/deploy endpoint
+   - Added deployment_type field to DeployRequest model ("service", "worker", "snapshot")
+   - Added snapshot_name field for naming snapshots
+   - Unified deploy pipeline: provision temp droplet → deploy image → tag as base:latest → power off → snapshot → cleanup
+   - Skips service_droplet recording for snapshot deployments
+
+## 🔧 IN PROGRESS / TO TEST
+
+1. UI errors (to test):
+   - TypeError: He.post is not a function (Dockerfile generation)
+   - 404 on deploy-configs endpoint
+
+3. Domain latency:
+   - What should user expect for new domain availability?
+   - Consider auto-checking domain ready status
+   - Subdomain naming: uses "default" instead of project name
+
+6. Test snapshot creation via unified deploy:
+   - POST /infra/deploy with deployment_type="snapshot"
+   - Verify create_snapshot_with_streaming() is called
+   - Verify snapshot appears in DigitalOcean
+
+## 📋 BACKLOG
+
+2. UI improvements:
+   - [x] Clear service name/project/env when switching deployment types
+   - [x] Reset new server count after deploy
+   - [x] Container list in server boxes (need to fix logs)
+   - [x] Available snapshot loading in background
+   - [ ] Deploy tab redesign (per ChatGPT mockup)
+   - [ ] Add UI for snapshot creation via unified deploy (deployment_type dropdown?)
+
+5. Fix ai_agents_api
+
+7. DNS cleanup safety:
+   - CRITICAL: Code deleted A records that were not proxied - BIG NO
+   - Need to add safety check before DNS record deletion
+
+## 🚀 FUTURE
+
+- Auto-scaling
+- Docker image cleanup on servers
+- Migration scripts (when leaving dev phase)

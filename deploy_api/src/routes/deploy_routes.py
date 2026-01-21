@@ -33,6 +33,7 @@ from shared_libs.backend.infra.deploy.orchestrator import (
     deploy_with_streaming,
     rollback_with_streaming,
     stateful_deploy_with_streaming,
+    create_snapshot_with_streaming,
 )
 
 from ..deps import get_deployment_store, get_project_store, get_service_store, get_droplet_store, get_service_droplet_store
@@ -244,6 +245,10 @@ class DeployRequest(BaseModel):
     # Required
     name: str = Field(..., description="Service name")
     
+    # Deployment type
+    deployment_type: str = Field("service", description="service, worker, or snapshot")
+    snapshot_name: Optional[str] = Field(None, description="For snapshot type: name for the snapshot")
+    
     # Project context
     project: Optional[str] = Field(None, description="Project name")
     environment: str = Field("prod", description="Environment")
@@ -319,6 +324,8 @@ def _get_do_token(do_token: str = None) -> str:
 def _build_config_snapshot(req: DeployRequest) -> Dict[str, Any]:
     """Build config snapshot for deployment record (masks secrets)."""
     return {
+        "deployment_type": req.deployment_type,
+        "snapshot_name": req.snapshot_name,
         "source_type": req.source_type,
         "git_url": req.git_url,
         "git_branch": req.git_branch,
@@ -627,6 +634,8 @@ async def deploy(
         name=req.name,
         workspace_id=workspace_id,
         do_token=token,
+        deployment_type=req.deployment_type,
+        snapshot_name=req.snapshot_name,
         project=project_name,
         environment=req.environment,
         source_type=req.source_type,
@@ -662,10 +671,16 @@ async def deploy(
     )
     
     # 3. Stream deployment with result saving
-    if req.is_stateful:
+    # Select stream function based on deployment_type
+    if req.deployment_type == "snapshot":
+        stream_fn = create_snapshot_with_streaming
+    elif req.is_stateful:
         stream_fn = stateful_deploy_with_streaming
     else:
         stream_fn = deploy_with_streaming
+    
+    # For snapshots, skip service_droplet recording (no service to track)
+    skip_service_recording = req.deployment_type == "snapshot"
     
     return StreamingResponse(
         stream_and_save_result(
@@ -673,10 +688,10 @@ async def deploy(
             job_config=job_config,
             deployment_store=deployment_store,
             deployment_id=record.id,
-            service_store=service_store,
-            service_droplet_store=service_droplet_store,
-            droplet_store=droplet_store,
-            project_id=project_id,
+            service_store=None if skip_service_recording else service_store,
+            service_droplet_store=None if skip_service_recording else service_droplet_store,
+            droplet_store=None if skip_service_recording else droplet_store,
+            project_id=None if skip_service_recording else project_id,
             workspace_id=workspace_id,
         ),
         media_type="text/event-stream",
