@@ -127,12 +127,57 @@ async def remove_container(
     server_id: str,
     container_name: str,
     do_token: str = Query(...),
+    cf_token: Optional[str] = Query(None, description="Cloudflare token for DNS cleanup"),
+    domain: Optional[str] = Query(None, description="Domain for nginx/DNS cleanup"),
+    cleanup_nginx: bool = Query(True, description="Remove nginx config"),
+    cleanup_dns: bool = Query(False, description="Update DNS (remove IP from A records)"),
     user: UserIdentity = Depends(get_current_user),
 ):
-    """Remove a container."""
-    client = await _get_agent_client(server_id, _get_do_token(do_token))
-    result = await client.remove_container(container_name)
-    return {"success": result.success, "error": result.error}
+    """
+    Remove a container with optional cleanup.
+    
+    Cleanup options:
+    - cleanup_nginx (default True): Remove nginx reverse proxy config
+    - cleanup_dns (default False): Remove this server's IP from DNS records
+    
+    For DNS cleanup, provide cf_token and domain.
+    """
+    from shared_libs.backend.infra.deploy import AsyncUndeployService
+    from shared_libs.backend.infra.providers import AsyncDOClient
+    
+    do_token_val = _get_do_token(do_token)
+    
+    # Get droplet IP for undeploy service
+    do_client = AsyncDOClient(do_token_val)
+    try:
+        droplet = await do_client.get_droplet(int(server_id))
+        if not droplet:
+            raise HTTPException(404, f"Server {server_id} not found")
+        droplet_ip = droplet.ip
+    finally:
+        await do_client.close()
+    
+    # Use undeploy service for full cleanup
+    undeploy = AsyncUndeployService(
+        do_token=do_token_val,
+        cf_token=cf_token,
+    )
+    
+    result = await undeploy.remove_container_from_droplet(
+        container_name=container_name,
+        droplet_ip=droplet_ip,
+        domain=domain,
+        cleanup_nginx=cleanup_nginx,
+        cleanup_dns=cleanup_dns and cf_token is not None,
+    )
+    
+    return {
+        "success": result.success,
+        "container_removed": result.container_removed,
+        "nginx_removed": result.nginx_removed,
+        "dns_updated": result.dns_updated,
+        "errors": result.errors if result.errors else None,
+    }
 
 
 @router.get("/agent/{server_id}/containers/{container_name}/logs")

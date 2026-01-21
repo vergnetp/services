@@ -270,11 +270,27 @@ async def update_service(
 async def delete_service(
     project_name: str,
     service_name: str,
+    do_token: str = Query(None, description="DO token for container cleanup"),
+    cf_token: Optional[str] = Query(None, description="Cloudflare token for DNS cleanup"),
+    cleanup_containers: bool = Query(True, description="Stop and remove containers"),
+    cleanup_dns: bool = Query(False, description="Remove DNS records"),
     user: UserIdentity = Depends(get_current_user),
     project_store: ProjectStore = Depends(get_project_store),
     service_store: ServiceStore = Depends(get_service_store),
 ):
-    """Delete a service."""
+    """
+    Delete a service with optional infrastructure cleanup.
+    
+    Cleanup options:
+    - cleanup_containers (default True): Stop containers, remove nginx configs
+    - cleanup_dns (default False): Remove DNS records
+    
+    For container cleanup, provide do_token.
+    For DNS cleanup, also provide cf_token.
+    """
+    from ..stores import ServiceDropletStore, DropletStore
+    from shared_libs.backend.app_kernel.db import db_connection
+    
     workspace_id = str(user.id)
     
     project = await project_store.get_by_name(workspace_id, project_name)
@@ -285,7 +301,79 @@ async def delete_service(
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
     
+    errors = []
+    
+    # Cleanup containers if requested and DO token provided
+    if cleanup_containers and do_token:
+        try:
+            from shared_libs.backend.infra.deploy import AsyncUndeployService
+            
+            async with db_connection() as db:
+                sd_store = ServiceDropletStore(db)
+                droplet_store = DropletStore(db)
+                
+                # Get all droplets running this service (all envs)
+                links = await sd_store._crud.list(
+                    db,
+                    where_clause="[service_id] = ?",
+                    params=(service["id"],),
+                )
+                
+                if links:
+                    # Get droplet IPs
+                    droplet_ids = list(set(l["droplet_id"] for l in links))
+                    droplets = await droplet_store.get_many(droplet_ids)
+                    droplet_ips = [d["ip"] for d in droplets if d.get("ip")]
+                    
+                    # Get domain from service if stored
+                    domain = service.get("domain")
+                    
+                    undeploy = AsyncUndeployService(
+                        do_token=do_token,
+                        cf_token=cf_token,
+                    )
+                    
+                    # Get container name pattern (project_service_env)
+                    for link in links:
+                        container_name = link.get("container_name")
+                        if not container_name:
+                            continue
+                        
+                        droplet = next((d for d in droplets if d["id"] == link["droplet_id"]), None)
+                        if not droplet or not droplet.get("ip"):
+                            continue
+                        
+                        result = await undeploy.remove_container_from_droplet(
+                            container_name=container_name,
+                            droplet_ip=droplet["ip"],
+                            domain=domain,
+                            cleanup_nginx=True,
+                            cleanup_dns=False,  # DNS handled separately
+                        )
+                        if result.errors:
+                            errors.extend(result.errors)
+                    
+                    # DNS cleanup (once, after all containers removed)
+                    if cleanup_dns and cf_token and domain:
+                        try:
+                            await undeploy._delete_dns_record(domain)
+                        except Exception as e:
+                            errors.append(f"DNS cleanup failed: {e}")
+                    
+                    # Clean up service_droplets entries
+                    for link in links:
+                        await sd_store._crud.delete(db, link["id"], permanent=True)
+        
+        except ImportError as e:
+            errors.append(f"Cleanup module not available: {e}")
+        except Exception as e:
+            errors.append(f"Container cleanup failed: {e}")
+    
+    # Delete service from DB
     await service_store.delete(service["id"])
+    
+    # If there were non-fatal errors, we might want to log them
+    # For now, 204 means service deleted even if cleanup had issues
 
 
 # =============================================================================

@@ -12,6 +12,8 @@ import json
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
 
+from ..deps import get_droplet_store, get_service_droplet_store
+
 router = APIRouter(prefix="/infra", tags=["Infrastructure"])
 
 
@@ -98,14 +100,76 @@ async def delete_server(
     droplet_id: str,
     do_token: str = Query(...),
     force: bool = Query(False),
+    cf_token: Optional[str] = Query(None, description="Cloudflare token for DNS cleanup"),
+    base_domain: Optional[str] = Query(None, description="Base domain for DNS (e.g., digitalpixo.com)"),
+    cleanup_dns: bool = Query(True, description="Remove droplet IP from DNS records"),
     user: UserIdentity = Depends(get_current_user),
+    droplet_store = Depends(get_droplet_store),
+    service_droplet_store = Depends(get_service_droplet_store),
 ):
-    """Delete a managed server."""
+    """
+    Delete a managed server with optional DNS cleanup.
+    
+    When cleanup_dns is True and cf_token/base_domain provided:
+    - Gets all services running on this droplet
+    - Removes droplet's IP from DNS records for each service
+    - If this is the last server for a service, deletes the DNS record
+    - Cleans up service_droplet mappings
+    """
     from shared_libs.backend.infra.fleet import AsyncFleetService
-    service = AsyncFleetService(_get_do_token(do_token), str(user.id))
-    result = await service.delete_server(droplet_id, force=force)
+    from shared_libs.backend.infra.deploy.undeploy import AsyncUndeployService
+    
+    do = _get_do_token(do_token)
+    
+    # Step 1: Get droplet info and services before deletion
+    droplet = await droplet_store.get(droplet_id)
+    services_on_droplet = await service_droplet_store.get_services_on_droplet(droplet_id)
+    droplet_ip = droplet.get("ip") if droplet else None
+    
+    dns_cleanup_results = {}
+    
+    # Step 2: Clean up DNS if requested and we have the tokens
+    if cleanup_dns and cf_token and base_domain and droplet_ip and services_on_droplet:
+        # Build domain list from container names
+        domains = []
+        for sd in services_on_droplet:
+            container_name = sd.get("container_name")
+            if container_name:
+                domain = f"{container_name}.{base_domain}"
+                domains.append(domain)
+        
+        if domains:
+            undeploy_svc = AsyncUndeployService(
+                do_token=do,
+                cf_token=cf_token,
+            )
+            dns_cleanup_results = await undeploy_svc.cleanup_droplet_dns(
+                droplet_ip=droplet_ip,
+                domains=list(set(domains)),  # Dedupe
+            )
+    
+    # Step 3: Delete the droplet via fleet
+    fleet = AsyncFleetService(do, str(user.id))
+    result = await fleet.delete_server(droplet_id, force=force)
+    
     if not result.get("success"):
         raise HTTPException(400, result.get("error", "Delete failed"))
+    
+    # Step 4: Clean up service_droplet entries
+    deleted_mappings = 0
+    for sd in services_on_droplet:
+        if sd.get("id"):
+            await service_droplet_store.delete(sd["id"])
+            deleted_mappings += 1
+    
+    # Step 5: Clean up the droplet record in our DB
+    if droplet:
+        await droplet_store.delete(droplet_id)
+    
+    # Add cleanup info to result
+    result["dns_cleanup"] = dns_cleanup_results
+    result["service_mappings_deleted"] = deleted_mappings
+    
     return result
 
 

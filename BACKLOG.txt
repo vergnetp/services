@@ -1,3 +1,4 @@
+DONE
 20/01/2026
 * we refactored all so that droplets don't have any direct access: need either to send http requests to limited endpoints offered by node agent (port 9999 - require a key that is hash of do client) or to port 80/433 for our client's webservices 
 * only ssh allowed during base snapshot creation (need ssh to install node agent)
@@ -9,6 +10,13 @@
   1) services with port: ping port and return unhealthy if no response. if yes, check container log for errors since last check -> if yes, return "degraded" else "healthy"
   2) workers without port: same but check if container is running instead of port pinging
   3) scheduled task (container) executed/run by cron: check last executed time and exit code from docker and compare against expected run time 
-* stateful services health checks need to be checked by tcp ping rather than http -> todo
+* undeploy revised strategy:
+  we could delete droplet or container but no cleanuo done afterwards (no update of nginx or A records).
+  Changes implemented:
+  1) User can deploy one container as usual (but now nginx updated accordingly, A record for the host ip removed incf)
+  2) User can now undeploy a service (repeat teh above to all droplets, in parallel)
+  We have checked that the do and cf operations use teh cloud module (no direct call)
+
+TODO
 * maybe have a admin that survives local and remote deploy_api (as db is new) -> todo
-* find out if removing a container update nginx  -> todo
+* find out if we have periodic health checks (probably yes because of ui polling, but maybe worth a worker, maybe on each droplet (or agent background thread). self healing?
