@@ -4,5 +4,11 @@
 21/01/2026
 * custom snapshots are created via node agent (to send/build image) - user can then chose the snapshot (e.g. "my-llm-ready-snapshot") and do "from local/base:latest" in docker file (imag always named "base")
 * REQUIRE_AUTH_ALWAYS set to true by default to force node_agent to require api key even when traffic comes from VPC
+* health check revised strategy: 
+  call droplet_ip:9999/{container_name}/health (agent's endpoint)
+  1) services with port: ping port and return unhealthy if no response. if yes, check container log for errors since last check -> if yes, return "degraded" else "healthy"
+  2) workers without port: same but check if container is running instead of port pinging
+  3) scheduled task (container) executed/run by cron: check last executed time and exit code from docker and compare against expected run time 
 * stateful services health checks need to be checked by tcp ping rather than http -> todo
-* maybe have a admin that survives local and remote deploya_api (as db is new) -> todo
+* maybe have a admin that survives local and remote deploy_api (as db is new) -> todo
+* find out if removing a container update nginx  -> todo
