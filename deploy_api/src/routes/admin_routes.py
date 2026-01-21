@@ -532,3 +532,131 @@ async def clear_backend_logs(user: UserIdentity = Depends(require_admin)):
     with _log_lock:
         _log_buffer.clear()
     return {"status": "cleared"}
+
+
+# =============================================================================
+# Database Admin (Dev Phase)
+# =============================================================================
+
+from fastapi import UploadFile, File
+from fastapi.responses import FileResponse
+from pathlib import Path as FilePath
+
+
+def _get_db_path() -> FilePath:
+    """Get database path from settings."""
+    from deploy_api.config import get_settings
+    settings = get_settings()
+    return FilePath(settings.database_path).resolve()
+
+
+@router.get("/db/download")
+async def download_database(user: UserIdentity = Depends(require_admin)):
+    """
+    Download the current SQLite database file.
+    
+    Useful for backing up or syncing db between local and server.
+    """
+    db_path = _get_db_path()
+    
+    if not db_path.exists():
+        raise HTTPException(404, f"Database not found at {db_path}")
+    
+    if not db_path.suffix == ".db":
+        raise HTTPException(400, "Only SQLite databases (.db) are supported")
+    
+    return FileResponse(
+        path=str(db_path),
+        filename=db_path.name,
+        media_type="application/octet-stream",
+    )
+
+
+@router.post("/db/upload")
+async def upload_database(
+    file: UploadFile = File(...),
+    user: UserIdentity = Depends(require_admin),
+):
+    """
+    Upload and replace the SQLite database file.
+    
+    WARNING: This replaces the entire database! Make sure to download
+    the current one first if needed.
+    
+    After upload, you should restart the service for connections to refresh.
+    """
+    db_path = _get_db_path()
+    
+    # Validate file
+    if not file.filename.endswith(".db"):
+        raise HTTPException(400, "File must be a .db SQLite database")
+    
+    # Read uploaded file
+    content = await file.read()
+    
+    if len(content) < 100:
+        raise HTTPException(400, "File too small to be a valid SQLite database")
+    
+    # Check SQLite header magic
+    if content[:16] != b'SQLite format 3\x00':
+        raise HTTPException(400, "Invalid SQLite database file (bad header)")
+    
+    # Ensure directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Backup current db if exists
+    backup_path = None
+    if db_path.exists():
+        backup_path = db_path.with_suffix(".db.backup")
+        import shutil
+        shutil.copy2(db_path, backup_path)
+    
+    # Write new database
+    try:
+        with open(db_path, "wb") as f:
+            f.write(content)
+        
+        return {
+            "status": "success",
+            "message": f"Database uploaded to {db_path}",
+            "size_bytes": len(content),
+            "backup_created": str(backup_path) if backup_path else None,
+            "note": "Restart the service for connections to refresh",
+        }
+    except Exception as e:
+        # Restore backup on failure
+        if backup_path and backup_path.exists():
+            import shutil
+            shutil.copy2(backup_path, db_path)
+        raise HTTPException(500, f"Failed to write database: {e}")
+
+
+@router.get("/db/info")
+async def get_database_info(user: UserIdentity = Depends(require_admin)):
+    """Get information about the current database."""
+    db_path = _get_db_path()
+    
+    info = {
+        "path": str(db_path),
+        "exists": db_path.exists(),
+        "size_bytes": None,
+        "size_human": None,
+        "modified": None,
+    }
+    
+    if db_path.exists():
+        stat = db_path.stat()
+        info["size_bytes"] = stat.st_size
+        info["size_human"] = _format_size(stat.st_size)
+        info["modified"] = datetime.fromtimestamp(stat.st_mtime).isoformat()
+    
+    return info
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes as human readable string."""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"

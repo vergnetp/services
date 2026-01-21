@@ -18,6 +18,7 @@ DONE
   We have checked that the do and cf operations use the cloud module (no direct call)
 * fix stateful injection bug
 * fix residual http healthcheck
+* add ability to upload local SQLite db to server hosting deploy_api (to get the deployments made locally)
 
 TODO
 * maybe have a admin that survives local and remote deploy_api (as db is new) -> todo

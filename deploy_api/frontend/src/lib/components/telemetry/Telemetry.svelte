@@ -7,7 +7,7 @@
     import { Modal } from '@myorg/ui';
     
     // Tab state
-    let activeTab = 'tracing';  // 'tracing' or 'logs'
+    let activeTab = 'tracing';  // 'tracing', 'logs', or 'database'
     
     // State
     let loading = true;
@@ -36,6 +36,103 @@
     let logLimit = 200;
     let autoRefreshLogs = false;
     let logsInterval = null;
+    
+    // Database state
+    let dbInfo = null;
+    let dbLoading = false;
+    let dbUploading = false;
+    let fileInput;
+    
+    // Load database info
+    async function loadDbInfo() {
+        dbLoading = true;
+        try {
+            dbInfo = await api('GET', '/admin/db/info');
+        } catch (err) {
+            toasts.error(`Failed to load db info: ${err.message}`);
+            dbInfo = null;
+        }
+        dbLoading = false;
+    }
+    
+    // Download database
+    async function downloadDb() {
+        try {
+            // Use fetch directly for file download
+            const token = localStorage.getItem('token');
+            const response = await fetch(`${window.API_BASE_URL || ''}/api/v1/admin/db/download`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Download failed: ${response.status}`);
+            }
+            
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'deploy.db';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            toasts.success('Database downloaded');
+        } catch (err) {
+            toasts.error(`Download failed: ${err.message}`);
+        }
+    }
+    
+    // Upload database
+    async function uploadDb() {
+        const file = fileInput?.files?.[0];
+        if (!file) {
+            toasts.error('Please select a file first');
+            return;
+        }
+        
+        if (!file.name.endsWith('.db')) {
+            toasts.error('File must be a .db SQLite database');
+            return;
+        }
+        
+        if (!confirm('This will REPLACE the entire database! Make sure you downloaded a backup first. Continue?')) {
+            return;
+        }
+        
+        dbUploading = true;
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const token = localStorage.getItem('token');
+            const response = await fetch(`${window.API_BASE_URL || ''}/api/v1/admin/db/upload`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` },
+                body: formData
+            });
+            
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.detail || `Upload failed: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            toasts.success(result.message || 'Database uploaded successfully');
+            toasts.info('Restart the service for changes to take effect');
+            
+            // Refresh db info
+            await loadDbInfo();
+            
+            // Clear file input
+            if (fileInput) fileInput.value = '';
+            
+        } catch (err) {
+            toasts.error(`Upload failed: ${err.message}`);
+        }
+        dbUploading = false;
+    }
     
     // Load backend logs
     async function loadBackendLogs() {
@@ -224,6 +321,9 @@
         if (tab === 'logs' && backendLogs.length === 0) {
             loadBackendLogs();
         }
+        if (tab === 'database' && !dbInfo) {
+            loadDbInfo();
+        }
     }
 </script>
 
@@ -244,6 +344,27 @@
                 on:click={() => switchTab('logs')}
             >
                 📝 Backend Logs
+            </button>
+            <button 
+                class="tab" 
+                class:active={activeTab === 'database'} 
+                on:click={() => switchTab('database')}
+            >
+                🗄️ Database
+            </button>
+            <button 
+                class="tab" 
+                class:active={activeTab === 'database'} 
+                on:click={() => switchTab('database')}
+            >
+                🗄️ Database
+            </button>
+            <button 
+                class="tab" 
+                class:active={activeTab === 'database'} 
+                on:click={() => switchTab('database')}
+            >
+                🗄️ Database
             </button>
         </div>
         <div class="controls">
@@ -462,6 +583,77 @@
     </Card>
     {/if}
     <!-- End of logs tab -->
+    
+    <!-- Database Tab -->
+    {#if activeTab === 'database'}
+    <Card>
+        <div class="db-section">
+            <h3>🗄️ Database Management</h3>
+            <p class="db-warning">⚠️ Dev phase only - Use with caution!</p>
+            
+            {#if dbLoading}
+            <div class="loading-db">Loading database info...</div>
+            {:else if dbInfo}
+            <div class="db-info">
+                <div class="db-info-row">
+                    <span class="label">Path:</span>
+                    <code>{dbInfo.path}</code>
+                </div>
+                <div class="db-info-row">
+                    <span class="label">Status:</span>
+                    <span class="status-badge" class:exists={dbInfo.exists}>
+                        {dbInfo.exists ? '✅ Exists' : '❌ Not found'}
+                    </span>
+                </div>
+                {#if dbInfo.exists}
+                <div class="db-info-row">
+                    <span class="label">Size:</span>
+                    <span>{dbInfo.size_human}</span>
+                </div>
+                <div class="db-info-row">
+                    <span class="label">Modified:</span>
+                    <span>{dbInfo.modified}</span>
+                </div>
+                {/if}
+            </div>
+            {/if}
+            
+            <div class="db-actions">
+                <div class="action-group">
+                    <h4>📥 Download</h4>
+                    <p>Download the current database to your local machine.</p>
+                    <Button on:click={downloadDb} disabled={!dbInfo?.exists}>
+                        📥 Download Database
+                    </Button>
+                </div>
+                
+                <div class="action-group">
+                    <h4>📤 Upload</h4>
+                    <p>Upload a database file to replace the server's database.</p>
+                    <div class="upload-controls">
+                        <input 
+                            type="file" 
+                            accept=".db"
+                            bind:this={fileInput}
+                            class="file-input"
+                        />
+                        <Button on:click={uploadDb} disabled={dbUploading} variant="danger">
+                            {dbUploading ? '⏳ Uploading...' : '📤 Upload & Replace'}
+                        </Button>
+                    </div>
+                    <p class="upload-warning">⚠️ This will REPLACE the entire database. Download a backup first!</p>
+                </div>
+            </div>
+            
+            <div class="db-footer">
+                <Button on:click={loadDbInfo} disabled={dbLoading}>
+                    🔄 Refresh Info
+                </Button>
+            </div>
+        </div>
+    </Card>
+    {/if}
+    <!-- End of database tab -->
     
 </div>
 
@@ -1105,5 +1297,116 @@
         color: var(--text-muted);
         font-size: 0.7rem;
         flex-shrink: 0;
+    }
+    
+    /* Database Tab */
+    .db-section {
+        padding: 1rem;
+    }
+    
+    .db-section h3 {
+        margin: 0 0 0.5rem 0;
+    }
+    
+    .db-warning {
+        color: var(--warning, #ff9800);
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .loading-db {
+        text-align: center;
+        padding: 2rem;
+        color: var(--text-muted);
+    }
+    
+    .db-info {
+        background: var(--bg-input);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .db-info-row {
+        display: flex;
+        gap: 1rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--border);
+    }
+    
+    .db-info-row:last-child {
+        border-bottom: none;
+    }
+    
+    .db-info-row .label {
+        color: var(--text-muted);
+        min-width: 80px;
+    }
+    
+    .db-info-row code {
+        font-family: monospace;
+        font-size: 0.85rem;
+        color: var(--primary);
+    }
+    
+    .status-badge {
+        color: var(--danger, #f44336);
+    }
+    
+    .status-badge.exists {
+        color: var(--success, #4caf50);
+    }
+    
+    .db-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .action-group {
+        background: var(--panel-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+    }
+    
+    .action-group h4 {
+        margin: 0 0 0.5rem 0;
+        color: var(--text);
+    }
+    
+    .action-group p {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin: 0 0 1rem 0;
+    }
+    
+    .upload-controls {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    
+    .file-input {
+        flex: 1;
+        min-width: 200px;
+        padding: 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-input);
+        color: var(--text);
+    }
+    
+    .upload-warning {
+        margin-top: 0.75rem !important;
+        color: var(--danger, #f44336) !important;
+        font-size: 0.8rem !important;
+    }
+    
+    .db-footer {
+        display: flex;
+        justify-content: flex-end;
     }
 </style>
