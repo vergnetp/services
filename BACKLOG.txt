@@ -1,7 +1,8 @@
 20/01/2026
-* stateful services health checks need to be checked by tcp ping rather than http -> todo
 * we refactored all so that droplets don't have any direct access: need either to send http requests to limited endpoints offered by node agent (port 9999 - require a key that is hash of do client) or to port 80/433 for our client's webservices 
 * only ssh allowed during base snapshot creation (need ssh to install node agent)
 21/01/2026
 * custom snapshots are created via node agent (to send/build image) - user can then chose the snapshot (e.g. "my-llm-ready-snapshot") and do "from local/base:latest" in docker file (imag always named "base")
 * REQUIRE_AUTH_ALWAYS set to true by default to force node_agent to require api key even when traffic comes from VPC
+* stateful services health checks need to be checked by tcp ping rather than http -> todo
+* maybe have a admin that survives local and remote deploya_api (as db is new) -> todo
