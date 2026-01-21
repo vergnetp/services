@@ -15,7 +15,9 @@ DONE
   Changes implemented:
   1) User can deploy one container as usual (but now nginx updated accordingly, A record for the host ip removed incf)
   2) User can now undeploy a service (repeat teh above to all droplets, in parallel)
-  We have checked that the do and cf operations use teh cloud module (no direct call)
+  We have checked that the do and cf operations use the cloud module (no direct call)
+* fix stateful injection bug
+* fix residual http healthcheck
 
 TODO
 * maybe have a admin that survives local and remote deploy_api (as db is new) -> todo
@@ -26,3 +28,4 @@ TODO
 TODO - UI
 * snapshot still not fetched in background
 * redesign ui as per chatGPT mockup
+* infrastructure tab: total servers and containers not updated upon deletion of any
