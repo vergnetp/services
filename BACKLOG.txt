@@ -20,3 +20,9 @@ DONE
 TODO
 * maybe have a admin that survives local and remote deploy_api (as db is new) -> todo
 * find out if we have periodic health checks (probably yes because of ui polling, but maybe worth a worker, maybe on each droplet (or agent background thread). self healing?
+* http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
+
+
+TODO - UI
+* snapshot still not fetched in background
+* redesign ui as per chatGPT mockup
