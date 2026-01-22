@@ -35,6 +35,20 @@
    - Auto-logout with clear error message if token is corrupted
    - Applied to client.js, Telemetry.svelte database functions
 
+11. Agent logs UI feature - DONE (2026-01-22)
+   - GET /agent/logs/<droplet_id> endpoint to retrieve agent service logs
+   - GET /agent/logs/<droplet_id>/tail endpoint for recent logs
+   - Frontend: "Agent Logs" button in Telemetry > Servers tab
+   - Modal displays systemd service logs from node-agent
+   - Fixes Flask route parameter (/containers/<n>/logs)
+
+12. Robust stateful service detection - DONE (2026-01-22)
+   - Replaced weak string matching ("redis" in name) with structured detection
+   - Uses STATEFUL_IMAGE_PATTERNS dict with Docker image patterns
+   - 4-tier detection: image patterns → exact name → prefix match → partial match
+   - Fixes false positives (e.g., "credentials" no longer matches "redis")
+   - Updated get_connection_info() in env_builder.py
+
 ## 🔧 IN PROGRESS / TO TEST
 
 1. UI errors (to test):

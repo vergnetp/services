@@ -28,8 +28,9 @@ DONE
 * fix all messy redundant health check endpoints everywhere
 22/01/2026
 * Improve node agent security: no public endpoints (except ping) and api required even within VPC  
-* fix some bugs: flask route n/name parameter mismatch, silent health failures, redis tcp binding (-> todo: are we using robust logic to find teh service is redis?)
+* fix some bugs: flask route n/name parameter mismatch, silent health failures, redis tcp binding 
 * adding ability to see agent's log in admin tab
+* using robust logic to find is service is redis
 
 TODO
 * http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
