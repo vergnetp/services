@@ -2,13 +2,13 @@
     import { onMount } from 'svelte';
     import { api } from '../../api/client.js';
     import { toasts } from '../../stores/toast.js';
-    import { getAuthToken } from '../../stores/auth.js';
+    import { getAuthToken, getDoToken } from '../../stores/auth.js';
     import { Card } from '@myorg/ui';
     import { Button } from '@myorg/ui';
     import { Modal } from '@myorg/ui';
     
     // Tab state
-    let activeTab = 'tracing';  // 'tracing', 'logs', or 'database'
+    let activeTab = 'tracing';  // 'tracing', 'logs', 'database', or 'agent'
     
     // State
     let loading = true;
@@ -37,6 +37,16 @@
     let logLimit = 200;
     let autoRefreshLogs = false;
     let logsInterval = null;
+    
+    // Agent Logs state
+    let agentServers = [];
+    let agentSelectedServer = '';
+    let agentContainers = [];
+    let agentSelectedContainer = '';
+    let agentLogs = '';
+    let agentLoading = false;
+    let agentLogLines = 100;
+    let agentLogType = 'agent';  // 'agent' or 'container'
     
     // Database state
     let dbInfo = null;
@@ -333,6 +343,93 @@
         };
     });
     
+    // === Agent Logs Functions ===
+    
+    // Load servers list
+    async function loadAgentServers() {
+        const doToken = getDoToken();
+        if (!doToken) {
+            toasts.error('DigitalOcean token required');
+            return;
+        }
+        
+        try {
+            const result = await api('GET', `/infra/servers?do_token=${encodeURIComponent(doToken)}`);
+            agentServers = result.servers || [];
+            if (agentServers.length > 0 && !agentSelectedServer) {
+                agentSelectedServer = agentServers[0].id;
+                await loadAgentContainers();
+            }
+        } catch (err) {
+            toasts.error(`Failed to load servers: ${err.message}`);
+            agentServers = [];
+        }
+    }
+    
+    // Load containers for selected server
+    async function loadAgentContainers() {
+        if (!agentSelectedServer) return;
+        
+        const doToken = getDoToken();
+        if (!doToken) return;
+        
+        try {
+            const result = await api('GET', `/infra/agent/${agentSelectedServer}/containers?do_token=${encodeURIComponent(doToken)}`);
+            agentContainers = result.containers || [];
+            // Reset container selection
+            agentSelectedContainer = '';
+        } catch (err) {
+            console.warn('Failed to load containers:', err);
+            agentContainers = [];
+        }
+    }
+    
+    // Load agent or container logs
+    async function loadAgentLogs() {
+        if (!agentSelectedServer) {
+            toasts.error('Please select a server');
+            return;
+        }
+        
+        const doToken = getDoToken();
+        if (!doToken) {
+            toasts.error('DigitalOcean token required');
+            return;
+        }
+        
+        agentLoading = true;
+        try {
+            let endpoint;
+            if (agentLogType === 'container' && agentSelectedContainer) {
+                endpoint = `/infra/agent/${agentSelectedServer}/containers/${encodeURIComponent(agentSelectedContainer)}/logs?do_token=${encodeURIComponent(doToken)}&lines=${agentLogLines}`;
+            } else {
+                endpoint = `/infra/agent/${agentSelectedServer}/logs?do_token=${encodeURIComponent(doToken)}&lines=${agentLogLines}`;
+            }
+            
+            const result = await api('GET', endpoint);
+            if (result.error) {
+                toasts.error(`Failed to get logs: ${result.error}`);
+                agentLogs = '';
+            } else {
+                agentLogs = result.logs || 'No logs available';
+            }
+        } catch (err) {
+            toasts.error(`Failed to load logs: ${err.message}`);
+            agentLogs = '';
+        }
+        agentLoading = false;
+    }
+    
+    // Handle server selection change
+    async function onServerChange() {
+        agentLogs = '';
+        agentContainers = [];
+        agentSelectedContainer = '';
+        if (agentSelectedServer) {
+            await loadAgentContainers();
+        }
+    }
+    
     // Handle tab change
     function switchTab(tab) {
         activeTab = tab;
@@ -342,12 +439,15 @@
         if (tab === 'database' && !dbInfo) {
             loadDbInfo();
         }
+        if (tab === 'agent' && agentServers.length === 0) {
+            loadAgentServers();
+        }
     }
 </script>
 
 <div class="telemetry">
     <div class="header">
-        <h2>🔍 Telemetry Dashboard</h2>
+        <h2>⚙️ Admin Dashboard</h2>
         <div class="tabs">
             <button 
                 class="tab" 
@@ -362,6 +462,13 @@
                 on:click={() => switchTab('logs')}
             >
                 📝 Backend Logs
+            </button>
+            <button 
+                class="tab" 
+                class:active={activeTab === 'agent'} 
+                on:click={() => switchTab('agent')}
+            >
+                🖥️ Agent Logs
             </button>
             <button 
                 class="tab" 
@@ -587,6 +694,69 @@
     </Card>
     {/if}
     <!-- End of logs tab -->
+    
+    <!-- Agent Logs Tab -->
+    {#if activeTab === 'agent'}
+    <Card>
+        <div class="logs-header">
+            <h3>🖥️ Agent Logs</h3>
+            <div class="logs-controls">
+                <select bind:value={agentSelectedServer} on:change={onServerChange} class="log-select">
+                    <option value="">Select Server...</option>
+                    {#each agentServers as server}
+                    <option value={server.id}>{server.name} ({server.public_ip || server.private_ip || 'No IP'})</option>
+                    {/each}
+                </select>
+                
+                <div class="log-type-selector">
+                    <label>
+                        <input type="radio" bind:group={agentLogType} value="agent" />
+                        Agent Logs
+                    </label>
+                    <label>
+                        <input type="radio" bind:group={agentLogType} value="container" />
+                        Container Logs
+                    </label>
+                </div>
+                
+                {#if agentLogType === 'container'}
+                <select bind:value={agentSelectedContainer} class="log-select">
+                    <option value="">Select Container...</option>
+                    {#each agentContainers as container}
+                    <option value={container.Names?.[0]?.replace(/^\//, '') || container.Id?.slice(0, 12)}>
+                        {container.Names?.[0]?.replace(/^\//, '') || container.Id?.slice(0, 12)} ({container.State || 'unknown'})
+                    </option>
+                    {/each}
+                </select>
+                {/if}
+                
+                <select bind:value={agentLogLines} class="log-select lines-select">
+                    <option value={100}>100 lines</option>
+                    <option value={200}>200 lines</option>
+                    <option value={500}>500 lines</option>
+                    <option value={1000}>1000 lines</option>
+                </select>
+                
+                <Button size="small" on:click={loadAgentLogs} disabled={agentLoading || !agentSelectedServer}>
+                    {agentLoading ? 'Loading...' : '📥 Load Logs'}
+                </Button>
+            </div>
+        </div>
+        
+        {#if agentLoading && !agentLogs}
+        <div class="loading-logs">Loading logs from agent...</div>
+        {:else if agentLogs}
+        <div class="logs-container agent-logs">
+            <pre>{agentLogs}</pre>
+        </div>
+        {:else if agentSelectedServer}
+        <div class="no-logs">Click "Load Logs" to fetch logs from the selected server</div>
+        {:else}
+        <div class="no-logs">Select a server to view agent or container logs</div>
+        {/if}
+    </Card>
+    {/if}
+    <!-- End of agent tab -->
     
     <!-- Database Tab -->
     {#if activeTab === 'database'}
@@ -1412,5 +1582,42 @@
         border-radius: 4px;
         background: var(--bg-input);
         color: var(--text);
+    }
+    
+    /* Agent Logs styles */
+    .log-type-selector {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+    }
+    
+    .log-type-selector label {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+    
+    .agent-logs {
+        max-height: 700px;
+    }
+    
+    .agent-logs pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-size: 0.8rem;
+        line-height: 1.4;
+    }
+    
+    .no-logs {
+        padding: 2rem;
+        text-align: center;
+        color: var(--text-muted);
+    }
+    
+    .lines-select {
+        width: 110px;
     }
 </style>

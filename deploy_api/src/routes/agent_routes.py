@@ -97,6 +97,22 @@ async def get_agent_health(
     return result.data if result.success else {"error": result.error}
 
 
+@router.get("/agent/{server_id}/logs")
+async def get_agent_logs(
+    server_id: str,
+    lines: int = Query(100),
+    do_token: str = Query(...),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """Get node agent logs."""
+    client = await _get_agent_client(server_id, _get_do_token(do_token))
+    result = await client.get_agent_logs(lines=lines)
+    return {
+        "logs": result.data.get("logs", "") if result.success else None,
+        "error": result.error if not result.success else None,
+    }
+
+
 @router.get("/agent/{server_id}/containers")
 async def list_containers(
     server_id: str,

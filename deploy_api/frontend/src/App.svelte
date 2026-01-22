@@ -30,7 +30,7 @@
   // ==========================================================================
   // BUILD VERSION - Embedded at build time by Claude
   // ==========================================================================
-  const BUILD_VERSION = '2026-01-22 09:44 UTC'
+  const BUILD_VERSION = '2026-01-22 10:01 UTC'
   // ==========================================================================
   
   let initialized = false
@@ -51,7 +51,7 @@
   
   // Admin-only tabs
   const adminTabs = [
-    { id: 'telemetry', label: '🔍 Telemetry', admin: true }
+    { id: 'telemetry', label: '⚙️ Admin', admin: true }
   ]
   
   // Combined tabs (reactive based on isAdmin)
