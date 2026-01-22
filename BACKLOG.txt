@@ -25,9 +25,11 @@ DONE
   NB. to change the periodicity to say 2mns, add HEALTH_CHECK_INTERVAL=120 to the container env
   NB. Save check status to the db and purge old data (7 days retention)
 * fix bad jwt cookie in frontend
-* fix all t messy redundant health check endpoints everywhere
+* fix all messy redundant health check endpoints everywhere
 22/01/2026
 * Improve node agent security: no public endpoints (except ping) and api required even within VPC  
+* fix some bugs: flask route n/name parameter mismatch, silent health failures, redis tcp binding (-> todo: are we using robust logic to find teh service is redis?)
+* adding ability to see agent's log in admin tab
 
 TODO
 * http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
@@ -35,7 +37,10 @@ TODO
 
 TODO - UI
 * Add health status display in Infrastructure view
-*  Add health history/timeline view
+* Add health history/timeline view
 * snapshot still not fetched in background
+* Deploy: when new server(s) selected, as soon as they are created, put that back to zero (to avoid re-creating in another deploy)
 * redesign ui as per chatGPT mockup
 * infrastructure tab: total servers and containers not updated upon deletion of any
+* when building a snapshot, the background job is not replicating in all regions
+* ask for token first thing (if not there yet), build snapshot automatically (if not there yet) when do token given
