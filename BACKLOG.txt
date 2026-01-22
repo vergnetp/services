@@ -25,6 +25,7 @@ DONE
   NB. to change the periodicity to say 2mns, add HEALTH_CHECK_INTERVAL=120 to the container env
   NB. Save check status to the db and purge old data (7 days retention)
 * fix bad jwt cookie in frontend
+* fix all t messy redundant health check endpoints everywhere
    
 
 TODO

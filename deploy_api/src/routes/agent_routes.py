@@ -73,11 +73,27 @@ async def _get_agent_client(
 async def get_agent_health(
     server_id: str,
     do_token: str = Query(...),
+    container: Optional[str] = Query(None, description="Specific container name, or all if not provided"),
     user: UserIdentity = Depends(get_current_user),
 ):
-    """Get agent health on a server."""
+    """
+    Get comprehensive health status for containers on a server.
+    
+    Uses the refined health check system:
+    - Auto-discovers container ports from labels/mappings
+    - TCP health checks on discovered ports
+    - Log analysis for errors/warnings
+    - Returns detailed status: healthy, degraded, or unhealthy
+    """
     client = await _get_agent_client(server_id, _get_do_token(do_token))
-    result = await client.health_check()
+    
+    if container:
+        # Single container health
+        result = await client.check_container_health(container)
+    else:
+        # All containers health
+        result = await client.check_containers_health()
+    
     return result.data if result.success else {"error": result.error}
 
 

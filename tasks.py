@@ -377,6 +377,7 @@ except ImportError:
 # Thresholds for auto-healing
 CONTAINER_RESTART_THRESHOLD = 3  # Consecutive failures before restarting container
 DROPLET_REBOOT_THRESHOLD = 5     # Consecutive failures before rebooting droplet
+MAX_HEALING_ATTEMPTS = 2         # Max healing attempts per failure cycle (resets on healthy)
 
 
 async def check_health(payload: Dict[str, Any], ctx) -> Dict[str, Any]:
@@ -481,97 +482,43 @@ async def check_health(payload: Dict[str, Any], ctx) -> Dict[str, Any]:
                         do_token=do_token,
                     )
                     
-                    # Use comprehensive health check - includes:
-                    # - Container status
-                    # - Auto port discovery from labels/mappings
-                    # - TCP health checks on discovered ports
-                    # - Log analysis for errors/warnings
+                    # Check droplet-level health (agent responding)
                     import time
                     start_time = time.time()
                     
                     try:
-                        health_result = await agent_client.check_containers_health()
+                        # Use agent's health check endpoint - it already determines status
+                        health_response = await agent_client.check_containers_health()
                         response_time_ms = int((time.time() - start_time) * 1000)
                         
-                        if not health_result.success:
-                            # Agent not responding or error
-                            agent_status = "unreachable"
-                            results["unreachable"] += 1
-                            
-                            await health_store.record(
-                                workspace_id=workspace_id,
-                                droplet_id=droplet_id,
-                                container_name=None,
-                                status="unreachable",
-                                response_time_ms=response_time_ms,
-                                error_message=health_result.error,
-                            )
-                            
-                            # Check if we should reboot
-                            consecutive = await health_store.count_consecutive_failures(
-                                droplet_id=droplet_id,
-                                container_name=None,
-                            )
-                            
-                            if consecutive >= DROPLET_REBOOT_THRESHOLD:
-                                action = await _try_reboot_droplet(
-                                    do_token,
-                                    health_store,
-                                    workspace_id,
-                                    droplet_id,
-                                    consecutive,
-                                    logger,
-                                )
-                                if action:
-                                    results["actions_taken"].append(action)
-                            continue
-                        
-                        # Agent is responding - process container health data
+                        # Agent is responding
                         agent_status = "healthy"
-                        health_data = health_result.data
-                        containers_health = health_data.get("containers", {})
+                        agent_error = None
                         
-                        # Record droplet-level health
-                        droplet_status = health_data.get("status", "healthy")
-                        await health_store.record(
-                            workspace_id=workspace_id,
-                            droplet_id=droplet_id,
-                            container_name=None,
-                            status=droplet_status,
-                            response_time_ms=response_time_ms,
-                        )
+                        # Get containers with health already determined by agent
+                        containers = health_response.data.get("containers", [])
+                        summary = health_response.data.get("summary", {})
                         
-                        if not containers_health:
-                            # No containers - record as healthy (empty server)
-                            results["healthy"] += 1
-                            continue
-                        
-                        # Process each container's health
-                        for container_name, container_health in containers_health.items():
+                        for container in containers:
+                            container_name = container.get("name", "unknown")
+                            container_health = container.get("health", "unknown")
+                            container_state = container.get("state", "unknown")
+                            
                             results["containers_checked"] += 1
                             
-                            # Get status from comprehensive health check
-                            status = container_health.get("status", "unknown")
-                            
-                            if status == "healthy":
+                            # Map agent's health status
+                            if container_health in ("healthy", "running"):
+                                status = "healthy"
                                 results["healthy"] += 1
-                            elif status == "degraded":
+                            elif container_health == "unhealthy":
+                                status = "unhealthy"
                                 results["unhealthy"] += 1
-                            else:  # unhealthy, error, unknown
+                            elif container_health == "starting":
+                                status = "degraded"
                                 results["unhealthy"] += 1
-                            
-                            # Build error message from health details
-                            error_parts = []
-                            if container_health.get("docker_status") and "up" not in container_health["docker_status"].lower():
-                                error_parts.append(f"Docker: {container_health['docker_status']}")
-                            if container_health.get("port_health"):
-                                port_health = container_health["port_health"]
-                                if not port_health.get("healthy"):
-                                    error_parts.append(f"Port {port_health.get('port')}: {port_health.get('error', 'not responding')}")
-                            if container_health.get("log_analysis", {}).get("errors"):
-                                error_parts.append(f"Errors in logs: {container_health['log_analysis']['error_count']}")
-                            
-                            error_message = "; ".join(error_parts) if error_parts else None
+                            else:
+                                status = "unhealthy"
+                                results["unhealthy"] += 1
                             
                             # Record container health
                             await health_store.record(
@@ -579,30 +526,44 @@ async def check_health(payload: Dict[str, Any], ctx) -> Dict[str, Any]:
                                 droplet_id=droplet_id,
                                 container_name=container_name,
                                 status=status,
-                                response_time_ms=container_health.get("response_time_ms", response_time_ms),
-                                error_message=error_message,
+                                response_time_ms=response_time_ms,
+                                error_message=None if status == "healthy" else f"Container health: {container_health}, state: {container_state}",
                             )
                             
                             # Check for healing action needed
-                            if status in ("unhealthy", "degraded"):
+                            if status in ("unhealthy", "unreachable"):
                                 consecutive = await health_store.count_consecutive_failures(
                                     droplet_id=droplet_id,
                                     container_name=container_name,
                                 )
                                 
                                 if consecutive >= CONTAINER_RESTART_THRESHOLD:
-                                    # Try to restart container
-                                    action = await _try_restart_container(
-                                        agent_client,
-                                        health_store,
-                                        workspace_id,
-                                        droplet_id,
-                                        container_name,
-                                        consecutive,
-                                        logger,
+                                    # Check if we've already tried healing too many times
+                                    healing_attempts = await health_store.count_recent_healing_attempts(
+                                        droplet_id=droplet_id,
+                                        container_name=container_name,
+                                    # Count all healing attempts (both success and failed)
+                                    # Container-level checks only have container actions
                                     )
-                                    if action:
-                                        results["actions_taken"].append(action)
+                                    
+                                    if healing_attempts >= MAX_HEALING_ATTEMPTS:
+                                        logger.warning(
+                                            f"Container {container_name} still unhealthy after {healing_attempts} restart attempts, skipping",
+                                            extra={"droplet_id": droplet_id, "consecutive": consecutive}
+                                        )
+                                    else:
+                                        # Try to restart container
+                                        action = await _try_restart_container(
+                                            agent_client,
+                                            health_store,
+                                            workspace_id,
+                                            droplet_id,
+                                            container_name,
+                                            consecutive,
+                                            logger,
+                                        )
+                                        if action:
+                                            results["actions_taken"].append(action)
                         
                     except Exception as agent_error:
                         # Agent not responding
@@ -627,16 +588,40 @@ async def check_health(payload: Dict[str, Any], ctx) -> Dict[str, Any]:
                         )
                         
                         if consecutive >= DROPLET_REBOOT_THRESHOLD:
-                            action = await _try_reboot_droplet(
-                                do_token,
-                                health_store,
-                                workspace_id,
-                                droplet_id,
-                                consecutive,
-                                logger,
+                            # Check if we've already tried rebooting too many times
+                            # Droplet-level checks only have droplet actions
+                            healing_attempts = await health_store.count_recent_healing_attempts(
+                                droplet_id=droplet_id,
+                                container_name=None,
                             )
-                            if action:
-                                results["actions_taken"].append(action)
+                            
+                            if healing_attempts >= MAX_HEALING_ATTEMPTS:
+                                logger.warning(
+                                    f"Droplet {droplet_id} still unreachable after {healing_attempts} reboot attempts, skipping",
+                                    extra={"consecutive": consecutive}
+                                )
+                            else:
+                                action = await _try_reboot_droplet(
+                                    do_token,
+                                    health_store,
+                                    workspace_id,
+                                    droplet_id,
+                                    consecutive,
+                                    logger,
+                                )
+                                if action:
+                                    results["actions_taken"].append(action)
+                    
+                    # Record droplet-level health (if agent responded)
+                    if agent_status == "healthy":
+                        await health_store.record(
+                            workspace_id=workspace_id,
+                            droplet_id=droplet_id,
+                            container_name=None,
+                            status="healthy",
+                            response_time_ms=response_time_ms,
+                        )
+                        results["healthy"] += 1
                     
                 except Exception as e:
                     logger.error(
