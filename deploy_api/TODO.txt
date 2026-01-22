@@ -49,7 +49,33 @@
    - Fixes false positives (e.g., "credentials" no longer matches "redis")
    - Updated get_connection_info() in env_builder.py
 
+13. Telemetry server dropdown VPC IP fix - DONE (2026-01-22)
+   - Fixed server dropdown in Telemetry.svelte showing VPC IPs (10.x.x.x) instead of public IPs
+   - Changed server.public_ip to server.ip (matches database schema)
+   - Now shows: "{server.name} ({server.ip || server.private_ip})"
+
+14. Agent file logging enhancement - VERIFIED (2026-01-22)
+   - Agent v2.6.4 already has file logging at /var/log/node-agent.log
+   - RotatingFileHandler: 10MB max, 3 backups
+   - Health endpoint has comprehensive debug logging (container list, docker commands, etc.)
+   - Useful for debugging Redis health check 404 paradox
+
+15. Agent v2.6.6 syntax fix - DONE (2026-01-22)
+   - Fixed critical Python syntax error in NODE_AGENT_CODE embedded string
+   - Issue: `\n` escape sequences inside triple-quoted string became literal newlines
+   - Fix: Replaced `\n` with `chr(10)` in agent logs and diagnostics formatting
+   - Affected lines ~400 (agent logs combined output) and ~1108 (container diagnostics header)
+   - v2.6.4 and v2.6.5 failed deployment with "SyntaxError: unterminated f-string literal"
+   - v2.6.6 verified with py_compile before packaging
+
 ## 🔧 IN PROGRESS / TO TEST
+
+0. Agent v2.6.6 deployment test (PRIORITY):
+   - Rebuild snapshot with new agent code
+   - Provision server from new snapshot
+   - Verify agent starts (check /var/log/node-agent.log)
+   - Deploy Redis and confirm health checks pass
+   - Investigate 404 paradox with persistent logs
 
 1. UI errors (to test):
    - TypeError: He.post is not a function (Dockerfile generation)

@@ -704,7 +704,7 @@
                 <select bind:value={agentSelectedServer} on:change={onServerChange} class="log-select">
                     <option value="">Select Server...</option>
                     {#each agentServers as server}
-                    <option value={server.id}>{server.name} ({server.public_ip || server.private_ip || 'No IP'})</option>
+                    <option value={server.id}>{server.name} ({server.ip || server.private_ip || 'No IP'})</option>
                     {/each}
                 </select>
                 

@@ -31,10 +31,12 @@ DONE
 * fix some bugs: flask route n/name parameter mismatch, silent health failures, redis tcp binding 
 * adding ability to see agent's log in admin tab
 * using robust logic to find is service is redis
+* fix health check bug (still checking docker healthcheck) and added agent's log in admin
 
 TODO
 * http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
-
+* maybe trim the log/what is streamed once live, for real client?
+* instruct claude to pay attention to the following when modifying node agent code: The \n in the format string is being interpreted as actual newlines, breaking the string. 
 
 TODO - UI
 * Add health status display in Infrastructure view

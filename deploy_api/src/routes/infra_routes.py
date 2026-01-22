@@ -80,7 +80,24 @@ async def list_servers(
     from shared_libs.backend.infra.fleet import AsyncFleetService
     service = AsyncFleetService(_get_do_token(do_token), str(user.id))
     servers = await service.list_servers()
-    return {"servers": [s.to_dict() for s in servers]}
+    
+    # Explicitly map Droplet fields to ensure public IP is returned as 'ip'
+    # (Droplet.to_dict() may return VPC IP in 'ip' field)
+    def droplet_to_response(d):
+        return {
+            "id": d.id,
+            "name": d.name,
+            "ip": getattr(d, 'public_ip', None) or getattr(d, 'ip', None),
+            "private_ip": getattr(d, 'private_ip', None),
+            "region": d.region,
+            "status": d.status,
+            "tags": d.tags or [],
+            "vpc_uuid": getattr(d, 'vpc_uuid', None),
+            "created_at": getattr(d, 'created_at', None),
+            "size": getattr(d, 'size', None),
+        }
+    
+    return {"servers": [droplet_to_response(s) for s in servers]}
 
 
 @router.get("/fleet/health")
