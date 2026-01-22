@@ -26,7 +26,8 @@ DONE
   NB. Save check status to the db and purge old data (7 days retention)
 * fix bad jwt cookie in frontend
 * fix all t messy redundant health check endpoints everywhere
-   
+22/01/2026
+* Improve node agent security: no public endpoints (except ping) and api required even within VPC  
 
 TODO
 * http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
