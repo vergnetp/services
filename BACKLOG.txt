@@ -32,6 +32,9 @@ DONE
 * adding ability to see agent's log in admin tab
 * using robust logic to find is service is redis
 * fix health check bug (still checking docker healthcheck) and added agent's log in admin
+23/01/2026
+* fix list_for_workspace bug
+
 
 TODO
 * http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)

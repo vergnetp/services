@@ -330,6 +330,49 @@ class DropletStore:
             order_by="[name] ASC",
         )
     
+    async def list_for_workspace(self, workspace_id: str) -> List[Dict[str, Any]]:
+        """List all droplets for a workspace. Required by DropletStoreProtocol."""
+        return await self.list(workspace_id)
+    
+    async def upsert_from_do(self, workspace_id: str, do_droplet: Dict[str, Any]) -> Dict[str, Any]:
+        """Upsert a droplet from DO API data. Required by DropletStoreProtocol."""
+        do_id = do_droplet.get("do_droplet_id")
+        if not do_id:
+            raise ValueError("do_droplet must contain 'do_droplet_id'")
+        
+        existing = await self.get_by_do_id(workspace_id, do_id)
+        if existing:
+            # Update existing record
+            update_data = {
+                "name": do_droplet.get("name"),
+                "ip": do_droplet.get("public_ip") or do_droplet.get("ip"),
+                "private_ip": do_droplet.get("private_ip"),
+                "region": do_droplet.get("region"),
+                "size": do_droplet.get("size"),
+                "status": do_droplet.get("status", "active"),
+                "vpc_uuid": do_droplet.get("vpc_uuid"),
+            }
+            # Remove None values
+            update_data = {k: v for k, v in update_data.items() if v is not None}
+            return await self._crud.update(self.db, existing["id"], update_data)
+        else:
+            # Create new record
+            return await self.create(
+                workspace_id=workspace_id,
+                do_droplet_id=do_id,
+                name=do_droplet.get("name"),
+                ip=do_droplet.get("public_ip") or do_droplet.get("ip"),
+                region=do_droplet.get("region"),
+                size=do_droplet.get("size"),
+            )
+    
+    async def delete_by_do_id(self, workspace_id: str, do_droplet_id: str) -> bool:
+        """Delete a droplet by its DO ID. Required by DropletStoreProtocol."""
+        existing = await self.get_by_do_id(workspace_id, do_droplet_id)
+        if existing:
+            return await self._crud.delete(self.db, existing["id"], permanent=True)
+        return False
+    
     async def update(self, droplet_id: str, **updates) -> Optional[Dict[str, Any]]:
         return await self._crud.update(self.db, droplet_id, updates)
     
