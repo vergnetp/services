@@ -34,10 +34,11 @@ DONE
 * fix health check bug (still checking docker healthcheck) and added agent's log in admin
 23/01/2026
 * fix list_for_workspace bug
-
+* Added endpoint GET /api/v1/infra/containers/{container_name}/env and ability to view them when clicking on container log
+* Added debug logging to /infra/deploy/service.py to trace env_vars through deployment pipeline
 
 TODO
-* http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
+* After deploying, the log icon does not work, such as: http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
 * maybe trim the log/what is streamed once live, for real client?
 * instruct claude to pay attention to the following when modifying node agent code: The \n in the format string is being interpreted as actual newlines, breaking the string. 
 

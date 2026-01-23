@@ -15,7 +15,11 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
+from shared_libs.backend.app_kernel.observability import get_logger
 from .._gen.crud import EntityCRUD
+
+
+logger = get_logger()
 
 
 def _now() -> str:
@@ -609,36 +613,91 @@ class ServiceDropletStore:
         Returns:
             List of dicts with {service_type, host, port, service_name, connection_info}
         """
+        logger.info(
+            f"📋 ServiceDropletStore.get_stateful_services_for_project",
+            project_id=project_id,
+            env=env,
+        )
+        
         # Get all stateful services for project
         stateful_services = await service_store.list_stateful_for_project(project_id)
         
+        logger.info(
+            f"🗄️ Found {len(stateful_services)} stateful service(s) in services table",
+            services=[{
+                "name": s.get("name"),
+                "id": s.get("id"),
+                "service_type": s.get("service_type"),
+                "is_stateful": s.get("is_stateful"),
+            } for s in stateful_services],
+        )
+        
         result = []
         for svc in stateful_services:
+            svc_name = svc.get("name")
+            svc_id = svc.get("id")
+            
             # Get deployment location for this env
-            links = await self.get_droplets_for_service(svc["id"], env, healthy_only=True)
+            links = await self.get_droplets_for_service(svc_id, env, healthy_only=True)
+            
+            logger.info(
+                f"🔗 Service '{svc_name}': found {len(links)} service_droplet link(s) for env={env}",
+                service_id=svc_id,
+                links=[{
+                    "droplet_id": l.get("droplet_id"),
+                    "host_port": l.get("host_port"),
+                    "internal_port": l.get("internal_port"),
+                } for l in links],
+            )
+            
             if not links:
+                logger.warning(f"⚠️ Service '{svc_name}' not deployed to env={env} (no service_droplet links)")
                 continue  # Not deployed to this env
             
             # Get droplet IP
             droplet_ids = [l["droplet_id"] for l in links]
             droplets = await droplet_store.get_many(droplet_ids)
             
+            logger.info(
+                f"đŸ–¥ï¸ Service '{svc_name}': retrieved {len([d for d in droplets if d])} droplet(s)",
+                droplets=[{
+                    "id": d.get("id") if d else None,
+                    "ip": d.get("ip") if d else None,
+                } for d in droplets],
+            )
+            
             for link, droplet in zip(links, droplets):
                 if not droplet:
+                    logger.warning(f"⚠️ Service '{svc_name}': droplet not found in database")
                     continue
                     
                 host = droplet.get("ip")
                 port = link.get("host_port") or link.get("internal_port")
                 
                 if host and port:
-                    result.append({
+                    discovered = {
                         "service_type": svc.get("service_type") or svc.get("name"),
                         "service_name": svc.get("name"),
                         "host": host,
                         "port": port,
                         "service_id": svc["id"],
-                    })
+                    }
+                    logger.info(
+                        f"Service '{svc_name}' ready for auto-injection",
+                        discovered=discovered,
+                    )
+                    result.append(discovered)
                     break  # One location per service is enough for URL
+                else:
+                    logger.warning(
+                        f"⚠️ Service '{svc_name}': missing host or port",
+                        host=host,
+                        port=port,
+                    )
+        
+        logger.info(
+            f"đŸŽ¯ Final result: {len(result)} stateful service(s) available for injection",
+        )
         
         return result
 

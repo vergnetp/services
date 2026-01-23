@@ -494,3 +494,103 @@ async def delete_scheduler_task(
 ):
     """Delete a scheduled task."""
     return {"success": True, "deleted": task_id}
+
+
+@router.get("/containers/{container_name}/env")
+async def get_container_env_vars(
+    container_name: str,
+    server_id: int,
+    do_token: str = Query(...),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    Get environment variables for a container.
+    Returns auto-injected vars separately from user-defined vars.
+    """
+    from infra.node_agent.client import NodeAgentClient
+    from infra.cloud.digitalocean.client import DOClient
+    
+    # Get droplet
+    do_client = DOClient(api_token=do_token)
+    droplet = do_client.get_droplet(server_id)
+    if not droplet:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    # Get container inspection data
+    agent = NodeAgentClient(
+        host=droplet.private_ip,
+        do_token=do_token
+    )
+    
+    try:
+        # Inspect the container
+        inspect_data = agent.inspect_container(container_name)
+        
+        # Extract environment variables
+        env_list = inspect_data.get("Config", {}).get("Env", [])
+        
+        # Known auto-injected variable patterns
+        AUTO_INJECTED_PATTERNS = [
+            "REDIS_URL",
+            "REDIS_",  # REDIS_CACHE_URL, REDIS_LOGS_URL, etc.
+            "DATABASE_URL",
+            "DATABASE_",  # DATABASE_ANALYTICS_URL, etc.
+            "POSTGRES_URL",
+            "POSTGRES_",
+            "MYSQL_URL",
+            "MYSQL_",
+            "MONGODB_URL",
+            "MONGODB_",
+            "OPENSEARCH_",
+            "QDRANT_",
+        ]
+        
+        auto_injected = []
+        user_defined = []
+        
+        # Categorize each variable
+        for env_var in env_list:
+            if "=" not in env_var:
+                continue
+                
+            key, value = env_var.split("=", 1)
+            
+            # Check if it's an auto-injected variable
+            is_auto_injected = any(
+                key.startswith(pattern) or key == pattern.rstrip("_")
+                for pattern in AUTO_INJECTED_PATTERNS
+            )
+            
+            var_info = {
+                "key": key,
+                "value": value,
+                "masked_value": value[:20] + "..." if len(value) > 20 else value
+            }
+            
+            if is_auto_injected:
+                auto_injected.append(var_info)
+            else:
+                user_defined.append(var_info)
+        
+        # Sort both lists by key
+        auto_injected.sort(key=lambda x: x["key"])
+        user_defined.sort(key=lambda x: x["key"])
+        
+        # Check for specific important vars
+        has_redis_url = any(v["key"] == "REDIS_URL" for v in auto_injected)
+        has_database_url = any(v["key"] == "DATABASE_URL" for v in auto_injected)
+        
+        return {
+            "container_name": container_name,
+            "auto_injected": auto_injected,
+            "user_defined": user_defined,
+            "has_redis_url": has_redis_url,
+            "has_database_url": has_database_url,
+            "total_count": len(env_list)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to inspect container: {str(e)}"
+        )

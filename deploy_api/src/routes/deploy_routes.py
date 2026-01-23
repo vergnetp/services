@@ -20,6 +20,7 @@ from typing import List, Optional, Dict, Any
 
 from shared_libs.backend.app_kernel.auth import get_current_user, UserIdentity
 from shared_libs.backend.app_kernel.db import db_connection
+from shared_libs.backend.app_kernel.observability import get_logger
 from shared_libs.backend.infra.deploy import (
     DeployJobConfig,
     DiscoveredService,
@@ -38,6 +39,9 @@ from shared_libs.backend.infra.deploy.orchestrator import (
 
 from ..deps import get_deployment_store, get_project_store, get_service_store, get_droplet_store, get_service_droplet_store
 from ..stores import DeploymentStore, ProjectStore, ServiceStore, DropletStore, ServiceDropletStore
+
+
+logger = get_logger()
 
 
 router = APIRouter(prefix="/infra", tags=["Deploy"])
@@ -112,6 +116,12 @@ async def discover_stateful_services(
     Stateful services are scoped to project - if you need Redis,
     deploy it in the same project as the services that use it.
     """
+    logger.info(
+        "Discovering stateful services for auto-injection",
+        project_id=project_id,
+        env=env,
+    )
+    
     records = await service_droplet_store.get_stateful_services_for_project(
         project_id=project_id,
         env=env,
@@ -119,7 +129,17 @@ async def discover_stateful_services(
         droplet_store=droplet_store,
     )
     
-    return [
+    logger.info(
+        f"📊 Database query returned {len(records)} stateful service(s)",
+        records=[{
+            "service_name": r.get("service_name"),
+            "service_type": r.get("service_type"),
+            "host": r.get("host"),
+            "port": r.get("port"),
+        } for r in records],
+    )
+    
+    discovered = [
         DiscoveredService(
             service_type=r.get("service_type", ""),
             host=r.get("host", ""),
@@ -129,6 +149,8 @@ async def discover_stateful_services(
         )
         for r in records
     ]
+    
+    return discovered
 
 
 # =============================================================================
@@ -453,6 +475,13 @@ async def deploy_multipart(
         project_id=project_id,
         env=environment,
     )
+    
+    logger.info(
+        f"Stateful service discovery for project={project_name}, env={environment}",
+        discovered_count=len(discovered) if discovered else 0,
+        discovered_services=[s.get("service_name") for s in (discovered or [])],
+    )
+    
     if discovered:
         auto_injected_env = build_injection_env_vars(
             user=workspace_id,
@@ -460,9 +489,25 @@ async def deploy_multipart(
             env=environment,
             discovered_services=discovered,
         )
+        logger.info(
+            f"đŸ'‰ Auto-injected env vars",
+            injected_vars=list(auto_injected_env.keys()),
+            injected_values={k: v[:20] + "..." if len(v) > 20 else v for k, v in auto_injected_env.items()},
+        )
+    else:
+        logger.warning(f"⚠️ No stateful services discovered for project={project_name}, env={environment}")
     
     # Merge auto-injected with user-provided (user takes precedence)
     final_env_vars = {**auto_injected_env, **parsed_env_vars}
+    
+    logger.info(
+        f"🔧 Final env vars for {svc_name}",
+        total_vars=len(final_env_vars),
+        auto_injected=len(auto_injected_env),
+        user_provided=len(parsed_env_vars),
+        has_redis_url="REDIS_URL" in final_env_vars,
+        has_database_url="DATABASE_URL" in final_env_vars,
+    )
     
     # Build DeployRequest
     req = DeployRequest(

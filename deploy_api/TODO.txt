@@ -68,6 +68,30 @@
    - v2.6.4 and v2.6.5 failed deployment with "SyntaxError: unterminated f-string literal"
    - v2.6.6 verified with py_compile before packaging
 
+16. REDIS_URL injection debug logging - DONE (2026-01-23)
+   - Added comprehensive debug logging to diagnose missing REDIS_URL
+   - deploy_routes.py: Logs discovered services, auto-injected env vars, final env vars with flags
+   - stores.py ServiceDropletStore.get_stateful_services_for_project(): Logs each step:
+     * Services in services table (with is_stateful flag)
+     * Service_droplet links for target env
+     * Droplet retrieval and IP resolution
+     * Final discovered services for injection
+     * Warnings for missing data
+   - Next: Deploy and review logs to identify where injection fails
+
+17. Emoji syntax error fix - DONE (2026-01-23 09:15 UTC)
+   - Fixed SyntaxError: unterminated string literal in deploy_routes.py line 120
+   - Removed emoji characters (🔍📦✅❌) from log statements that caused encoding issues
+   - Affected files: deploy_routes.py, stores.py
+   - Changed "🔍 Discovering stateful services" → "Discovering stateful services for auto-injection"
+
+18. Container environment variables viewer - DONE (2026-01-23 10:50 UTC)
+   - Added GET /api/v1/infra/containers/{container_name}/env endpoint in agent_routes.py
+   - Returns auto-injected vars (REDIS_URL, DATABASE_URL, etc.) separately from user-defined
+   - Frontend: New "🔐 Env Vars" tab in container logs modal (Infrastructure.svelte)
+   - Shows summary stats, categorized variables, one-click copy for each var
+   - Helps debug missing REDIS_URL issue by inspecting actual container environment
+
 ## 🔧 IN PROGRESS / TO TEST
 
 0. Agent v2.6.6 deployment test (PRIORITY):
@@ -85,11 +109,6 @@
    - What should user expect for new domain availability?
    - Consider auto-checking domain ready status
    - Subdomain naming: uses "default" instead of project name
-
-7. Test REDIS_URL auto-injection:
-   - Deploy a stateful redis first (project X, env prod)
-   - Deploy a regular service in same project/env
-   - Verify REDIS_URL is in container env vars
 
 ## 📋 BACKLOG
 

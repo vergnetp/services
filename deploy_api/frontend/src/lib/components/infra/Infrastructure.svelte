@@ -128,6 +128,10 @@
   let logTail = 200
   let logAutoRefresh = false
   let logRefreshInterval = null
+  let containerModalTab = 'logs' // 'logs' or 'env'
+  let envVarsData = null
+  let envVarsLoading = false
+  let envVarsCopied = {}
   
   // Filtered logs (client-side search)
   $: filteredLogs = logSearch 
@@ -394,6 +398,9 @@
     logsTitle = `📋 ${containerName} @ ${displayIp}`
     logsContent = ''
     logSearch = ''
+    containerModalTab = 'logs' // Reset to logs tab
+    envVarsData = null // Clear previous env data
+    envVarsCopied = {}
     logsModalOpen = true
     logsLoading = true
     
@@ -418,6 +425,28 @@
     } finally {
       logsLoading = false
     }
+  }
+  
+  async function fetchEnvVars() {
+    if (!currentLogServer || !currentLogContainer) return
+    envVarsLoading = true
+    try {
+      const res = await api('GET', `/infra/containers/${currentLogContainer}/env?server_id=${currentLogServer}&do_token=${$doToken}`)
+      envVarsData = res
+    } catch (e) {
+      envVarsData = { error: e.message }
+    } finally {
+      envVarsLoading = false
+    }
+  }
+  
+  function copyEnvVar(key, value) {
+    navigator.clipboard.writeText(`${key}=${value}`)
+    envVarsCopied[key] = true
+    setTimeout(() => {
+      envVarsCopied[key] = false
+      envVarsCopied = { ...envVarsCopied }
+    }, 2000)
   }
   
   function toggleAutoRefresh() {
@@ -662,34 +691,138 @@
 
 <!-- Logs Modal - Enhanced -->
 <Modal bind:open={logsModalOpen} title={logsTitle} width="1000px">
-  <div class="logs-toolbar">
-    <div class="logs-search">
-      <input 
-        type="text" 
-        placeholder="Search logs..." 
-        bind:value={logSearch}
-      />
-    </div>
-    <div class="logs-tail">
-      <label>Lines:</label>
-      <select bind:value={logTail} on:change={refreshLogs}>
-        <option value={100}>100</option>
-        <option value={200}>200</option>
-        <option value={500}>500</option>
-        <option value={1000}>1000</option>
-      </select>
-    </div>
-    <label class="logs-auto">
-      <input type="checkbox" bind:checked={logAutoRefresh} on:change={toggleAutoRefresh} />
-      Auto-refresh
-    </label>
-    <Button variant="ghost" size="sm" on:click={refreshLogs} disabled={logsLoading}>
-      {logsLoading ? '...' : '↻'}
-    </Button>
+  <!-- Tabs -->
+  <div class="modal-tabs">
+    <button 
+      class="tab-button" 
+      class:active={containerModalTab === 'logs'}
+      on:click={() => containerModalTab = 'logs'}
+    >
+      📋 Logs
+    </button>
+    <button 
+      class="tab-button" 
+      class:active={containerModalTab === 'env'}
+      on:click={() => {
+        containerModalTab = 'env'
+        if (!envVarsData && !envVarsLoading) fetchEnvVars()
+      }}
+    >
+      🔐 Env Vars
+    </button>
   </div>
-  <pre class="logs-content large">{filteredLogs || 'No logs'}</pre>
+
+  <!-- Logs Tab -->
+  {#if containerModalTab === 'logs'}
+    <div class="logs-toolbar">
+      <div class="logs-search">
+        <input 
+          type="text" 
+          placeholder="Search logs..." 
+          bind:value={logSearch}
+        />
+      </div>
+      <div class="logs-tail">
+        <label>Lines:</label>
+        <select bind:value={logTail} on:change={refreshLogs}>
+          <option value={100}>100</option>
+          <option value={200}>200</option>
+          <option value={500}>500</option>
+          <option value={1000}>1000</option>
+        </select>
+      </div>
+      <label class="logs-auto">
+        <input type="checkbox" bind:checked={logAutoRefresh} on:change={toggleAutoRefresh} />
+        Auto-refresh
+      </label>
+      <Button variant="ghost" size="sm" on:click={refreshLogs} disabled={logsLoading}>
+        {logsLoading ? '...' : '↻'}
+      </Button>
+    </div>
+    <pre class="logs-content large">{filteredLogs || 'No logs'}</pre>
+  {/if}
+
+  <!-- Env Vars Tab -->
+  {#if containerModalTab === 'env'}
+    <div class="env-vars-container">
+      {#if envVarsLoading}
+        <div class="env-loading">Loading environment variables...</div>
+      {:else if envVarsData?.error}
+        <div class="env-error">Error: {envVarsData.error}</div>
+      {:else if envVarsData}
+        <div class="env-summary">
+          <div class="env-stat">
+            <strong>Total:</strong> {envVarsData.total_env_vars || 0} variables
+          </div>
+          {#if envVarsData.has_redis_url}
+            <div class="env-stat success">✓ REDIS_URL present</div>
+          {/if}
+          {#if envVarsData.has_database_url}
+            <div class="env-stat success">✓ DATABASE_URL present</div>
+          {/if}
+        </div>
+
+        <!-- Auto-injected vars -->
+        {#if envVarsData.auto_injected && Object.keys(envVarsData.auto_injected).length > 0}
+          <div class="env-section">
+            <h4>🔧 Auto-Injected (Stateful Services)</h4>
+            <div class="env-list">
+              {#each Object.entries(envVarsData.auto_injected) as [key, value]}
+                <div class="env-item auto-injected">
+                  <div class="env-key">{key}</div>
+                  <div class="env-value">
+                    <code>{value}</code>
+                    <button 
+                      class="copy-btn"
+                      class:copied={envVarsCopied[key]}
+                      on:click={() => copyEnvVar(key, value)}
+                      title="Copy to clipboard"
+                    >
+                      {envVarsCopied[key] ? '✓' : '📋'}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- User-defined vars -->
+        {#if envVarsData.user_defined && Object.keys(envVarsData.user_defined).length > 0}
+          <div class="env-section">
+            <h4>👤 User-Defined</h4>
+            <div class="env-list">
+              {#each Object.entries(envVarsData.user_defined) as [key, value]}
+                <div class="env-item">
+                  <div class="env-key">{key}</div>
+                  <div class="env-value">
+                    <code>{value}</code>
+                    <button 
+                      class="copy-btn"
+                      class:copied={envVarsCopied[key]}
+                      on:click={() => copyEnvVar(key, value)}
+                      title="Copy to clipboard"
+                    >
+                      {envVarsCopied[key] ? '✓' : '📋'}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {:else if (!envVarsData.auto_injected || Object.keys(envVarsData.auto_injected).length === 0)}
+          <div class="env-empty">No environment variables found</div>
+        {/if}
+      {:else}
+        <div class="env-empty">Click to load environment variables</div>
+      {/if}
+    </div>
+  {/if}
+
   <div slot="footer">
-    <span class="logs-count">{filteredLogs?.split('\n').length || 0} lines</span>
+    {#if containerModalTab === 'logs'}
+      <span class="logs-count">{filteredLogs?.split('\n').length || 0} lines</span>
+    {/if}
     <Button variant="ghost" on:click={() => { logsModalOpen = false; stopAutoRefresh() }}>Close</Button>
   </div>
 </Modal>
@@ -1417,5 +1550,157 @@
     font-size: 0.8em;
     color: var(--text-muted2, #666);
     font-style: italic;
+  }
+
+  /* Modal Tabs */
+  .modal-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+
+  .tab-button {
+    background: none;
+    border: none;
+    padding: 8px 16px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+
+  .tab-button:hover {
+    color: var(--text);
+  }
+
+  .tab-button.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+  }
+
+  /* Env Vars Container */
+  .env-vars-container {
+    max-height: 500px;
+    overflow-y: auto;
+  }
+
+  .env-loading,
+  .env-error,
+  .env-empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
+
+  .env-error {
+    color: var(--error);
+  }
+
+  .env-summary {
+    display: flex;
+    gap: 16px;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 6px;
+    margin-bottom: 16px;
+    font-size: 0.875rem;
+  }
+
+  .env-stat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-muted);
+  }
+
+  .env-stat.success {
+    color: var(--success);
+    font-weight: 500;
+  }
+
+  .env-section {
+    margin-bottom: 24px;
+  }
+
+  .env-section h4 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .env-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .env-item {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 12px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.8rem;
+  }
+
+  .env-item.auto-injected {
+    background: rgba(109, 92, 255, 0.05);
+    border-color: rgba(109, 92, 255, 0.3);
+  }
+
+  .env-key {
+    font-weight: 600;
+    color: var(--primary);
+    word-break: break-word;
+  }
+
+  .env-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .env-value code {
+    flex: 1;
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 4px 8px;
+    border-radius: 4px;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+  }
+
+  .copy-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+
+  .copy-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text);
+  }
+
+  .copy-btn.copied {
+    background: var(--success);
+    color: white;
+    border-color: var(--success);
   }
 </style>
