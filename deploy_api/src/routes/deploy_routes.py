@@ -177,41 +177,63 @@ async def stream_and_save_result(
     4. Save result and logs to deployment record
     5. Save to service_droplets for service mesh
     6. Warn about apps needing redeploy (for stateful service deploys)
+    
+    NOTE: Uses try/finally to ensure status is saved even if client disconnects!
     """
     final_result = None
     collected_logs = []  # Collect log entries for persistence
+    client_disconnected = False
     
-    async for event in stream_fn(job_config):
-        event_dict = event.to_dict()
-        yield f"data: {json.dumps(event_dict)}\n\n"
-        
-        # Collect log/error/progress events for persistence
-        if event.type in ("log", "error", "progress"):
-            collected_logs.append({
-                "type": event.type,
-                "message": event.message,
-                "timestamp": event.timestamp,
-                **(event.data or {}),
-            })
-        
-        # Capture done event
-        if event.type == "done":
-            final_result = event.data
+    try:
+        async for event in stream_fn(job_config):
+            event_dict = event.to_dict()
+            yield f"data: {json.dumps(event_dict)}\n\n"
+            
+            # Collect log/error/progress events for persistence
+            if event.type in ("log", "error", "progress"):
+                collected_logs.append({
+                    "type": event.type,
+                    "message": event.message,
+                    "timestamp": event.timestamp,
+                    **(event.data or {}),
+                })
+            
+            # Capture done event - save immediately in case client disconnects
+            if event.type == "done":
+                final_result = event.data
+                # Save result RIGHT AWAY before yielding more
+                from datetime import datetime, timezone
+                success = final_result.get("success", False)
+                await deployment_store.update_deployment(
+                    deployment_id=deployment_id,
+                    status="success" if success else "failed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    result=final_result,
+                    logs=collected_logs,
+                )
+                # Continue to record service_droplets and yield warnings
+    except GeneratorExit:
+        # Client disconnected - mark this so we don't try to save twice
+        client_disconnected = True
+        # If we already got the done event and saved, we're good
+        # If not, mark as interrupted
+        if not final_result:
+            import logging
+            logging.warning(f"Client disconnected before deployment {deployment_id} completed - marking as interrupted")
+            from datetime import datetime, timezone
+            await deployment_store.update_deployment(
+                deployment_id=deployment_id,
+                status="interrupted",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                result={"error": "Client disconnected before completion"},
+                logs=collected_logs,
+            )
+        raise  # Re-raise to properly close the generator
     
-    # Save result and logs to deployment
-    if final_result:
-        success = final_result.get("success", False)
-        from datetime import datetime, timezone
-        await deployment_store.update_deployment(
-            deployment_id=deployment_id,
-            status="success" if success else "failed",
-            completed_at=datetime.now(timezone.utc).isoformat(),
-            result=final_result,
-            logs=collected_logs,  # Save collected logs
-        )
-        
+    # Service_droplet recording (only if success and stores provided)
+    if final_result and final_result.get("success", False):
         # Record to service_droplets for service mesh / auto-injection
-        if success and service_droplet_store and service_store and droplet_store and project_id:
+        if service_droplet_store and service_store and droplet_store and project_id:
             try:
                 # Get or create service record
                 service = await service_store.get_or_create(
