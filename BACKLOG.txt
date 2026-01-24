@@ -43,9 +43,11 @@ DONE
 * Added mor elogging of ebv variables
 
 TODO
+* show agent version very early in the streamed log so that I can abort early instead of waste time
 * After deploying, the log icon does not work, such as: http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
 * maybe trim the log/what is streamed once live, for real client?
 * instruct claude to pay attention to the following when modifying node agent code: The \n in the format string is being interpreted as actual newlines, breaking the string. 
+* add a cancel deployment button (if possible)
 
 TODO - UI
 * Add health status display in Infrastructure view
