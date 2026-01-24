@@ -92,26 +92,6 @@
    - Shows summary stats, categorized variables, one-click copy for each var
    - Helps debug missing REDIS_URL issue by inspecting actual container environment
 
-19. Persistent volumes - DONE (2026-01-24 09:11 UTC)
-   - Added /data/volumes/{service_name} bind mounts for containers
-   - VolumeManager handles create/cleanup/list operations
-   - Volumes survive container restarts and redeployments
-   - Data stored on host filesystem, backed up with server
-
-20. Backup system - DONE (2026-01-24 10:00 UTC)
-   - Node agent v2.6.8: backup/restore endpoints for postgres/mysql/redis/mongodb
-   - shared_libs/backend/infra/backup/: storage.py (Local + DO Spaces), service.py
-   - backup_routes.py: REST API for trigger/restore/list backups
-   - BackupStore: Database persistence for backup metadata
-   - Retention: 7 backups per service (configurable)
-
-21. Rollback env vars fix - DONE (2026-01-24 12:40 UTC)
-   - BUG: Rollback used historical env_vars with stale connection strings
-   - If stateful service IP changed, rollback failed at runtime
-   - FIX: Added user_env_vars field to deployments (stores user-only vars)
-   - Rollback now: re-discovers stateful services -> fresh auto-inject -> merge user_env_vars
-   - Deploy/redeploy also store user_env_vars separately for future rollbacks
-
 ## 🔧 IN PROGRESS / TO TEST
 
 0. Agent v2.6.6 deployment test (PRIORITY):
