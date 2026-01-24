@@ -272,6 +272,8 @@ entities:
         type: int
       - name: env_vars
         type: json
+      - name: user_env_vars
+        type: json
       - name: status
         type: string
         default: "pending"
@@ -387,6 +389,45 @@ entities:
       - name: checked_at
         type: datetime
         required: true
+
+  # -------------------------------------------------------------------------
+  # Backup - backup history for stateful services
+  # -------------------------------------------------------------------------
+  - name: backup
+    workspace_scoped: true
+    soft_delete: false
+    fields:
+      - name: service_id
+        type: string
+        required: true
+      - name: service_type
+        type: string
+        required: true
+        # postgres, mysql, redis, mongodb
+      - name: filename
+        type: string
+        required: true
+      - name: size_bytes
+        type: int
+      - name: storage_type
+        type: string
+        default: "local"
+        # local, spaces
+      - name: storage_path
+        type: string
+        required: true
+      - name: status
+        type: string
+        default: "completed"
+        # completed, failed, in_progress
+      - name: error_message
+        type: text
+      - name: triggered_by
+        type: string
+        default: "scheduled"
+        # scheduled, manual
+      - name: completed_at
+        type: datetime
 
 # =============================================================================
 # Custom routes (not auto-generated, live in src/routes/)

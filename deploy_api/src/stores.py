@@ -791,6 +791,14 @@ class Deployment:
         return val or {}
     
     @property
+    def user_env_vars(self) -> Dict[str, str]:
+        """User-provided env vars only (excludes auto-injected stateful service URLs)."""
+        val = self._data.get("user_env_vars")
+        if isinstance(val, str):
+            return json.loads(val) if val else {}
+        return val or {}
+    
+    @property
     def status(self) -> str:
         return self._data.get("status", "pending")
     
@@ -981,6 +989,7 @@ class DeploymentStore:
         server_ips: list = None,
         port: int = None,
         env_vars: dict = None,
+        user_env_vars: dict = None,  # User-provided env vars (excludes auto-injected)
         deployed_by: str = None,
         comment: str = None,
         is_rollback: bool = False,
@@ -1023,6 +1032,7 @@ class DeploymentStore:
             "droplet_ids": json.dumps(droplet_ids) if droplet_ids else None,
             "port": port,
             "env_vars": json.dumps(env_vars) if env_vars else None,
+            "user_env_vars": json.dumps(user_env_vars) if user_env_vars else None,
             "status": "pending",
             "started_at": _now(),
             "triggered_by": deployed_by,
@@ -1882,3 +1892,160 @@ class HealthCheckStore:
             count += 1
         
         return count
+
+
+# =============================================================================
+# Backup Store
+# =============================================================================
+
+class BackupStore:
+    """Backup history CRUD for stateful services."""
+    
+    def __init__(self, db):
+        self.db = db
+        self._crud = EntityCRUD("backups", soft_delete=False)
+    
+    async def create(
+        self,
+        workspace_id: str,
+        service_id: str,
+        service_type: str,
+        filename: str,
+        storage_path: str,
+        size_bytes: int = None,
+        storage_type: str = "local",
+        status: str = "in_progress",
+        error_message: str = None,
+        triggered_by: str = "scheduled",
+    ) -> Dict[str, Any]:
+        """Create a backup record."""
+        return await self._crud.create(self.db, {
+            "workspace_id": workspace_id,
+            "service_id": service_id,
+            "service_type": service_type,
+            "filename": filename,
+            "size_bytes": size_bytes,
+            "storage_type": storage_type,
+            "storage_path": storage_path,
+            "status": status,
+            "error_message": error_message,
+            "triggered_by": triggered_by,
+            "completed_at": _now() if status == "completed" else None,
+        })
+    
+    async def get(self, backup_id: str) -> Optional[Dict[str, Any]]:
+        """Get backup by ID."""
+        return await self._crud.get(self.db, backup_id)
+    
+    async def update_status(
+        self,
+        backup_id: str,
+        status: str,
+        error_message: str = None,
+        size_bytes: int = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update backup status."""
+        updates = {"status": status}
+        if error_message:
+            updates["error_message"] = error_message
+        if size_bytes is not None:
+            updates["size_bytes"] = size_bytes
+        if status == "completed":
+            updates["completed_at"] = _now()
+        return await self._crud.update(self.db, backup_id, updates)
+    
+    async def list_for_service(
+        self,
+        workspace_id: str,
+        service_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List backups for a service."""
+        return await self._crud.list(
+            self.db,
+            where_clause="[service_id] = ?",
+            params=(service_id,),
+            workspace_id=workspace_id,
+            order_by="[created_at] DESC",
+            limit=limit,
+        )
+    
+    async def list_for_workspace(
+        self,
+        workspace_id: str,
+        service_type: str = None,
+        status: str = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List backups for a workspace with optional filters."""
+        conditions = []
+        params = []
+        
+        if service_type:
+            conditions.append("[service_type] = ?")
+            params.append(service_type)
+        if status:
+            conditions.append("[status] = ?")
+            params.append(status)
+        
+        where_clause = " AND ".join(conditions) if conditions else None
+        
+        return await self._crud.list(
+            self.db,
+            where_clause=where_clause,
+            params=tuple(params) if params else None,
+            workspace_id=workspace_id,
+            order_by="[created_at] DESC",
+            limit=limit,
+        )
+    
+    async def get_latest_for_service(
+        self,
+        workspace_id: str,
+        service_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get the most recent successful backup for a service."""
+        results = await self._crud.list(
+            self.db,
+            where_clause="[service_id] = ? AND [status] = ?",
+            params=(service_id, "completed"),
+            workspace_id=workspace_id,
+            order_by="[created_at] DESC",
+            limit=1,
+        )
+        return results[0] if results else None
+    
+    async def delete(self, backup_id: str) -> bool:
+        """Delete a backup record."""
+        return await self._crud.delete(self.db, backup_id, permanent=True)
+    
+    async def count_for_service(
+        self,
+        workspace_id: str,
+        service_id: str,
+        status: str = "completed",
+    ) -> int:
+        """Count backups for a service."""
+        return await self._crud.count(
+            self.db,
+            where_clause="[service_id] = ? AND [status] = ?",
+            params=(service_id, status),
+            workspace_id=workspace_id,
+        )
+    
+    async def get_oldest_completed(
+        self,
+        workspace_id: str,
+        service_id: str,
+        keep_count: int = 7,
+    ) -> List[Dict[str, Any]]:
+        """Get oldest backups beyond retention limit (for cleanup)."""
+        return await self._crud.list(
+            self.db,
+            where_clause="[service_id] = ? AND [status] = ?",
+            params=(service_id, "completed"),
+            workspace_id=workspace_id,
+            order_by="[created_at] ASC",
+            offset=keep_count,
+            limit=100,
+        )

@@ -11,6 +11,7 @@ from .networking_routes import router as networking_router
 from .agent_routes import router as agent_router
 from .admin_routes import router as admin_router
 from .deploy_routes import router as deploy_router
+from .backup_routes import router as backup_router
 
 __all__ = [
     "projects_router",
@@ -20,4 +21,5 @@ __all__ = [
     "agent_router",
     "admin_router",
     "deploy_router",
+    "backup_router",
 ]

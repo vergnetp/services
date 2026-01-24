@@ -28,6 +28,7 @@ from .stores import (
     CredentialsStore,
     DeploymentStore,
     DeployConfigStore,
+    BackupStore,
 )
 
 
@@ -100,3 +101,8 @@ async def get_deployment_store(db = Depends(db_connection)):
 async def get_deploy_config_store(db = Depends(db_connection)):
     """Get deploy config store - shares request connection."""
     return DeployConfigStore(db)
+
+
+async def get_backup_store(db = Depends(db_connection)):
+    """Get backup store - shares request connection."""
+    return BackupStore(db)

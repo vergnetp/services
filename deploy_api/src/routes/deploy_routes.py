@@ -567,6 +567,7 @@ async def deploy_multipart(
         server_ips=req.server_ips or [],
         port=req.port,
         env_vars=final_env_vars,
+        user_env_vars=parsed_env_vars,  # Store user-provided only (for rollback)
         deployed_by=workspace_id,
         comment=req.comment,
         config_snapshot=_build_config_snapshot(req),
@@ -690,6 +691,7 @@ async def deploy(
         server_ips=req.server_ips or [],
         port=req.port,
         env_vars=final_env_vars,
+        user_env_vars=req.env_vars or {},  # Store user-provided only (for rollback)
         deployed_by=workspace_id,
         comment=req.comment,
         config_snapshot=_build_config_snapshot(req),
@@ -778,11 +780,16 @@ async def rollback(
     do_token: str = Query(..., description="DO token"),
     user: UserIdentity = Depends(get_current_user),
     deployment_store: DeploymentStore = Depends(get_deployment_store),
+    project_store: ProjectStore = Depends(get_project_store),
+    service_store: ServiceStore = Depends(get_service_store),
+    droplet_store: DropletStore = Depends(get_droplet_store),
+    service_droplet_store: ServiceDropletStore = Depends(get_service_droplet_store),
 ):
     """
     Rollback service to previous deployment.
     
     Returns SSE stream with progress.
+    Re-discovers stateful services for fresh connection URLs.
     """
     req = req or RollbackRequest()
     token = _get_do_token(do_token)
@@ -821,6 +828,36 @@ async def rollback(
     
     server_ips = req.server_ips if req.server_ips else target.server_ips
     
+    # Re-discover stateful services for FRESH connection URLs
+    # (stateful services may have moved to different IPs since original deployment)
+    project_entity = await project_store.get_by_name(workspace_id, project)
+    auto_injected_env = {}
+    if project_entity:
+        discovered = await discover_stateful_services(
+            service_droplet_store=service_droplet_store,
+            service_store=service_store,
+            droplet_store=droplet_store,
+            project_id=project_entity["id"],
+            env=environment,
+        )
+        if discovered:
+            auto_injected_env = build_injection_env_vars(
+                user=workspace_id,
+                project=project,
+                env=environment,
+                discovered_services=discovered,
+            )
+            logger.info(
+                f"🔄 Rollback: re-discovered stateful services",
+                discovered_count=len(discovered),
+                injected_vars=list(auto_injected_env.keys()),
+            )
+    
+    # Use user_env_vars from target deployment (excludes auto-injected)
+    # This preserves user secrets while getting fresh stateful service URLs
+    user_env_vars = target.user_env_vars or {}
+    final_env_vars = {**auto_injected_env, **user_env_vars}
+    
     # Record rollback deployment
     record = await deployment_store.record_deployment(
         workspace_id=workspace_id,
@@ -831,7 +868,8 @@ async def rollback(
         image_name=target.image_name,
         server_ips=server_ips,
         port=target.port or 8000,
-        env_vars=target.env_vars or {},
+        env_vars=final_env_vars,
+        user_env_vars=user_env_vars,  # Preserve user vars for future rollbacks
         deployed_by=workspace_id,
         comment=req.comment or f"Rollback to v{target.version}" if target.version else f"Rollback to {target.id[:8]}",
         is_rollback=True,
@@ -850,7 +888,7 @@ async def rollback(
         image=target.image_name,
         server_ips=server_ips,
         port=target.port or 8000,
-        env_vars=target.env_vars or {},
+        env_vars=final_env_vars,
         deployment_id=record.id,
         skip_pull=True,
         is_rollback=True,

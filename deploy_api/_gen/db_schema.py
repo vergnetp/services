@@ -98,6 +98,7 @@ async def init_schema(db: Any) -> None:
             droplet_ids TEXT,
             port INTEGER,
             env_vars TEXT,
+            user_env_vars TEXT,
             status TEXT DEFAULT 'pending',
             triggered_by TEXT NOT NULL,
             comment TEXT,
@@ -173,3 +174,24 @@ async def init_schema(db: Any) -> None:
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_health_checks_workspace ON health_checks(workspace_id)")
+
+    # Backup
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS backups (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            service_id TEXT NOT NULL,
+            service_type TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            size_bytes INTEGER,
+            storage_type TEXT DEFAULT 'local',
+            storage_path TEXT NOT NULL,
+            status TEXT DEFAULT 'completed',
+            error_message TEXT,
+            triggered_by TEXT DEFAULT 'scheduled',
+            completed_at TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_backups_workspace ON backups(workspace_id)")

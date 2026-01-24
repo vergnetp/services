@@ -37,6 +37,9 @@ DONE
 * Added endpoint GET /api/v1/infra/containers/{container_name}/env and ability to view them when clicking on container log
 * Added debug logging to /infra/deploy/service.py to trace env_vars through deployment pipeline
 * fix deployment status stuck
+* data can persist after container restart if user save it in "/data" (volume is mounted to host as /data/{user}/{project}/{env}/{service}/data (tbc))
+* stateful services backup (to data/backup for now, can be switched to share someday) + ability to rollback
+* stateful service env injected in service rollback as well
 
 TODO
 * After deploying, the log icon does not work, such as: http://localhost:8000/api/v1/infra/agent/546131306/containers/9fe5e6_deployer_prod_redis/logs?do_token=** -> got not authenticated (maybe not passing api key?)
