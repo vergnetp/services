@@ -146,7 +146,6 @@ class DeploymentBase(BaseModel):
     droplet_ids: Optional[Dict[str, Any]] = None
     port: Optional[int] = None
     env_vars: Optional[Dict[str, Any]] = None
-    user_env_vars: Optional[Dict[str, Any]] = None
     status: Optional[str] = 'pending'
     triggered_by: str
     comment: Optional[str] = None
@@ -174,7 +173,6 @@ class DeploymentUpdate(BaseModel):
     droplet_ids: Optional[Dict[str, Any]] = None
     port: Optional[int] = None
     env_vars: Optional[Dict[str, Any]] = None
-    user_env_vars: Optional[Dict[str, Any]] = None
     status: Optional[str] = None
     triggered_by: Optional[str] = None
     comment: Optional[str] = None
@@ -291,43 +289,6 @@ class HealthCheckUpdate(BaseModel):
     checked_at: Optional[datetime] = None
 
 class HealthCheckResponse(HealthCheckBase):
-    id: str
-    workspace_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-class BackupBase(BaseModel):
-    service_id: str
-    service_type: str
-    filename: str
-    size_bytes: Optional[int] = None
-    storage_type: Optional[str] = 'local'
-    storage_path: str
-    status: Optional[str] = 'completed'
-    error_message: Optional[str] = None
-    triggered_by: Optional[str] = 'scheduled'
-    completed_at: Optional[datetime] = None
-
-class BackupCreate(BackupBase):
-    workspace_id: Optional[str] = None
-
-class BackupUpdate(BaseModel):
-    service_id: Optional[str] = None
-    service_type: Optional[str] = None
-    filename: Optional[str] = None
-    size_bytes: Optional[int] = None
-    storage_type: Optional[str] = None
-    storage_path: Optional[str] = None
-    status: Optional[str] = None
-    error_message: Optional[str] = None
-    triggered_by: Optional[str] = None
-    completed_at: Optional[datetime] = None
-
-class BackupResponse(BackupBase):
     id: str
     workspace_id: Optional[str] = None
     created_at: Optional[datetime] = None

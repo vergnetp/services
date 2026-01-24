@@ -34,7 +34,6 @@ from .src.routes import (
     agent_router,
     admin_router,
     deploy_router,
-    backup_router,
 )
 from .src.workers import TASKS
 
@@ -102,7 +101,6 @@ def create_app() -> FastAPI:
             networking_router,
             agent_router,
             admin_router,
-            backup_router,
         ],
         
         # Background tasks (deployment jobs)
