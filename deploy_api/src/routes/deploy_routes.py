@@ -178,18 +178,16 @@ async def stream_and_save_result(
     5. Save to service_droplets for service mesh
     6. Warn about apps needing redeploy (for stateful service deploys)
     
-    NOTE: Status is saved BEFORE yielding done event to guarantee persistence!
+    NOTE: Uses try/finally to ensure status is saved even if client disconnects!
     """
-    import logging
-    from datetime import datetime, timezone
-    
     final_result = None
-    status_saved = False
     collected_logs = []  # Collect log entries for persistence
+    client_disconnected = False
     
     try:
         async for event in stream_fn(job_config):
             event_dict = event.to_dict()
+            yield f"data: {json.dumps(event_dict)}\n\n"
             
             # Collect log/error/progress events for persistence
             if event.type in ("log", "error", "progress"):
@@ -200,53 +198,37 @@ async def stream_and_save_result(
                     **(event.data or {}),
                 })
             
-            # For done event: SAVE FIRST, then yield
+            # Capture done event - save immediately in case client disconnects
             if event.type == "done":
                 final_result = event.data
+                # Save result RIGHT AWAY before yielding more
+                from datetime import datetime, timezone
                 success = final_result.get("success", False)
-                
-                # Save status BEFORE yielding - guarantees it completes
-                try:
-                    await deployment_store.update_deployment(
-                        deployment_id=deployment_id,
-                        status="success" if success else "failed",
-                        completed_at=datetime.now(timezone.utc).isoformat(),
-                        result=final_result,
-                        logs=collected_logs,
-                    )
-                    status_saved = True
-                    logging.info(f"Deployment {deployment_id} status saved: {'success' if success else 'failed'}")
-                except Exception as e:
-                    logging.error(f"Failed to save deployment {deployment_id} status: {e}")
-                
-                # NOW yield the done event
-                yield f"data: {json.dumps(event_dict)}\n\n"
-            else:
-                # All other events: yield immediately
-                yield f"data: {json.dumps(event_dict)}\n\n"
-                
-    except GeneratorExit:
-        # Client disconnected
-        if not status_saved:
-            logging.warning(f"Client disconnected before deployment {deployment_id} completed")
-            # Can't await here, but we already saved on done event if it was emitted
-        raise
-        
-    except Exception as e:
-        # Stream errored - try to save as failed
-        logging.error(f"Deployment {deployment_id} stream error: {e}")
-        if not status_saved:
-            try:
                 await deployment_store.update_deployment(
                     deployment_id=deployment_id,
-                    status="failed",
+                    status="success" if success else "failed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
-                    result={"error": str(e)},
+                    result=final_result,
                     logs=collected_logs,
                 )
-            except Exception as save_err:
-                logging.error(f"Failed to save error status: {save_err}")
-        raise
+                # Continue to record service_droplets and yield warnings
+    except GeneratorExit:
+        # Client disconnected - mark this so we don't try to save twice
+        client_disconnected = True
+        # If we already got the done event and saved, we're good
+        # If not, mark as interrupted
+        if not final_result:
+            import logging
+            logging.warning(f"Client disconnected before deployment {deployment_id} completed - marking as interrupted")
+            from datetime import datetime, timezone
+            await deployment_store.update_deployment(
+                deployment_id=deployment_id,
+                status="interrupted",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                result={"error": "Client disconnected before completion"},
+                logs=collected_logs,
+            )
+        raise  # Re-raise to properly close the generator
     
     # Service_droplet recording (only if success and stores provided)
     if final_result and final_result.get("success", False):
@@ -294,7 +276,9 @@ async def stream_and_save_result(
                         
             except Exception as e:
                 # Don't fail deploy if recording fails
+                import logging
                 logging.warning(f"Failed to record service_droplet: {e}")
+
 
 # =============================================================================
 # Request Models

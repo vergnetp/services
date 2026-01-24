@@ -91,7 +91,7 @@ Before adding code, ask: "Could other services/projects use this?"
 
 ### Version Bumping
 When modifying `node_agent/agent_code.py`:
-- Bump `AGENT_VERSION` in `agent_code.py`
+- Bump `AGENT_VERSION` in `agent_code.py` (note there are 2 versions, one in flask and one at module level)
 - Bump `EXPECTED_AGENT_VERSION` in frontend
 - **Recreate snapshot** after changes
 
