@@ -178,10 +178,8 @@ async def stream_and_save_result(
     5. Save to service_droplets for service mesh
     6. Warn about apps needing redeploy (for stateful service deploys)
     
-    NOTE: Uses asyncio.create_task() to ensure status is saved even if client disconnects!
-    Cannot use await inside GeneratorExit handler, so we spawn background tasks.
+    NOTE: Status is saved BEFORE yielding done event to guarantee persistence!
     """
-    import asyncio
     import logging
     from datetime import datetime, timezone
     
@@ -189,28 +187,9 @@ async def stream_and_save_result(
     status_saved = False
     collected_logs = []  # Collect log entries for persistence
     
-    async def save_status(status: str, result: dict, logs: list):
-        """Background task to save deployment status - runs even if generator closes."""
-        nonlocal status_saved
-        if status_saved:
-            return  # Already saved, skip
-        try:
-            await deployment_store.update_deployment(
-                deployment_id=deployment_id,
-                status=status,
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                result=result,
-                logs=logs,
-            )
-            status_saved = True
-            logging.info(f"Deployment {deployment_id} status saved: {status}")
-        except Exception as e:
-            logging.error(f"Failed to save deployment {deployment_id} status: {e}")
-    
     try:
         async for event in stream_fn(job_config):
             event_dict = event.to_dict()
-            yield f"data: {json.dumps(event_dict)}\n\n"
             
             # Collect log/error/progress events for persistence
             if event.type in ("log", "error", "progress"):
@@ -221,38 +200,52 @@ async def stream_and_save_result(
                     **(event.data or {}),
                 })
             
-            # Capture done event - save immediately via background task
+            # For done event: SAVE FIRST, then yield
             if event.type == "done":
                 final_result = event.data
                 success = final_result.get("success", False)
-                # Spawn background task - completes even if client disconnects
-                asyncio.create_task(save_status(
-                    "success" if success else "failed",
-                    final_result,
-                    collected_logs.copy(),  # Copy to avoid mutation issues
-                ))
+                
+                # Save status BEFORE yielding - guarantees it completes
+                try:
+                    await deployment_store.update_deployment(
+                        deployment_id=deployment_id,
+                        status="success" if success else "failed",
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                        result=final_result,
+                        logs=collected_logs,
+                    )
+                    status_saved = True
+                    logging.info(f"Deployment {deployment_id} status saved: {'success' if success else 'failed'}")
+                except Exception as e:
+                    logging.error(f"Failed to save deployment {deployment_id} status: {e}")
+                
+                # NOW yield the done event
+                yield f"data: {json.dumps(event_dict)}\n\n"
+            else:
+                # All other events: yield immediately
+                yield f"data: {json.dumps(event_dict)}\n\n"
                 
     except GeneratorExit:
-        # Client disconnected - spawn background task to save interrupted status
-        # NOTE: Cannot await here! Must use create_task
-        if not status_saved and not final_result:
+        # Client disconnected
+        if not status_saved:
             logging.warning(f"Client disconnected before deployment {deployment_id} completed")
-            asyncio.create_task(save_status(
-                "interrupted",
-                {"error": "Client disconnected before completion"},
-                collected_logs.copy(),
-            ))
-        raise  # Re-raise to properly close the generator
+            # Can't await here, but we already saved on done event if it was emitted
+        raise
         
     except Exception as e:
-        # Stream errored - save as failed
+        # Stream errored - try to save as failed
         logging.error(f"Deployment {deployment_id} stream error: {e}")
         if not status_saved:
-            asyncio.create_task(save_status(
-                "failed",
-                {"error": str(e)},
-                collected_logs.copy(),
-            ))
+            try:
+                await deployment_store.update_deployment(
+                    deployment_id=deployment_id,
+                    status="failed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    result={"error": str(e)},
+                    logs=collected_logs,
+                )
+            except Exception as save_err:
+                logging.error(f"Failed to save error status: {save_err}")
         raise
     
     # Service_droplet recording (only if success and stores provided)
@@ -301,9 +294,8 @@ async def stream_and_save_result(
                         
             except Exception as e:
                 # Don't fail deploy if recording fails
-                import logging
                 logging.warning(f"Failed to record service_droplet: {e}")
-
+                
 
 # =============================================================================
 # Request Models
