@@ -40,7 +40,8 @@ DONE
 * data can persist after container restart if user save it in "/data" (volume is mounted to host as /data/{user}/{project}/{env}/{service}/data (tbc))
 * stateful services backup (to data/backup for now, can be switched to share someday) + ability to rollback
 * stateful service env injected in service rollback as well
-* Added mor elogging of ebv variables
+* Added morelogging of ebv variables
+* simplified duplicated provisioning logic, should fix bug with service_droplets missing redis (and thus env var being injected)
 
 TODO
 * show agent version very early in the streamed log so that I can abort early instead of waste time

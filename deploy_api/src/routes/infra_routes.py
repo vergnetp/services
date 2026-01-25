@@ -207,6 +207,7 @@ class ProvisionRequest(BaseModel):
 async def provision_servers(
     req: ProvisionRequest,
     user: UserIdentity = Depends(get_current_user),
+    droplet_store = Depends(get_droplet_store),
 ):
     """Provision a new server from snapshot."""
     from shared_libs.backend.infra.provisioning import AsyncProvisioningService
@@ -220,6 +221,24 @@ async def provision_servers(
         name=req.name,
         tags=req.tags,
     )
+    
+    # Save provisioned server to DB
+    if result.success and result.server:
+        try:
+            await droplet_store.create(
+                workspace_id=str(user.id),
+                do_droplet_id=str(result.server.get("id", "")),
+                name=result.server.get("name"),
+                region=req.region,
+                size=req.size,
+                ip=result.server.get("ip"),
+                snapshot_id=req.snapshot_id,
+            )
+        except Exception as e:
+            # Don't fail the provision if DB save fails - just log
+            import logging
+            logging.warning(f"Failed to save provisioned droplet to DB: {e}")
+    
     return result.to_dict()
 
 
