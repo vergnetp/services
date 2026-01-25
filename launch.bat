@@ -89,7 +89,7 @@ timeout /t 2 >nul
 
 REM ---- START WORKER ----
 echo Starting Worker...
-start "%SERVICE_NAME%_worker" cmd /k "cd /d %PROJECTS_ROOT% && python -m services.%SERVICE_NAME%.worker"
+echo start "%SERVICE_NAME%_worker" cmd /k "cd /d %PROJECTS_ROOT% && python -m services.%SERVICE_NAME%.worker"
 
 echo.
 echo ================================
