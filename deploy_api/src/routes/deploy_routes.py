@@ -201,21 +201,26 @@ async def stream_and_save_result(
                 })
             
             # Handle server_provisioned event - save new droplet to DB immediately
-            if event.type == "server_provisioned" and droplet_store and workspace_id:
-                try:
-                    data = event.data or {}
-                    await droplet_store.create(
-                        workspace_id=workspace_id,
-                        do_droplet_id=str(data.get("droplet_id", "")),
-                        name=data.get("name"),
-                        region=data.get("region"),
-                        size=data.get("size"),
-                        ip=data.get("ip"),
-                        snapshot_id=data.get("snapshot_id"),
-                    )
-                    logging.info(f"Saved provisioned droplet {data.get('name')} ({data.get('ip')}) to DB")
-                except Exception as e:
-                    logging.warning(f"Failed to save provisioned droplet: {e}")
+            if event.type == "server_provisioned":
+                logging.info(f"🔧 server_provisioned event received: {event.data}")
+                logging.info(f"🔧 droplet_store={droplet_store}, workspace_id={workspace_id}")
+                if droplet_store and workspace_id:
+                    try:
+                        data = event.data or {}
+                        await droplet_store.create(
+                            workspace_id=workspace_id,
+                            do_droplet_id=str(data.get("droplet_id", "")),
+                            name=data.get("name"),
+                            region=data.get("region"),
+                            size=data.get("size"),
+                            ip=data.get("ip"),
+                            snapshot_id=data.get("snapshot_id"),
+                        )
+                        logging.info(f"✅ Saved provisioned droplet {data.get('name')} ({data.get('ip')}) to DB")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to save provisioned droplet: {e}", exc_info=True)
+                else:
+                    logging.warning(f"⚠️ Cannot save droplet - droplet_store={droplet_store}, workspace_id={workspace_id}")
             
             # For done event: SAVE FIRST, THEN YIELD
             if event.type == "done":
