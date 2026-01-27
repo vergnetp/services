@@ -7,7 +7,6 @@ import hashlib
 import random
 from typing import Dict, List
 
-
 ADJECTIVES = ["swift", "bright", "calm", "bold", "keen", "wise", "fair", "warm", "cool", "fresh"]
 ANIMALS = ["falcon", "tiger", "eagle", "wolf", "hawk", "lion", "bear", "fox", "elk", "owl"]
 
@@ -19,6 +18,8 @@ def create_droplet_name() -> str:
     animal = random.choice(ANIMALS)    
     return f"{adj}-{animal}"
 
+def get_snapshot_base_name():
+    return f'base_snapshot'
 
 def create_vpc_name(user_id: str, region: str) -> str:
     """VPC name unique per user+region."""
@@ -78,12 +79,3 @@ def sanitize_container(s: str) -> str:
     s = re.sub(r'_+', '_', s)
     return s.strip('_')
 
-
-def parse_env_variables(env_list: List[str]) -> Dict[str, str]:
-    """['KEY=value', ...] -> {'KEY': 'value', ...}"""
-    result = {}
-    for item in env_list or []:
-        if '=' in item:
-            key, value = item.split('=', 1)
-            result[key] = value
-    return result

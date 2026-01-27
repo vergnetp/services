@@ -57,6 +57,8 @@ echo.
 
 REM ---- ENV VARS ----
 
+
+
 set "JWT_SECRET=dev-secret-change-in-prod"
 set "PYTHONUNBUFFERED=1"
 

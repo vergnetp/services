@@ -5,19 +5,18 @@ Calls node agent via HTTP for health checks.
 
 import logging
 from typing import Dict, Any
-from datetime import datetime, timezone
+
+from shared_libs.backend.cloud import AsyncDOClient
 
 from . import agent_client
 from .stores import droplets, containers
+from .utils import now_iso
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) # todo: use shared_libs.backend.log
 
 MAX_CONTAINER_RESTARTS = 3
 MAX_DROPLET_REBOOTS = 2
 
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # =============================================================================
@@ -65,7 +64,7 @@ async def check_droplet_health(db, droplet: Dict[str, Any], do_token: str):
             'failure_count': 0,
             'problematic_reason': None,
             'flagged_at': None,
-            'last_checked': _now_iso(),
+            'last_checked': now_iso(),
         })
     
     # 3. Check all containers on this droplet
@@ -111,8 +110,8 @@ async def check_container_health(db, droplet: Dict[str, Any], container: Dict[st
         await containers.update(db, container['id'], {
             'health_status': 'healthy',
             'failure_count': 0,
-            'last_healthy_at': _now_iso(),
-            'last_checked': _now_iso(),
+            'last_healthy_at': now_iso(),
+            'last_checked': now_iso(),
         })
 
 
@@ -121,9 +120,9 @@ async def mark_container_unhealthy(db, container: Dict[str, Any], reason: str):
     await containers.update(db, container['id'], {
         'health_status': 'unhealthy',
         'failure_count': container.get('failure_count', 0) + 1,
-        'last_failure_at': _now_iso(),
+        'last_failure_at': now_iso(),
         'last_failure_reason': reason,
-        'last_checked': _now_iso(),
+        'last_checked': now_iso(),
     })
     logger.warning(f"Container {container.get('container_name')} unhealthy: {reason}")
 
@@ -146,7 +145,7 @@ async def heal_container(db, droplet: Dict[str, Any], container: Dict[str, Any],
     
     try:
         await agent_client.restart_container(droplet.get('ip'), container.get('container_name'), do_token)
-        await containers.update(db, container['id'], {'last_restart_at': _now_iso()})
+        await containers.update(db, container['id'], {'last_restart_at': now_iso()})
     except Exception as e:
         logger.error(f"Failed to restart container: {e}")
 
@@ -160,7 +159,7 @@ async def handle_droplet_unreachable(db, droplet: Dict[str, Any], do_token: str)
     await droplets.update(db, droplet['id'], {
         'health_status': 'unreachable',
         'failure_count': new_count,
-        'last_failure_at': _now_iso(),
+        'last_failure_at': now_iso(),
     })
     
     if new_count > MAX_DROPLET_REBOOTS:
@@ -173,12 +172,11 @@ async def handle_droplet_unreachable(db, droplet: Dict[str, Any], do_token: str)
 
 async def heal_droplet(db, droplet: Dict[str, Any], do_token: str):
     """Reboot droplet via DigitalOcean API."""
-    try:
-        from backend.cloud import AsyncDOClient
+    try:        
         async with AsyncDOClient(api_token=do_token) as client:
             await client.reboot_droplet(droplet['do_droplet_id'])
         
-        await droplets.update(db, droplet['id'], {'last_reboot_at': _now_iso()})
+        await droplets.update(db, droplet['id'], {'last_reboot_at': now_iso()})
         logger.info(f"Reboot initiated for {droplet.get('name')}")
     except Exception as e:
         logger.error(f"Failed to reboot droplet: {e}")
@@ -190,7 +188,7 @@ async def flag_droplet_problematic(db, droplet: Dict[str, Any], reason: str):
     await droplets.update(db, droplet['id'], {
         'health_status': 'problematic',
         'problematic_reason': reason,
-        'flagged_at': _now_iso(),
+        'flagged_at': now_iso(),
     })
     logger.error(f"DROPLET FLAGGED: {droplet.get('name')} - {reason}")
     # TODO: send alert (email, slack, etc.)

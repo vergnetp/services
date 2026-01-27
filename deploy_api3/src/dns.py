@@ -1,11 +1,10 @@
 """Cloudflare DNS management."""
 
 from typing import List, Dict, Any
-
+from shared_libs.backend.cloudflare import AsyncCFClient
 
 async def setup_multi_server(cf_token: str, domain: str, ips: List[str]) -> Dict[str, Any]:
-    """Create A records for all IPs (round-robin)."""
-    from backend.cloudflare import AsyncCFClient
+    """Create A records for all IPs (round-robin)."""    
     
     async with AsyncCFClient(api_token=cf_token) as client:
         existing = await client.get_dns_records(domain)
@@ -23,8 +22,7 @@ async def setup_multi_server(cf_token: str, domain: str, ips: List[str]) -> Dict
 
 async def remove_domain(cf_token: str, domain: str) -> Dict[str, Any]:
     """Delete all DNS records for domain."""
-    from backend.cloudflare import AsyncCFClient
-    
+   
     async with AsyncCFClient(api_token=cf_token) as client:
         existing = await client.get_dns_records(domain)
         deleted = []

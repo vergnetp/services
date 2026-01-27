@@ -3,13 +3,14 @@ Stateful service URL injection with dependency warnings.
 """
 
 import json
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 from .stores import services, deployments, droplets
 from .naming import get_container_port
+from .utils import is_stateful
 
 
-def build_url(service_type: str, host: str, port: int, service_name: str) -> str:
+def _build_stateful_url(service_type: str, host: str, port: int, service_name: str) -> str:
     """Build connection URL per service type."""
     templates = {
         'redis': 'redis://{host}:{port}/0',
@@ -21,7 +22,7 @@ def build_url(service_type: str, host: str, port: int, service_name: str) -> str
     return template.format(host=host, port=port, name=service_name, type=service_type)
 
 
-def get_env_var_name(service_type: str, service_name: str) -> str:
+def _get_stateful_env_var_name(service_type: str, service_name: str) -> str:
     """redis, redis -> REDIS_URL; redis, cache -> REDIS_CACHE_URL"""
     base = {'redis': 'REDIS', 'postgres': 'DATABASE', 'mysql': 'DATABASE', 'mongodb': 'MONGODB'}.get(service_type, service_type.upper())
     
@@ -39,21 +40,20 @@ def get_env_var_name(service_type: str, service_name: str) -> str:
     return f"{base}_{suffix.upper().replace('-', '_')}_URL"
 
 
-async def get_stateful_urls(db, project_id: str, env: str, target_droplet_id: Optional[str] = None) -> Tuple[Dict[str, str], List[str]]:
-    """Get connection URLs for all stateful services. Returns (urls, warnings)."""
+async def get_stateful_urls(db, project_id: str, env: str) -> Tuple[Dict[str, str], List[str]]:
+    """Get connection URLs for all stateful services of a project. Returns (urls, warnings)."""
     urls = {}
     warnings = []
     
     project_services = await services.list_for_project(db, project_id)
-    stateful_types = ('redis', 'postgres', 'mysql', 'mongodb')
-    
+
     for svc in project_services:
         svc_type = svc.get('service_type', '').lower()
-        if svc_type not in stateful_types:
+        if not is_stateful(svc_type):
             continue
         
         svc_name = svc['name']
-        env_var = get_env_var_name(svc_type, svc_name)
+        env_var = _get_stateful_env_var_name(svc_type, svc_name)
         
         dep = await deployments.get_latest(db, svc['id'], env, status='success')
         if not dep:
@@ -72,14 +72,11 @@ async def get_stateful_urls(db, project_id: str, env: str, target_droplet_id: Op
         if not droplet:
             warnings.append(f"{svc_name} ({svc_type}) droplet not found - {env_var} not injected")
             continue
-        
-        if target_droplet_id and droplet['id'] == target_droplet_id:
-            host = 'localhost'
-        else:
-            host = droplet.get('private_ip') or droplet.get('ip') or 'localhost'
+
+        host = droplet.get('private_ip') or droplet.get('ip') or 'localhost'
         
         port = get_container_port(svc_type)
-        url = build_url(svc_type, host, port, svc_name)
+        url = _build_stateful_url(svc_type, host, port, svc_name)
         urls[env_var] = url
     
     return urls, warnings
