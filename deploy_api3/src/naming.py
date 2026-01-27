@@ -11,33 +11,33 @@ from typing import Dict, List
 ADJECTIVES = ["swift", "bright", "calm", "bold", "keen", "wise", "fair", "warm", "cool", "fresh"]
 ANIMALS = ["falcon", "tiger", "eagle", "wolf", "hawk", "lion", "bear", "fox", "elk", "owl"]
 
+USER_LENGTH = 6
 
 def create_droplet_name() -> str:
-    """Auto-generate with adjective-animal-NNN."""
+    """Auto-generate with adjective-animal."""
     adj = random.choice(ADJECTIVES)
-    animal = random.choice(ANIMALS)
-    num = random.randint(100, 999)
-    return f"{adj}-{animal}-{num}"
+    animal = random.choice(ANIMALS)    
+    return f"{adj}-{animal}"
 
 
 def create_vpc_name(user_id: str, region: str) -> str:
     """VPC name unique per user+region."""
-    return f'{user_id[:6]}_{region}'
+    return f'{user_id[:USER_LENGTH]}_{region}'
 
 
 def get_domain_name(user_id: str, project: str, service: str, env: str) -> str:
     """Domain: {user6}-{project}-{service}-{env}.digitalpixo.com"""
-    return f"{sanitize(user_id[:6])}-{sanitize(project)}-{sanitize(service)}-{sanitize(env)}.digitalpixo.com"
+    return f"{sanitize(user_id[:USER_LENGTH])}-{sanitize(project)}-{sanitize(service)}-{sanitize(env)}.digitalpixo.com"
 
 
 def get_container_name(user_id: str, project: str, service: str, env: str, version: int) -> str:
     """Container: {user6}_{project}_{service}_{env}_{version}"""
-    return sanitize_container(f'{user_id[:6]}_{project}_{service}_{env}_{version}')
+    return sanitize_container(f'{user_id[:USER_LENGTH]}_{project}_{service}_{env}_{version}')
 
 
 def get_image_name(user_id: str, project: str, service: str, env: str, version: int) -> str:
     """Image: {user6}-{project}-{service}-{env}-{version}"""
-    return f"{sanitize(user_id[:6])}-{sanitize(project)}-{sanitize(service)}-{sanitize(env)}-{version}"
+    return f"{sanitize(user_id[:USER_LENGTH])}-{sanitize(project)}-{sanitize(service)}-{sanitize(env)}-{version}"
 
 
 def get_container_port(service_type: str) -> int:
