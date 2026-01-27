@@ -1,133 +1,55 @@
-"""
-Base store class with common patterns.
+"""Base store with common CRUD operations."""
 
-All stores inherit from this to get:
-- Async/sync database access
-- Standard CRUD via EntityCRUD from _gen
-- Workspace scoping helpers
-"""
+import json
+import uuid
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
 
-from typing import Any, Dict, List, Optional
-from .._gen.crud import EntityCRUD
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _generate_id() -> str:
+    return str(uuid.uuid4())
 
 
 class BaseStore:
-    """
-    Base class for entity stores.
+    table_name: str = ""
     
-    Provides common patterns for database operations.
-    Subclasses set `table` and `soft_delete` class attributes.
-    """
+    @classmethod
+    async def get(cls, db, id: str) -> Optional[Dict[str, Any]]:
+        row = await db.fetchone(f"SELECT * FROM {cls.table_name} WHERE id = ?", (id,))
+        return dict(row) if row else None
     
-    table: str = ""
-    soft_delete: bool = False
+    @classmethod
+    async def create(cls, db, data: Dict[str, Any]) -> Dict[str, Any]:
+        data['id'] = data.get('id') or _generate_id()
+        data['created_at'] = data.get('created_at') or _now_iso()
+        data['updated_at'] = _now_iso()
+        
+        for k, v in data.items():
+            if isinstance(v, (dict, list)):
+                data[k] = json.dumps(v)
+        
+        cols = ', '.join(data.keys())
+        placeholders = ', '.join(['?' for _ in data])
+        await db.execute(f"INSERT INTO {cls.table_name} ({cols}) VALUES ({placeholders})", tuple(data.values()))
+        return data
     
-    def __init__(self):
-        if not self.table:
-            raise ValueError(f"{self.__class__.__name__} must define 'table' attribute")
-        self._crud = EntityCRUD(self.table, soft_delete=self.soft_delete)
+    @classmethod
+    async def update(cls, db, id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        data['updated_at'] = _now_iso()
+        
+        for k, v in data.items():
+            if isinstance(v, (dict, list)):
+                data[k] = json.dumps(v)
+        
+        sets = ', '.join([f"{k} = ?" for k in data.keys()])
+        await db.execute(f"UPDATE {cls.table_name} SET {sets} WHERE id = ?", (*data.values(), id))
+        return await cls.get(db, id)
     
-    # =========================================================================
-    # Standard CRUD - delegates to EntityCRUD
-    # =========================================================================
-    
-    async def get(self, db: Any, entity_id: str) -> Optional[Dict[str, Any]]:
-        """Get entity by ID."""
-        return await self._crud.get(db, entity_id)
-    
-    async def create(self, db: Any, data: Any, entity_id: str = None) -> Dict[str, Any]:
-        """Create new entity."""
-        return await self._crud.create(db, data, entity_id=entity_id)
-    
-    async def update(self, db: Any, entity_id: str, data: Any) -> Optional[Dict[str, Any]]:
-        """Update entity by ID."""
-        return await self._crud.update(db, entity_id, data)
-    
-    async def save(self, db: Any, entity: Dict[str, Any]) -> Dict[str, Any]:
-        """Save entity (upsert). Entity must have 'id'."""
-        return await self._crud.save(db, entity)
-    
-    async def delete(self, db: Any, entity_id: str, permanent: bool = None) -> bool:
-        """Delete entity."""
-        return await self._crud.delete(db, entity_id, permanent=permanent)
-    
-    async def list(
-        self,
-        db: Any,
-        where_clause: str = None,
-        params: tuple = None,
-        order_by: str = None,
-        limit: int = 100,
-        offset: int = 0,
-        workspace_id: str = None,
-        include_deleted: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """List entities with optional filtering."""
-        return await self._crud.list(
-            db,
-            where_clause=where_clause,
-            params=params,
-            order_by=order_by,
-            limit=limit,
-            offset=offset,
-            workspace_id=workspace_id,
-            include_deleted=include_deleted,
-        )
-    
-    async def find_one(
-        self,
-        db: Any,
-        where_clause: str,
-        params: tuple = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Find single entity matching criteria."""
-        return await self._crud.find_one(db, where_clause, params)
-    
-    async def count(
-        self,
-        db: Any,
-        where_clause: str = None,
-        params: tuple = None,
-        workspace_id: str = None,
-    ) -> int:
-        """Count entities matching criteria."""
-        return await self._crud.count(db, where_clause, params, workspace_id)
-
-
-class WorkspaceScopedStore(BaseStore):
-    """
-    Store for workspace-scoped entities.
-    
-    Adds workspace_id helpers for common patterns.
-    """
-    
-    async def list_for_workspace(
-        self,
-        db: Any,
-        workspace_id: str,
-        order_by: str = None,
-        limit: int = 100,
-        offset: int = 0,
-        include_deleted: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """List all entities for a workspace."""
-        return await self.list(
-            db,
-            workspace_id=workspace_id,
-            order_by=order_by,
-            limit=limit,
-            offset=offset,
-            include_deleted=include_deleted,
-        )
-    
-    async def get_for_workspace(
-        self,
-        db: Any,
-        entity_id: str,
-        workspace_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Get entity by ID, verifying workspace ownership."""
-        entity = await self.get(db, entity_id)
-        if entity and entity.get("workspace_id") == workspace_id:
-            return entity
-        return None
+    @classmethod
+    async def delete(cls, db, id: str) -> bool:
+        await db.execute(f"DELETE FROM {cls.table_name} WHERE id = ?", (id,))
+        return True
