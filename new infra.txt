@@ -1,0 +1,1058 @@
+################
+## TODO #######
+################
+
+# 1. Think about make db queries more efficient (at least get ip and get private ips should be one call only)
+
+
+
+################
+## AGENT #######
+################
+
+# Asumptions
+# nginx is in systemd, up and running, and the 2 certificates files have been copied to /etc/nginx  (snapshot)
+
+
+def configure_nginx(private_ips, host_port, domain):
+    short = domain.replace('.digitalpixo.com', '')
+    conf_path = f'/etc/nginx/sites-enabled/{short}.conf'
+    
+    # Build upstream servers list
+    upstream_servers = '\n    '.join(f'server {ip}:{host_port};' for ip in private_ips)
+    
+    content = f'''upstream {short}_backend {{
+    {upstream_servers}
+}}
+
+server {{
+    listen 443 ssl;
+    server_name {domain};
+    
+    ssl_certificate /etc/nginx/certificate.pem;
+    ssl_certificate_key /etc/nginx/certificate.key;
+    
+    location / {{
+        proxy_pass http://{short}_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }}
+}}'''
+    
+    with open(conf_path, 'w') as f:
+        f.write(content)
+    
+    subprocess.run(['nginx', '-s', 'reload'], check=True)
+
+def remove_container(container_name):
+	#simple docker command to stop and delete container
+
+def upload(image):
+	#probably stream image (to avoid blowing up memory)
+
+def start_container(container_name,image_name,env_variables,container_port,host_port):
+	# will do: docker run -d --name {container_name} -p {host_port}:{container_port} -e VAR1=value1 -e VAR2=value2 -v /data:/app/data --restart unless-stopped {image_name}
+	# todo: might want to allow for custom volumes on top of /data, and maybe custom data
+	# todo: if no port (e.g. worker), shall we remove teh port mapping or -p none:non works?
+
+def health(container_name):
+	'''
+	parse log for error and build list of up to 5 errors
+	if container_name is not running: parse log for error and return{'status':'unhealthy','reason':'not running','details':errors}	
+        get container info
+	inspect and get the host port and ping
+        if timeout:  return{'status':'unhealthy','reason':'running but timed out','details':errors,'container_info':info}
+	if len(errors)>0 return {'status':'degraded','reason':'running fine but some errors can be found in the log','details':errors,'container_info':info}
+	return {'status':'healthy','container_info':info}
+
+	'''		
+	
+
+################
+## Deploy_api ##
+################
+
+
+
+def get_domain_name(user_id,project_name,service_name,env):
+	def sanitize(s): 
+        	return re.sub(r'[^a-z0-9-]', '-', s.lower()).strip('-')
+	return f'{sanitize(user_id[:6])}-{sanitize(project_name)}-{sanitize(service_name)}-{sanitize(env)}.digitalpixo.com}
+
+
+def configure_nginx(droplet_ip, private_ips #of all the droplet in the scope of the service#, host_port, domain):
+	call {droplet_ip}:9999/configure_nginx?private_ips=private_ips&host_port=host_port&domain=domain
+
+def clear_old_container_on_droplet(droplet_ip, container_name):
+    """Remove container from single droplet (Docker only, no DB)"""
+    call {droplet_ip}:9999/remove_container?container_name=container_name
+
+
+def parse_env_variables(env_variables):
+    """['KEY=value', ...] → {'KEY': 'value', ...}"""
+    return dict(kv.split('=', 1) for kv in env_variables if '=' in kv)
+
+def create_droplet_name():
+	'''Auto-generate with attribute and animals combination'''
+
+def create_vpc_name(user_id,region)
+	'''think we just need it to be unique for a user (in case shared droplet)'''
+	return f'{user_id[:6]}_{region}'
+
+def get_container_port(service_type):
+    """Fixed per service type - what the app listens on INSIDE container"""
+    return {'webservice': 8000, 'redis': 6379, 'postgres': 5432}[service_type]
+
+def get_host_port(user_id, project_name, service_name, env, version,service_type='webservice'):
+    """Unique per deployment - for blue-green coexistence"""
+    if service_type=='webservice': 
+    	# Hash to get port in safe range (e.g., 10000-60000)
+    	return hash(...) % 50000 + 10000
+    else:
+	return get_container_port(service_type)
+
+def get_container_name(user_id,project_name,service_name,env,version):
+	def sanitize(cont_name): return replace(cont_name,'-','_') #etc.
+	return sanitize(f'{user_id[:6]}_{project_name}_{service_name}_{env}_{str(version)})
+
+def get_image_name(user_id,project_name,service_name,env,version):
+	def sanitize(image_name): #todo (cannot have "_"?)
+	return sanitize(f'{user_id[:6]}-{project_name}-{service_name}-{env}-{str(version)})
+
+def create_droplet(user_id, snapshot_id, region, size, name=None):
+    if name is None: name = create_droplet_name()
+    
+    # 1. Ensure VPC exists FIRST
+    vpc_name = create_vpc_name(user_id, region)
+    vpc_uuid = do.ensure_vpc(vpc_name, region)  # Creates if not exist, returns UUID
+    
+    # 2. Create droplet IN the VPC
+    res = do.create_droplet(snapshot_id, region, size, name, vpc_uuid=vpc_uuid)
+    
+    # 3. Save to DB
+    droplet_id = store.save_droplet(
+        do_droplet_id=res.do_droplet_id,
+        name=name,
+        region=region,
+        size=size,
+        snapshot_id=snapshot_id,
+        ip=res.ip,
+        private_ip=res.private_ip,  # VPC private IP
+        vpc_uuid=vpc_uuid,
+        status='active',
+        created_at=now(),
+        reboot_attempts=0,
+        user_id=user_id
+    )
+    return droplet_id
+
+def rollback(user_id, service_id, target_version=None, env='prod'):
+    """
+    Rollback to a previous version.
+    If target_version is None, rollback to last successful version.
+    """
+    try:
+        # Get service info (todel?)
+        stream('fetching service info...')
+        service = store.get_service(service_id)
+        project = store.get_project(service.project_id)
+        stream(f'rolling back {project.name}/{service.name}')
+
+        # Find current version details
+        stream('finding current version...')
+        current_deployment = store.get_last_successful_deployment(service_id=service_id, env=env)
+	current_version=current_deployment['version']
+	current_droplet_ids=current_deployment['droplet_ids']
+        if current_version is None:
+            raise Exception('No successful deployment to rollback from')
+        stream(f'current version is v{current_version} deployed on {len(current_droplet_ids)} servers.')
+
+        # Find target version
+	stream('finding target version deployment's details...')
+        if target_version is None:	    
+            target_deployment = store.get_last_successful_deployment(service_id=service_id, env=env, before_version=current_version)
+	    if target_deployment is None:
+                raise Exception('No previous version to rollback to')
+	    target_version=target_deployment['version']
+            if target_version is None:
+                raise Exception('No previous version to rollback to')
+	else:
+	    target_deployment = store.get_last_successful_deployment(service_id=service_id, env=env, version=target_version)
+ 	    if target_deployment is None:
+                raise Exception('No previous version to rollback to')
+	user_id=target_deployment['user_id']
+	triggered_at=target_deployment['triggered_at']
+	target_drolet_ids=target_deployment['droplet_ids']
+	target_image_name=target_deployment['image_name']
+	target_env_variables=target_deployment['env_variables']
+        stream(f'will rollback to v{target_version} - deployed by {user_id} on {triggered_at}.')
+
+	deploy(user_id=user_id,project_name=project.name,service_name=service.name,service_description=None,service_type=service.service_type,image=None,image_name=target_image_name,env_variables=target_env_variables,env=env,existing_droplets_ids=current_droplet_ids)
+
+
+def deploy_to(droplet_id,droplet_ip,deployment_id,container_name,image_name,image,env_variables,container_port,host_port):
+   try:
+	stream(f'deploying to server {droplet_ip}...')
+	if image:
+	   stream(f'   {droplet_ip} - uploading the image...')
+	   call {droplet_ip}:9999/upload?image=image&name=image_name
+	   stream(f'   {droplet_ip} - {image_name} uploaded.')
+	stream(f'   {droplet_ip} - starting the container...')
+	call {droplet_ip}:9999/start_container?container_name=container_name&image_name=image_name&env_variables=env_variables&container_port=container_port&host_port=host_port
+        stream(f'   {droplet_ip} - {container_name} started.')
+	status=call {droplet_ip}:9999/health?container_name=container_name
+	is status=='healthy': 
+	   stream(f'deployed to server {droplet_ip}.')
+   	   store.update_container(container_name=container_name,droplet_id=droplet_id,deploymeent_id=deployment_id,status='healthy',last_checked=now())
+	   return {status:'success',error:None}
+	else:
+	   stream(f'failed to deploy to server {droplet_ip}: {status.error}')
+	   store.update_container(container_name=container_name,droplet_id=droplet_id,deploymeent_id=deployment_id,status='unhealthy',error=status.error,last_checked=now())
+	return {status:'failed',error:status.error}
+   except e:
+	   stream(f'failed to deploy to server {droplet_ip}: {str(e)}')
+ 	   store.update_container(container_name=container_name,droplet_id=droplet_id,deploymeent_id=deployment_id,status='unhealthy',error=str(e),last_checked=now())
+	   return {status:'failed',error:str(e)}
+	
+
+def deploy(user_id,project_name,service_name,service_description,service_type,image,image_name,env_variables,env,existing_droplets_ids=[],new_droplets_nb=0,new_droplets_region='lon1',new_droplets_size='s1_m2',new_droplets_snapshot_id='base'):
+   try:
+	if len(existing_droplets)==0 and new_droplets_nb==0: raise	
+	if new_droplets_nb >0:
+		stream(f'Provision {new_droplets_nb} new droplets in parralel, can take 1 minute...')
+		new_droplets=await parralel(create_droplet(user_id=user_id,snapshot_id=new_droplets_snapshot_id,region=new_droplets_region,size=new_droplets_size)
+		stream(f'{new_droplets_nb} created in {now()-start} seconds')
+	stream('creating  project if needed...')
+	project_id=store.create_project_if_not_exist(project_name)
+	stream('project handled.')
+	stream('creating  service if needed...')
+	service_id=store.create_service_if_not_exist(project_id,service_name,service_description,service_type,{'redis':6379,...}[service_type],service_type not in ['webservice','worker','schedule'])
+	stream('service handled.')
+	stream('finding target ips..')
+	existing_droplets_ips=store.get_ips(existing_droplets_ids)
+	existing_droplets_private_ips=store.get_private_ips(existing_droplets_ids)
+	ids=existing_droplets_ids+new_droplets.ids
+	ips=existing_droplets_ips+new_droplets.ips
+	private_ips=existing_droplets_private_ip+new_droplets.private_ips
+	stream(f'target ips will be: {ips}')
+	stream('finding version...')
+	last_version=store.get_version(service_id=service_id,env=env,status='success')||0
+	version=last_version+1
+	stream(f'new version will be v{version}.')
+	stream('finding container name..')
+	last_container_name=get_container_name(user_id,project_name,service_name,env,last_version) if last_version>0 else None
+	last_host_port=get_host_port(user_id,project_name,service_name,env,last_version,service_type) if last_version>0 else None
+	container_name=get_container_name(user_id,project_name,service_name,env,version)
+	image_name=image_name||get_image_name(user_id,project_name,service_name,env,version) # for roll_Back image is None but image_name is known - othereway round for a release.
+	host_port=get_host_port(user_id,project_name,service_name,env,version,service_type)
+        container_port=get_container_port(service_type)
+	stream('the container will be {container_name} and the image {image_name}.')
+	stream(f'saving deployment details in the database..')
+	deployment_id=store.save_deployment(is_rollback=False,service_id=service_id,image_name=image_name,env_variables=env_variables,droplet_ids=ids,env=env,version=version,trigerred_by=user_id,trigerred_at=now(),status='pending',error=None,log=stream.flush())
+	for id in ids: #in a transaction.
+		store.save_container(container_name=container_name,droplet_id=id,deployment_id=deployment_id,status='to be deployed',last_checked=now())	
+	stream('database ready')
+
+	if service_type not in ('webservice','worker','schedule') and last_version>0: # stateful
+		stream('cleaning the old containers, expect some downtime...')
+	  	any_error=await parralel(clear_old_container_on_droplet(ip in ips,last_container_name)) #parralel but only one droplet for sateful service, really
+	  	if any_error:
+	     		stream(f'could not clean all old containers: {any_error}.') # starting new containers with same port will fail so let's stop here..
+			raise Exception(f'could not clean all old containers: {any_error}.')
+	  	else:
+	     		stream('old containers cleaned.')
+
+	stream(f'deploying in parallel..')
+	statuses=await parralel(deploy_to(id in ids,ip in ips,deployment_id,container_name,image_name,image,env_variables,container_port,host_port))	
+	stream('deployment done.')
+	stream('checking status...')
+	nb=count(statuses=='success')
+	if nb==len(ips):
+	  stream('all containers are healthy.')
+	  if service_type=='webservice':
+	     stream('switching the domain to point to the new containers (via nginx)...')
+	     domain=get_domain_name(user_id,project_name,service_name,env)
+	     any_error=await parralel(configure_nginx(ip in ips,private_ips,host_port,domain)
+	     if any_error:
+	        stream(f'domain switched failed: {any_error}')
+	        store.save_deployment(id=deployment_id,status='switch_failed',error=any_error,log=stream.flush())
+	     else:
+	        stream('domain switched - new version is LIVE!')
+	    cloudflare.ensure_domain(domain,ips) # ensure the domain exist and has the A record of the ips (deleting any other) - not awaited, can run in the background because external call.
+	  if service_type in ('webservice','worker','schedule') and last_version>0:
+	     stream('cleaning the old containers...')
+	     any_error=await parralel(clear_old_container_on_droplet(ip in ips,last_container_name)) 
+	     if any_error:
+	        stream(f'could not clean all old containers: {any_error}.')
+	     else:
+	        stream('old containers cleaned.')
+	  store.save_deployment(id=deployment_id,status='success',log=stream.flush())
+	  stream('service deployed to all servers.')
+	elif nb==0: 
+	   store.save_deployment(id=deployment_id,status='failed',error=statuses[0].error,log=stream.flush())
+	   stream('deployment failed on all servers,with error such as {statuses[0].error}.')
+	else:
+	   i=index of first failed statuses
+	   store.save_deployment(id=deployment_id,status='partial',error=statuses[i].error,log=stream.flush())#user might want to clean the new containers.
+	   stream('deployment failed on some servers, with error such as {statuses[i].error}.')
+   except e:
+	stream(f'Error while deploying: {e}')
+	store.save_deployment(id=deployment_id,status='failed',error=str(e),log=stream.flush())
+
+# =============================================================================
+# STATEFUL URL INJECTION
+# =============================================================================
+
+def get_stateful_urls(project_id, env, target_droplet_id=None):
+    urls = {}
+    
+    stateful_deployments = store.get_last_successful_deployments_by_project(
+        project_id=project_id, env=env, is_stateful=True
+    )
+
+    for dep in stateful_deployments:
+        service = store.get_service(dep['service_id'])
+        droplet = store.get_droplet(dep['droplet_ids'][0])
+
+        # Same droplet → localhost, otherwise → private_ip
+        if target_droplet_id and droplet['id'] == target_droplet_id:
+            host = 'localhost'
+        else:
+            host = droplet['private_ip']
+
+        # FIXED port - no version calculation needed!
+        port = get_container_port(service['service_type'])  # 6379, 5432, etc.
+
+        url = build_url(service['service_type'], host, port, service['name'])
+        env_var = get_env_var_name(service['service_type'], service['name'])
+        urls[env_var] = url
+
+    return urls
+
+
+def build_url(service_type, host, port, service_name):
+    """Build connection URL per service type"""
+    templates = {
+        'redis': 'redis://{host}:{port}/0',
+        'postgres': 'postgresql://postgres:postgres@{host}:{port}/{name}',
+        'mysql': 'mysql://root:root@{host}:{port}/{name}',
+        'mongodb': 'mongodb://{host}:{port}/{name}',
+    }
+    template = templates.get(service_type, '{type}://{host}:{port}')
+    return template.format(host=host, port=port, name=service_name, type=service_type)
+
+
+def get_env_var_name(service_type, service_name):
+    """
+    redis, redis → REDIS_URL
+    redis, cache → REDIS_CACHE_URL
+    redis, redis-cache → REDIS_CACHE_URL
+    postgres, postgres → DATABASE_URL
+    postgres, postgres-analytics → DATABASE_ANALYTICS_URL
+    """
+    base = {'redis': 'REDIS', 'postgres': 'DATABASE', 'mysql': 'DATABASE', 'mongodb': 'MONGODB'}.get(service_type, service_type.upper())
+    
+    # If name == type, just BASE_URL
+    if service_name.lower() == service_type.lower():
+        return f'{base}_URL'
+    
+    # Strip type prefix if present: "redis-cache" → "cache"
+    name_lower = service_name.lower()
+    type_lower = service_type.lower()
+    
+    if name_lower.startswith(type_lower + '-'):
+        suffix = service_name[len(service_type) + 1:]
+    elif name_lower.startswith(type_lower + '_'):
+        suffix = service_name[len(service_type) + 1:]
+    else:
+        suffix = service_name
+    
+    return f'{base}_{suffix.upper().replace("-", "_")}_URL'
+
+# =============================================================================
+# DEPLOY WITH AUTO-INJECTION (wrapper)
+# =============================================================================
+
+def deploy_with_injection(user_id, project_name, service_name, service_type, image, env_variables, env, existing_droplet_ids, **kwargs):
+    """
+    Thin wrapper: inject stateful URLs then call deploy()
+    """
+    if service_type == 'webservice':
+        project = store.get_project_by_name(project_name, user_id)
+        if project:
+            stateful_urls = get_stateful_urls(project['id'], env, target_droplet_id=existing_droplet_ids[0] if existing_droplet_ids else None)
+            
+            # Merge: user's env_variables take precedence
+            merged = {**stateful_urls, **parse_env_variables(env_variables)}
+            env_variables = [f'{k}={v}' for k, v in merged.items()]
+            
+            if stateful_urls:
+                stream(f'auto-injected: {list(stateful_urls.keys())}')
+
+    return deploy(user_id, project_name, service_name, service_type=service_type, image=image, env_variables=env_variables, env=env, existing_droplet_ids=existing_droplet_ids, **kwargs)
+
+
+def parse_env_variables(env_variables):
+    """['KEY=value', ...] → {'KEY': 'value', ...}"""
+    return dict(kv.split('=', 1) for kv in env_variables if '=' in kv)
+
+
+# =============================================================================
+# SCALE (add/remove droplets)
+# =============================================================================
+
+def scale(user_id, service_id, env, target_count, region='lon1', size='s1_m2', snapshot_id='base'):
+    """
+    Scale service to target_count droplets.
+    - If target > current: provision new droplets, deploy to them
+    - If target < current: remove excess droplets (stop containers, remove from deployment)
+    - If target == current: no-op
+    """
+    try:
+        service = store.get_service(service_id)
+        project = store.get_project(service['project_id'])
+        
+        current_deployment = store.get_last_successful_deployment(service_id=service_id, env=env)
+        if not current_deployment:
+            raise Exception('No successful deployment to scale')
+        
+        current_ids = current_deployment['droplet_ids']
+        current_count = len(current_ids)
+        
+        stream(f'scaling {project["name"]}/{service["name"]} from {current_count} to {target_count} droplets')
+
+        if target_count == current_count:
+            stream('already at target count, nothing to do.')
+            return
+
+        elif target_count > current_count:
+            # SCALE UP: provision new droplets, deploy current version to them
+            new_count = target_count - current_count
+            stream(f'scaling UP: adding {new_count} droplets')
+            
+            deploy(
+                user_id=user_id,
+                project_name=project['name'],
+                service_name=service['name'],
+                service_description=None,
+                service_type=service['service_type'],
+                image=None,  # reuse existing image
+                image_name=current_deployment['image_name'],
+                env_variables=current_deployment['env_variables'],
+                env=env,
+                existing_droplet_ids=current_ids,
+                new_droplets_nb=new_count,
+                new_droplets_region=region,
+                new_droplets_size=size,
+                new_droplets_snapshot_id=snapshot_id
+            )
+
+        else:
+            # SCALE DOWN: remove excess droplets
+            remove_count = current_count - target_count
+            stream(f'scaling DOWN: removing {remove_count} droplets')
+            
+            # Keep first N, remove the rest (LIFO - last added, first removed)
+            keep_ids = current_ids[:target_count]
+            remove_ids = current_ids[target_count:]
+            remove_ips = store.get_ips(remove_ids)
+            
+            container_name = get_container_name(
+                user_id, project['name'], service['name'], env, 
+                current_deployment['version']
+            )
+            
+            # Stop containers on droplets being removed
+            stream('stopping containers on removed droplets...')
+            await parallel(
+                clear_old_container_on_droplet(ip, container_name)
+                for ip in remove_ips
+            )
+            
+            # Update deployment record with new droplet list
+            stream('updating deployment record...')
+            store.update_deployment(
+                id=current_deployment['id'],
+                droplet_ids=keep_ids
+            )
+            
+            # Remove container records for removed droplets
+            for droplet_id in remove_ids:
+                store.delete_container(container_name=container_name, droplet_id=droplet_id)
+            
+            # Update nginx on remaining droplets (if webservice)
+            if service['service_type'] == 'webservice':
+                stream('updating nginx on remaining droplets...')
+                keep_ips = store.get_ips(keep_ids)
+		keep_private_ips = store.get_private_ips(keep_ids)
+                host_port = get_host_port(user_id, project['name'], service['name'], env, current_deployment['version'],service['service_type'])
+		domain=get_domain_name(user_id, project['name'], service['name'], env)
+                await parallel(
+                    configure_nginx(ip, keep_private_ips, host_port,domain)
+                    for ip in keep_ips
+                )
+            
+            stream(f'scaled down to {target_count} droplets.')
+            
+    except e:
+        stream(f'Error while scaling: {e}')
+        raise
+	
+def delete_droplet(user_id, droplet_id):
+    """
+    Delete a droplet. Always forceful - destroys all containers on it.
+    """
+    droplet = store.get_droplet(droplet_id)
+    if not droplet:
+        raise Exception('Droplet not found')
+    
+    if droplet['user_id'] != user_id:
+        raise Exception('Not authorized')
+    
+    stream(f'deleting droplet {droplet["name"]} ({droplet["ip"]})...')
+    
+    containers = store.get_containers_by_droplet(droplet_id)
+    
+    if containers:
+        stream(f'{len(containers)} containers will be destroyed.')
+        
+        deployments_affected = set(c['deployment_id'] for c in containers)
+        
+        for dep_id in deployments_affected:
+            dep = store.get_deployment(dep_id)
+            service = store.get_service(dep['service_id'])
+            
+            if service['service_type'] != 'webservice':
+                continue
+            
+            project = store.get_project(service['project_id'])
+            domain = get_domain_name(user_id, project['name'], service['name'], dep['env'])
+            remaining_ids = [d for d in dep['droplet_ids'] if d != droplet_id]
+            
+            if not remaining_ids:
+                stream(f'  no droplets remain for {domain}, removing DNS...')
+                cloudflare.delete_domain(domain)
+                continue
+            
+            remaining_ips = store.get_ips(remaining_ids)
+            remaining_private_ips = store.get_private_ips(remaining_ids)
+            host_port = get_host_port(user_id, project['name'], service['name'], dep['env'], dep['version'], service['service_type'])
+            
+            # Update nginx on remaining droplets (parallelizable)
+            stream(f'  updating nginx on {len(remaining_ids)} droplets...')
+            await parallel(configure_nginx(ip, remaining_private_ips, host_port, domain) for ip in remaining_ips)
+            
+            # Update Cloudflare - point domain to remaining IPs only
+            stream(f'  updating DNS for {domain}...')
+            cloudflare.ensure_domain(domain, remaining_ips)
+        
+        store.delete_containers_by_droplet(droplet_id)
+    
+    stream('deleting from DigitalOcean...')
+    do.delete_droplet(droplet['do_droplet_id'])
+    
+    store.delete_droplet(droplet_id)
+    stream('droplet deleted.')
+
+
+def delete_service(user_id, service_id, env=None):
+    """
+    Delete a service (all envs, or specific env).
+    """
+    service = store.get_service(service_id)
+    if not service:
+        raise Exception('Service not found')
+    
+    project = store.get_project(service['project_id'])
+    
+    if project['user_id'] != user_id:
+        raise Exception('Not authorized')
+    
+    stream(f'deleting service {project["name"]}/{service["name"]}' + (f' ({env})' if env else ' (all envs)'))
+    
+    deployments = store.get_deployments(service_id=service_id, env=env)
+    
+    if not deployments:
+        stream('no deployments found.')
+        if not env:
+            store.delete_service(service_id)
+            stream('service deleted.')
+        return
+    
+    # Collect containers to stop: [(ip, container_name), ...]
+    containers_to_remove = []
+    for dep in deployments:
+        ips = store.get_ips(dep['droplet_ids'])
+        container_name = get_container_name(user_id, project['name'], service['name'], dep['env'], dep['version'])
+        for ip in ips:
+            containers_to_remove.append((ip, container_name))
+    
+    # Stop containers (parallelizable - different droplets)
+    stream(f'stopping {len(containers_to_remove)} containers...')
+    await parallel(clear_old_container_on_droplet(ip, cn) for ip, cn in containers_to_remove)
+    
+    # Remove DNS (only for webservices)
+    if service['service_type'] == 'webservice':
+        envs_used = set(dep['env'] for dep in deployments)
+        domains = [get_domain_name(user_id, project['name'], service['name'], e) for e in envs_used]
+        
+        stream(f'removing DNS: {domains}')
+        await parallel(cloudflare.delete_domain(d) for d in domains)
+    
+    # Clean DB (sequential - safe)
+    store.delete_containers_by_service(service_id, env=env)
+    store.delete_deployments_by_service(service_id, env=env)
+    
+    if not env:
+        store.delete_service(service_id)
+        stream('service deleted.')
+    else:
+        stream(f'env {env} deleted.')
+
+
+def delete_project(user_id, project_id):
+    """
+    Delete project and ALL its services.
+    Services deleted sequentially (safer for DB).
+    """
+    project = store.get_project(project_id)
+    if not project:
+        raise Exception('Project not found')
+    
+    if project['user_id'] != user_id:
+        raise Exception('Not authorized')
+    
+    stream(f'deleting project {project["name"]}...')
+    
+    services = store.get_services_by_project(project_id)
+    
+    # Sequential - each delete_service does its own parallel work internally
+    for service in services:
+        delete_service(user_id, service['id'], env=None)
+    
+    store.delete_project(project_id)
+    stream('project deleted.')
+
+
+# =============================================================================
+# HEALTH MONITORING & HEALING
+# =============================================================================
+
+MAX_CONTAINER_RESTARTS = 3
+MAX_DROPLET_REBOOTS = 2
+
+
+def check_health_all():
+    """
+    Main health check loop. Called by background worker.
+    Checks ALL droplets (healthy, unreachable, problematic - all of them).
+    """
+    droplets = store.get_all_droplets()  # All non-deleted droplets
+    
+    for droplet in droplets:
+        check_droplet_health(droplet)
+
+
+def check_droplet_health(droplet):
+    """
+    Check droplet reachability and all its containers.
+    Triggers healing if needed.
+    """
+    ip = droplet['ip']
+    
+    # 1. Check if agent is reachable
+    try:
+        resp = http.get(f"{ip}:9999/ping", timeout=10)
+        agent_ok = resp.ok and resp.json().get('status') == 'ok'
+    except:
+        agent_ok = False
+    
+    if not agent_ok:
+        handle_droplet_unreachable(droplet)
+        return
+    
+    # 2. Agent OK - reset ALL failure state (recovers from unreachable/problematic)
+    if droplet['failure_count'] > 0 or droplet['health_status'] != 'healthy':
+        store.update_droplet(droplet['id'], 
+            health_status='healthy',
+            failure_count=0,
+            problematic_reason=None,
+            flagged_at=None
+        )
+    
+    # 3. Check all containers on this droplet
+    containers = store.get_containers_by_droplet(droplet['id'])
+    
+    for container in containers:
+        check_container_health(droplet, container)
+
+
+def check_container_health(droplet, container):
+    """
+    Check single container health via node agent.
+    """
+    ip = droplet['ip']
+    container_name = container['container_name']
+    
+    try:
+        resp = http.get(f"{ip}:9999/containers/{container_name}/status")
+        status = resp.json() if resp.ok else None
+    except:
+        status = None
+    
+    if not status:
+        mark_container_unhealthy(container, 'not_found')
+        return
+    
+    state = status.get('state')
+    health = status.get('health_status', 'none')
+    
+    if state != 'running':
+        mark_container_unhealthy(container, f'state:{state}')
+        heal_container(droplet, container)
+        return
+    
+    if health == 'unhealthy':
+        mark_container_unhealthy(container, 'health_check_failed')
+        heal_container(droplet, container)
+        return
+    
+    # Healthy - reset failure count
+    if container['failure_count'] > 0 or container['health_status'] != 'healthy':
+        store.update_container(container['id'], 
+            health_status='healthy',
+            failure_count=0,
+            last_healthy_at=now()
+        )
+
+
+def mark_container_unhealthy(container, reason):
+    """
+    Record container failure.
+    """
+    store.update_container(container['id'],
+        health_status='unhealthy',
+        failure_count=container['failure_count'] + 1,
+        last_failure_at=now(),
+        last_failure_reason=reason
+    )
+
+
+# =============================================================================
+# HEALING
+# =============================================================================
+
+def heal_container(droplet, container):
+    """
+    Attempt to restart unhealthy container.
+    If too many failures, flag droplet as problematic.
+    """
+    if container['failure_count'] >= MAX_CONTAINER_RESTARTS:
+        log.warning(f"Container {container['container_name']} failed {container['failure_count']} times, flagging droplet")
+        flag_droplet_problematic(droplet, f"container {container['container_name']} keeps failing")
+        return
+    
+    log.info(f"Restarting container {container['container_name']} on {droplet['ip']}")
+    
+    try:
+        http.post(f"{droplet['ip']}:9999/containers/{container['container_name']}/restart")
+        store.update_container(container['id'], last_restart_at=now())
+    except Exception as e:
+        log.error(f"Failed to restart container: {e}")
+
+
+def handle_droplet_unreachable(droplet):
+    """
+    Droplet agent not responding. Increment failure count, maybe reboot.
+    """
+    new_count = droplet['failure_count'] + 1
+    
+    store.update_droplet(droplet['id'],
+        health_status='unreachable',
+        failure_count=new_count,
+        last_failure_at=now()
+    )
+    
+    if new_count > MAX_DROPLET_REBOOTS:
+        flag_droplet_problematic(droplet, 'unreachable after reboots')
+        return
+    
+    log.warning(f"Droplet {droplet['name']} unreachable (attempt {new_count}), rebooting...")
+    heal_droplet(droplet)
+
+
+def heal_droplet(droplet):
+    """
+    Reboot droplet via DigitalOcean API.
+    """
+    try:
+        do.reboot_droplet(droplet['do_droplet_id'])
+        store.update_droplet(droplet['id'], last_reboot_at=now())
+        log.info(f"Reboot initiated for {droplet['name']}")
+    except Exception as e:
+        log.error(f"Failed to reboot droplet: {e}")
+        flag_droplet_problematic(droplet, f'reboot failed: {e}')
+
+
+def flag_droplet_problematic(droplet, reason):
+    """
+    Mark droplet as needing manual intervention.
+    """
+    store.update_droplet(droplet['id'],
+        health_status='problematic',
+        problematic_reason=reason,
+        flagged_at=now()
+    )
+    log.error(f"DROPLET FLAGGED: {droplet['name']} - {reason}")
+    # TODO: send alert (email, slack, etc.)
+
+
+########## MANIFEST #################
+
+
+name: deploy_api
+version: "1.0.0"
+
+database:
+  type: sqlite
+  path: ${DATABASE_PATH:-./data/deploy.db}
+
+auth:
+  jwt_secret: ${JWT_SECRET}
+
+redis:
+  url: ${REDIS_URL:-}
+
+entities:
+  # =============================================================================
+  # PROJECTS - Workspace-level grouping
+  # =============================================================================
+  - name: project
+    workspace_scoped: true
+    soft_delete: true
+    fields:
+      - name: name
+        type: string
+        required: true
+
+  # =============================================================================
+  # SERVICES - Deployable units within projects
+  # =============================================================================
+  - name: service
+    soft_delete: true
+    fields:
+      - name: project_id
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: description
+        type: text
+      - name: service_type
+        type: string
+        required: true  # webservice, worker, schedule, redis, postgres, mysql, mongodb
+
+  # =============================================================================
+  # DROPLETS - Server inventory
+  # =============================================================================
+  - name: droplet
+    workspace_scoped: true
+    soft_delete: true
+    fields:
+      - name: do_droplet_id
+        type: int
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: region
+        type: string
+        required: true
+      - name: size
+        type: string
+        required: true
+      - name: snapshot_id
+        type: string
+      - name: ip
+        type: string
+      - name: private_ip
+        type: string
+      - name: vpc_uuid
+        type: string
+      - name: status
+        type: string
+        default: "active"
+      # Health monitoring
+      - name: health_status
+        type: string
+        default: "healthy"
+      - name: failure_count
+        type: int
+        default: 0
+      - name: last_checked
+        type: datetime
+      - name: last_failure_at
+        type: datetime
+      - name: last_failure_reason
+        type: string
+      - name: problematic_reason
+        type: string
+      - name: flagged_at
+        type: datetime
+      - name: last_reboot_at
+        type: datetime
+
+  # =============================================================================
+  # DEPLOYMENTS - Deployment history
+  # =============================================================================
+  - name: deployment
+    soft_delete: false
+    fields:
+      - name: service_id
+        type: string
+        required: true
+      - name: version
+        type: int
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: image_name
+        type: string
+        required: true
+      - name: env_variables
+        type: json
+      - name: droplet_ids
+        type: json
+        required: true
+      - name: is_rollback
+        type: bool
+        default: false
+      - name: status
+        type: string
+        default: "pending"
+      - name: error
+        type: text
+      - name: log
+        type: text
+      - name: triggered_by
+        type: string
+        required: true
+      - name: triggered_at
+        type: datetime
+        required: true
+
+  # =============================================================================
+  # CONTAINERS - Running containers on droplets
+  # =============================================================================
+  - name: container
+    soft_delete: false
+    fields:
+      - name: container_name
+        type: string
+        required: true
+      - name: droplet_id
+        type: string
+        required: true
+      - name: deployment_id
+        type: string
+        required: true
+      - name: status
+        type: string
+        default: "pending"
+      - name: health_status
+        type: string
+        default: "unknown"
+      - name: failure_count
+        type: int
+        default: 0
+      - name: last_failure_at
+        type: datetime
+      - name: last_failure_reason
+        type: string
+      - name: last_healthy_at
+        type: datetime
+      - name: last_restart_at
+        type: datetime
+      - name: last_checked
+        type: datetime
+      - name: error
+        type: text
+
+  # =============================================================================
+  # SNAPSHOTS - Cached snapshot registry
+  # =============================================================================
+  - name: snapshot
+    workspace_scoped: true
+    fields:
+      - name: do_snapshot_id
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: region
+        type: string
+        required: true
+      - name: size_gigabytes
+        type: float
+      - name: agent_version
+        type: string
+      - name: is_base
+        type: bool
+        default: false
+
+
+
+
+6. Can Flask app be written normally then serialized for snapshot?
+Yes, absolutely. You can write node_agent/agent.py as a normal Python file, then when creating the snapshot, read and encode it:
+python# In cloudinit.py or snapshot creation
+with open("node_agent/agent.py") as f:
+    agent_code = f.read()
+# Embed in cloud-init user_data
+```
+
+---
+
+## Proposed deploy_api Structure
+```
+deploy_api/
+├── manifest.yaml
+├── main.py                    # create_service() call
+├── config.py
+├── worker.py                  # Background job worker
+│
+├── _gen/                      # ❌ Optional - NOT used for deploy logic
+│   └── ...                    # (Only useful for simple CRUD apps)
+│
+├── src/                       # ✅ Renamed from core/
+│   ├── __init__.py
+│   ├── deps.py                # FastAPI dependencies
+│   │
+│   ├── routes/
+│   │   ├── __init__.py
+│   │   ├── deploy.py
+│   │   ├── servers.py
+│   │   ├── snapshots.py
+│   │   └── admin.py
+│   │
+│   ├── stores/                # ✅ Now a folder
+│   │   ├── __init__.py
+│   │   ├── project.py
+│   │   ├── service.py
+│   │   ├── droplet.py
+│   │   ├── container.py
+│   │   └── deployment.py
+│   │
+│   └── tasks/                 # Background job handlers
+│       └── health.py
+│
+├── node_agent/                # ✅ Isolated folder
+│   ├── __init__.py
+│   ├── agent.py               # Normal Python Flask app
+│   └── README.md
+│
+├── frontend/                  # Svelte app
+└── static/                    # Built frontend

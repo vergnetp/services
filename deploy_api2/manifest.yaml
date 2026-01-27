@@ -1,0 +1,191 @@
+name: deploy_api
+version: "1.0.0"
+
+database:
+  type: sqlite
+  path: ${DATABASE_PATH:-./data/deploy.db}
+
+auth:
+  jwt_secret: ${JWT_SECRET}
+
+redis:
+  url: ${REDIS_URL:-}
+
+entities:
+  # =============================================================================
+  # PROJECTS - Workspace-level grouping
+  # =============================================================================
+  - name: project
+    workspace_scoped: true
+    soft_delete: true
+    fields:
+      - name: name
+        type: string
+        required: true
+
+  # =============================================================================
+  # SERVICES - Deployable units within projects
+  # =============================================================================
+  - name: service
+    soft_delete: true
+    fields:
+      - name: project_id
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: description
+        type: text
+      - name: service_type
+        type: string
+        required: true
+
+  # =============================================================================
+  # DROPLETS - Server inventory
+  # =============================================================================
+  - name: droplet
+    workspace_scoped: true
+    soft_delete: true
+    fields:
+      - name: do_droplet_id
+        type: int
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: region
+        type: string
+        required: true
+      - name: size
+        type: string
+        required: true
+      - name: snapshot_id
+        type: string
+      - name: ip
+        type: string
+      - name: private_ip
+        type: string
+      - name: vpc_uuid
+        type: string
+      - name: status
+        type: string
+        default: "active"
+      - name: health_status
+        type: string
+        default: "healthy"
+      - name: failure_count
+        type: int
+        default: 0
+      - name: last_checked
+        type: datetime
+      - name: last_failure_at
+        type: datetime
+      - name: last_failure_reason
+        type: string
+      - name: problematic_reason
+        type: string
+      - name: flagged_at
+        type: datetime
+      - name: last_reboot_at
+        type: datetime
+
+  # =============================================================================
+  # DEPLOYMENTS - Deployment history
+  # =============================================================================
+  - name: deployment
+    soft_delete: false
+    fields:
+      - name: service_id
+        type: string
+        required: true
+      - name: version
+        type: int
+        required: true
+      - name: env
+        type: string
+        required: true
+      - name: image_name
+        type: string
+        required: true
+      - name: env_variables
+        type: json
+      - name: droplet_ids
+        type: json
+        required: true
+      - name: is_rollback
+        type: bool
+        default: false
+      - name: status
+        type: string
+        default: "pending"
+      - name: error
+        type: text
+      - name: log
+        type: text
+      - name: triggered_by
+        type: string
+        required: true
+      - name: triggered_at
+        type: datetime
+        required: true
+
+  # =============================================================================
+  # CONTAINERS - Running containers on droplets
+  # =============================================================================
+  - name: container
+    soft_delete: false
+    fields:
+      - name: container_name
+        type: string
+        required: true
+      - name: droplet_id
+        type: string
+        required: true
+      - name: deployment_id
+        type: string
+        required: true
+      - name: status
+        type: string
+        default: "pending"
+      - name: health_status
+        type: string
+        default: "unknown"
+      - name: failure_count
+        type: int
+        default: 0
+      - name: last_failure_at
+        type: datetime
+      - name: last_failure_reason
+        type: string
+      - name: last_healthy_at
+        type: datetime
+      - name: last_restart_at
+        type: datetime
+      - name: last_checked
+        type: datetime
+      - name: error
+        type: text
+
+  # =============================================================================
+  # SNAPSHOTS - Cached snapshot registry
+  # =============================================================================
+  - name: snapshot
+    workspace_scoped: true
+    fields:
+      - name: do_snapshot_id
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: region
+        type: string
+        required: true
+      - name: size_gigabytes
+        type: float
+      - name: agent_version
+        type: string
+      - name: is_base
+        type: bool
+        default: false
