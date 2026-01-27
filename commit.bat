@@ -10,20 +10,26 @@ if "%MSG%"=="" (
 echo.
 echo === shared_libs ===
 cd /d "%~dp0..\shared_libs"
-git diff --quiet --cached && git diff --quiet || (
+for /f %%i in ('git status --porcelain') do (
     git add -A
     git commit -m "%MSG%"
     git push origin main
-) && echo No changes - skipped
+    goto :shared_done
+)
+echo No changes - skipped
+:shared_done
 
 echo.
 echo === services ===
 cd /d "%~dp0"
-git diff --quiet --cached && git diff --quiet || (
+for /f %%i in ('git status --porcelain') do (
     git add -A
     git commit -m "%MSG%"
     git push origin main
-) && echo No changes - skipped
+    goto :services_done
+)
+echo No changes - skipped
+:services_done
 
 echo.
 echo Done
