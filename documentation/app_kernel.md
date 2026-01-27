@@ -4,7 +4,7 @@ A stable, reusable application kernel for backend services.
 
 ## Overview
 
-`app_kernel` provides runtime infrastructure that can be reused across multiple backend services (agentic or not). It handles auth, jobs, streaming safety, and observability so you don't re-implement them every time.
+`app_kernel` provides runtime infrastructure that can be reused across multiple backend services (agentic or not). It handles auth, jobs, streaming safety, database connections, and observability so you don't re-implement them every time.
 
 **Philosophy:**
 - **Kernel provides:** mechanisms + invariants
@@ -15,41 +15,40 @@ A stable, reusable application kernel for backend services.
 **Rule of thumb:** If it changes weekly or is product-specific, it does NOT belong in `app_kernel`.
 
 ## Installation
-
 ```python
 # In your shared_libs or requirements
-from app_kernel import init_app_kernel, KernelSettings
+from shared_libs.backend.app_kernel import create_service, ServiceConfig
 ```
 
 ## 🚀 Quick Start (Easiest Way)
 
 Create a complete service in **~30 lines** using `create_service`:
-
 ```python
 from fastapi import APIRouter, Depends
-from app_kernel import create_service, ServiceConfig, get_current_user
+from shared_libs.backend.app_kernel import create_service, ServiceConfig, get_current_user, db_connection
 
 # Your business logic
 router = APIRouter(prefix="/widgets", tags=["widgets"])
 
 @router.post("")
-async def create_widget(data: dict, user=Depends(get_current_user)):
-    return {"id": "123", "owner": user.id, **data}
+async def create_widget(data: dict, user=Depends(get_current_user), db=Depends(db_connection)):
+    return await db.save_entity("widgets", {"owner": user.id, **data})
 
 @router.get("")
-async def list_widgets(user=Depends(get_current_user)):
-    return []
+async def list_widgets(user=Depends(get_current_user), db=Depends(db_connection)):
+    return await db.find_entities("widgets", where_clause="[owner] = ?", params=(user.id,))
 
 # Create the app - that's it!
 app = create_service(
     name="widget_service",
     routers=[router],
-    config=ServiceConfig.from_env(),  # Uses JWT_SECRET, REDIS_URL env vars
+    config=ServiceConfig.from_env(),  # Uses JWT_SECRET, REDIS_URL, DATABASE_NAME env vars
 )
 ```
 
 **What you get for free:**
 - ✅ JWT authentication (`/api/v1/auth/login`, `/api/v1/auth/register`)
+- ✅ Database connection pool (inject via `Depends(db_connection)`)
 - ✅ CORS (configured or `*`)
 - ✅ Security headers
 - ✅ Request ID tracking
@@ -60,25 +59,152 @@ app = create_service(
 - ✅ Background jobs (if `REDIS_URL` set)
 - ✅ Error handling
 
-### With Background Jobs
+## Database Connection
 
+The kernel manages database connections. **Never use `DatabaseManager.connect()` directly in apps.**
+
+### In Routes (FastAPI Dependency)
 ```python
-from app_kernel import create_service, ServiceConfig, get_job_client
+from fastapi import Depends
+from shared_libs.backend.app_kernel import db_connection, get_current_user
 
-# Task handler
+@router.get("/users/{user_id}")
+async def get_user(user_id: str, db=Depends(db_connection)):
+    return await db.get_entity("users", user_id)
+
+@router.post("/users")
+async def create_user(data: dict, db=Depends(db_connection)):
+    return await db.save_entity("users", data)
+
+@router.get("/users")
+async def list_users(db=Depends(db_connection)):
+    return await db.find_entities("users", order_by="[created_at] DESC", limit=100)
+```
+
+### In Workers/Scripts (Context Manager)
+```python
+from shared_libs.backend.app_kernel import get_db_connection
+
+async def process_job(payload: dict):
+    async with get_db_connection() as db:
+        item = await db.get_entity("items", payload["item_id"])
+        item["processed"] = True
+        await db.save_entity("items", item)
+```
+
+### In Service Functions (Pass db as Parameter)
+
+For functions called from routes, pass the `db` connection as a parameter:
+```python
+# src/service.py
+async def deploy_service(db, user_id: str, project_name: str, ...):
+    project = await db.get_entity("projects", project_id)
+    await db.save_entity("deployments", {...})
+
+# routes.py
+@router.post("/deploy")
+async def deploy(req: DeployRequest, user=Depends(get_current_user), db=Depends(db_connection)):
+    return await deploy_service(db, user.id, req.project_name, ...)
+```
+
+### Database Configuration
+
+Configure in `ServiceConfig` (NOT scattered across routes):
+```python
+config = ServiceConfig(
+    # SQLite (default)
+    database_name="./data/myapp.db",
+    database_type="sqlite",
+    
+    # Or PostgreSQL
+    database_name="myapp",
+    database_type="postgres",
+    database_host="localhost",
+    database_port=5432,
+    database_user="postgres",
+    database_password="secret",
+    
+    # Or MySQL
+    database_name="myapp",
+    database_type="mysql",
+    database_host="localhost",
+    database_port=3306,
+    database_user="root",
+    database_password="secret",
+)
+```
+
+Or use environment variables:
+```bash
+DATABASE_NAME=./data/myapp.db
+DATABASE_TYPE=sqlite
+# Or for postgres:
+DATABASE_NAME=myapp
+DATABASE_TYPE=postgres
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USER=postgres
+DATABASE_PASSWORD=secret
+```
+
+### Schema Initialization
+
+Provide a `schema_init` function to create tables on startup:
+```python
+async def init_schema(db):
+    """Called once on startup."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE,
+            name TEXT,
+            created_at TEXT
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS widgets (
+            id TEXT PRIMARY KEY,
+            owner TEXT,
+            name TEXT,
+            created_at TEXT
+        )
+    """)
+
+app = create_service(
+    name="myapp",
+    routers=[router],
+    schema_init=init_schema,  # <-- Pass your schema function
+    config=ServiceConfig.from_env(),
+)
+```
+
+## With Background Jobs
+```python
+from shared_libs.backend.app_kernel import create_service, ServiceConfig, get_job_client, get_db_connection
+
+# Task handler (runs in worker process)
 async def process_order(payload, ctx):
     order_id = payload["order_id"]
-    # Do work...
+    
+    # Use get_db_connection in workers
+    async with get_db_connection() as db:
+        order = await db.get_entity("orders", order_id)
+        order["status"] = "processed"
+        await db.save_entity("orders", order)
+    
     return {"status": "done"}
 
 # Route that enqueues work
 router = APIRouter(prefix="/orders")
 
 @router.post("")
-async def create_order(data: dict, user=Depends(get_current_user)):
+async def create_order(data: dict, user=Depends(get_current_user), db=Depends(db_connection)):
+    order = await db.save_entity("orders", {"user_id": user.id, "status": "pending", **data})
+    
     client = get_job_client()
-    result = await client.enqueue("process_order", {"order_id": "123"}, user_id=user.id)
-    return {"job_id": result.job_id}
+    result = await client.enqueue("process_order", {"order_id": order["id"]}, user_id=user.id)
+    
+    return {"order_id": order["id"], "job_id": result.job_id}
 
 # Create app with tasks
 app = create_service(
@@ -89,8 +215,7 @@ app = create_service(
 )
 ```
 
-### ServiceConfig Options
-
+## ServiceConfig Options
 ```python
 config = ServiceConfig(
     # Auth
@@ -98,6 +223,10 @@ config = ServiceConfig(
     jwt_expiry_hours=24,
     auth_enabled=True,
     allow_self_signup=False,
+    
+    # Database (kernel manages connection pool)
+    database_name="./data/myapp.db",
+    database_type="sqlite",  # or "postgres", "mysql"
     
     # Redis (enables jobs, rate limiting)
     redis_url="redis://localhost:6379",
@@ -114,17 +243,16 @@ config = ServiceConfig(
 )
 
 # Or load from environment variables
-config = ServiceConfig.from_env()  # Reads JWT_SECRET, REDIS_URL, DEBUG, etc.
+config = ServiceConfig.from_env()  # Reads JWT_SECRET, REDIS_URL, DATABASE_NAME, etc.
 ```
 
 ## Advanced: Manual Initialization
 
 For more control, use `init_app_kernel` directly:
-
 ```python
 from fastapi import FastAPI
-from app_kernel import init_app_kernel, KernelSettings, JobRegistry
-from app_kernel.settings import AuthSettings, RedisSettings
+from shared_libs.backend.app_kernel import init_app_kernel, KernelSettings, JobRegistry
+from shared_libs.backend.app_kernel.settings import AuthSettings, RedisSettings
 
 app = FastAPI()
 
@@ -164,9 +292,8 @@ The kernel automatically mounts common routes based on `FeatureSettings`. **No m
 | Audit routes | ❌ OFF | `GET /audit` |
 
 ### Configuration
-
 ```python
-from app_kernel import KernelSettings, FeatureSettings
+from shared_libs.backend.app_kernel import KernelSettings, FeatureSettings
 
 settings = KernelSettings(
     features=FeatureSettings(
@@ -193,7 +320,6 @@ settings = KernelSettings(
 ```
 
 ### Environment Variable Overrides
-
 ```bash
 KERNEL_ENABLE_HEALTH=true
 KERNEL_ENABLE_METRICS=true
@@ -207,13 +333,13 @@ KERNEL_ENABLE_AUDIT=false
 ### Health Checks
 
 Configure custom health checks for `/readyz`:
-
 ```python
-from functools import partial
+from shared_libs.backend.app_kernel import get_db_connection
 
 async def check_db() -> tuple[bool, str]:
     try:
-        await db.execute("SELECT 1")
+        async with get_db_connection() as db:
+            await db.execute("SELECT 1")
         return True, "database connected"
     except Exception as e:
         return False, f"database error: {e}"
@@ -225,35 +351,11 @@ async def check_redis() -> tuple[bool, str]:
     except Exception as e:
         return False, f"redis error: {e}"
 
-settings = KernelSettings(
-    health_checks=(check_db, check_redis),
-)
-```
-
-### Auth Router (User Store)
-
-For local auth mode, provide a `UserStore` implementation:
-
-```python
-from app_kernel.auth import UserStore
-
-class MyUserStore(UserStore):
-    async def get_by_username(self, username: str) -> dict | None:
-        # Return: {id, username, email, password_hash, role}
-        return await db.users.find_one(username=username)
-    
-    async def get_by_id(self, user_id: str) -> dict | None:
-        return await db.users.find_one(id=user_id)
-    
-    async def create(self, username: str, email: str, password_hash: str) -> dict:
-        # Raise ValueError if username/email exists
-        return await db.users.create(...)
-
-init_app_kernel(
-    app,
-    settings,
-    user_store=MyUserStore(),
-    is_admin=lambda user: user.get("role") == "admin",
+app = create_service(
+    name="myapp",
+    routers=[router],
+    health_checks=[check_db, check_redis],
+    config=ServiceConfig.from_env(),
 )
 ```
 
@@ -262,11 +364,10 @@ init_app_kernel(
 **Workers are separate processes, not part of FastAPI startup.**
 
 The kernel provides worker code; your deployment decides how to run workers.
-
 ```python
 # worker_main.py - Run this as a separate process
 import asyncio
-from app_kernel.jobs import get_worker_manager
+from shared_libs.backend.app_kernel.jobs import get_worker_manager
 
 async def main():
     manager = get_worker_manager()
@@ -293,20 +394,17 @@ Deployment options:
 - Never inside FastAPI lifecycle
 
 ## Module Structure
-
 ```
 app_kernel/
 ├── app.py              # init_app_kernel(...)
+├── bootstrap.py        # create_service(...) - simplified creation
 ├── settings.py         # KernelSettings configuration
 ├── auth/
-│   ├── deps.py         # FastAPI dependencies
+│   ├── deps.py         # FastAPI dependencies (get_current_user, etc.)
 │   ├── models.py       # UserIdentity, TokenPayload
 │   └── utils.py        # Token/password utilities
-├── access/
-│   ├── workspace.py    # Workspace membership checks
-│   └── scope.py        # Permission scopes
 ├── db/
-│   └── session.py      # Database session factory
+│   └── session.py      # db_connection, get_db_connection, get_db_manager
 ├── jobs/
 │   ├── client.py       # Enqueue wrapper
 │   ├── worker.py       # Worker loop
@@ -328,10 +426,9 @@ app_kernel/
 All settings are **frozen (immutable)** after creation. No per-request or runtime mutation is allowed.
 
 ### KernelSettings
-
 ```python
-from app_kernel import KernelSettings
-from app_kernel.settings import (
+from shared_libs.backend.app_kernel import KernelSettings
+from shared_libs.backend.app_kernel.settings import (
     RedisSettings,
     AuthSettings,
     JobSettings,
@@ -384,10 +481,9 @@ settings = KernelSettings(
 ## Authentication
 
 ### FastAPI Dependencies
-
 ```python
 from fastapi import Depends
-from app_kernel.auth import get_current_user, require_admin, UserIdentity
+from shared_libs.backend.app_kernel import get_current_user, require_admin, UserIdentity
 
 @app.get("/profile")
 async def get_profile(user: UserIdentity = Depends(get_current_user)):
@@ -399,9 +495,8 @@ async def admin_action(user: UserIdentity = Depends(require_admin)):
 ```
 
 ### Token Utilities
-
 ```python
-from app_kernel.auth import (
+from shared_libs.backend.app_kernel.auth import (
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -425,9 +520,8 @@ refresh = create_refresh_token(user, secret, expires_delta=timedelta(days=30))
 ### Registering Tasks
 
 Registry metadata (`timeout`, `max_attempts`) is **advisory only**. The kernel does not act as a scheduler - it dispatches work to registered processors and fails fast on unknown task names.
-
 ```python
-from app_kernel.jobs import JobRegistry, JobContext
+from shared_libs.backend.app_kernel.jobs import JobRegistry, JobContext
 
 registry = JobRegistry()
 
@@ -447,9 +541,8 @@ registry.register("process_file", process_file_handler)
 ```
 
 ### Enqueueing Jobs
-
 ```python
-from app_kernel.jobs import get_job_client
+from shared_libs.backend.app_kernel.jobs import get_job_client
 
 client = get_job_client()
 
@@ -480,9 +573,8 @@ results = await client.enqueue_many(
 ## Streaming
 
 ### Safe Streaming with Leases
-
 ```python
-from app_kernel.streaming import stream_lease, StreamLimitExceeded
+from shared_libs.backend.app_kernel import stream_lease, StreamLimitExceeded
 from fastapi import HTTPException
 
 @app.post("/chat/stream")
@@ -500,482 +592,209 @@ async def stream_chat(user: UserIdentity = Depends(get_current_user)):
         raise HTTPException(429, "Too many concurrent streams")
 ```
 
-### Check Stream Availability
-
+## Complete Example
 ```python
-from app_kernel.streaming import can_start_stream, get_active_streams
+# main.py
+import os
+from pathlib import Path
+from fastapi import APIRouter, Depends
 
-# Check before starting
-if await can_start_stream(user.id):
-    # Start stream...
-    pass
+from shared_libs.backend.app_kernel import (
+    create_service, 
+    ServiceConfig, 
+    get_current_user, 
+    db_connection,
+    get_db_connection,
+    get_job_client,
+)
 
-# Get count
-active = await get_active_streams(user.id)
-```
+SERVICE_DIR = Path(__file__).parent
 
-## Rate Limiting
+# =============================================================================
+# Schema
+# =============================================================================
 
-```python
-from app_kernel.reliability import rate_limit
-from fastapi import Depends
+async def init_schema(db):
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            name TEXT NOT NULL,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id)")
 
-@app.post("/api/action")
-async def action(_: None = Depends(rate_limit(requests=10, window=60))):
-    # Max 10 requests per 60 seconds
-    return {"status": "ok"}
+# =============================================================================
+# Tasks (for background jobs)
+# =============================================================================
 
-# Custom key function
-def by_api_key(request, user):
-    return f"api_key:{request.headers.get('x-api-key')}"
+async def process_project(payload, ctx):
+    async with get_db_connection() as db:
+        project = await db.get_entity("projects", payload["project_id"])
+        # Do processing...
+        project["processed"] = True
+        await db.save_entity("projects", project)
+    return {"status": "done"}
 
-@app.post("/api/external")
-async def external(_: None = Depends(rate_limit(100, 60, key_func=by_api_key))):
-    return {"status": "ok"}
-```
+# =============================================================================
+# Routes
+# =============================================================================
 
-## Observability
+router = APIRouter(prefix="/projects", tags=["projects"])
 
-### Logging with Context
+@router.get("")
+async def list_projects(user=Depends(get_current_user), db=Depends(db_connection)):
+    return await db.find_entities(
+        "projects", 
+        where_clause="[workspace_id] = ?", 
+        params=(user.id,),
+        order_by="[created_at] DESC"
+    )
 
-```python
-from app_kernel.observability import get_logger, log_context
+@router.post("")
+async def create_project(data: dict, user=Depends(get_current_user), db=Depends(db_connection)):
+    project = await db.save_entity("projects", {
+        "workspace_id": user.id,
+        "name": data["name"],
+    })
+    
+    # Optionally enqueue background work
+    client = get_job_client()
+    await client.enqueue("process_project", {"project_id": project["id"]})
+    
+    return project
 
-logger = get_logger()
+@router.get("/{project_id}")
+async def get_project(project_id: str, db=Depends(db_connection)):
+    return await db.get_entity("projects", project_id)
 
-# Log with explicit fields
-logger.info("Processing request", user_id="123", action="create")
+# =============================================================================
+# App
+# =============================================================================
 
-# Log with context manager
-with log_context(request_id="abc", user_id="123"):
-    logger.info("Step 1")  # Includes request_id and user_id
-    logger.info("Step 2")  # Includes request_id and user_id
-```
+def _build_config() -> ServiceConfig:
+    data_dir = SERVICE_DIR / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    
+    return ServiceConfig(
+        jwt_secret=os.environ.get("JWT_SECRET", "dev-secret"),
+        database_name=str(data_dir / "app.db"),
+        database_type="sqlite",
+        redis_url=os.environ.get("REDIS_URL", ""),
+    )
 
-### Metrics
-
-```python
-from app_kernel.observability import get_metrics
-
-metrics = get_metrics()
-
-# Counter
-metrics.increment("api.requests", tags={"endpoint": "/users"})
-
-# Gauge
-metrics.gauge("connections.active", 42)
-
-# Timer
-with metrics.timer("api.response_time"):
-    response = await process_request()
-```
-
-### Audit Logging
-
-```python
-from app_kernel.observability import get_audit
-
-audit = get_audit()
-
-await audit.log(
-    action="user.login",
-    actor_id=user.id,
-    resource_type="session",
-    resource_id=session.id,
-    metadata={"ip": request.client.host},
+app = create_service(
+    name="my_service",
+    routers=[router],
+    tasks={"process_project": process_project},
+    schema_init=init_schema,
+    config=_build_config(),
 )
 ```
 
-### Request Metrics (Performance Monitoring)
-
-Automatically capture rich metadata for every HTTP request. Stored asynchronously via job queue (non-blocking).
-
-**Enable in manifest.yaml:**
-
-```yaml
-observability:
-  request_metrics:
-    enabled: true  # Requires Redis for async storage
-    exclude_paths:
-      - /health
-      - /healthz
-      - /readyz
-      - /metrics
-      - /favicon.ico
+Run with:
+```bash
+JWT_SECRET=xxx uvicorn main:app --reload
 ```
 
-**What's captured:**
-- Request: method, path, query_params, request_id
-- Response: status_code, error details
-- Timing: server_latency_ms
-- Client: real IP (behind CF/nginx), user_agent, referer
-- Auth: user_id, workspace_id (if authenticated)
-- Geo: country (from Cloudflare CF-IPCountry header)
-- Partitioning: timestamp, year, month, day, hour
-
-**Query metrics:**
-
-```python
-from app_kernel.observability import RequestMetricsStore
-
-store = RequestMetricsStore()
-
-# Recent requests
-metrics = await store.get_recent(limit=100, path_prefix="/api/v1/infra")
-
-# Aggregated stats (last 24h)
-stats = await store.get_stats(hours=24)
-# Returns: total_requests, avg_latency_ms, slow_endpoints, error_endpoints
-
-# Find slow requests (>1000ms)
-slow = await store.get_recent(min_latency_ms=1000)
-```
-
-**API Endpoints (auto-mounted when enabled):**
-- `GET /metrics/requests` - List recent requests
-- `GET /metrics/requests/stats` - Aggregated statistics
-- `GET /metrics/requests/slow` - Slow requests (>1s)
-- `GET /metrics/requests/errors` - Error requests (4xx/5xx)
-
-## Access Control
-
-The kernel provides **mechanisms** for access control. It does **not** define what a "workspace" or "scope" means - that is app domain logic.
-
-- **Kernel provides:** protocol interfaces, dependency wrappers, enforcement of app decisions
-- **Apps provide:** semantic meaning, database queries, business rules
-
-### Workspace Membership
-
-The kernel does not define workspace semantics. Apps implement the protocol; kernel enforces app-provided decisions.
-
-```python
-from app_kernel.access import require_workspace_member, workspace_access
-
-# Implement your checker (this is YOUR domain logic)
-class MyWorkspaceChecker:
-    async def is_member(self, user_id: str, workspace_id: str) -> bool:
-        # YOUR definition of what "member" means
-        return await db.check_membership(user_id, workspace_id)
-    
-    async def is_owner(self, user_id: str, workspace_id: str) -> bool:
-        return await db.check_owner(user_id, workspace_id)
-    
-    async def get_role(self, user_id: str, workspace_id: str) -> str:
-        return await db.get_role(user_id, workspace_id)
-
-# Register with kernel (kernel will call YOUR checker)
-workspace_access.set_checker(MyWorkspaceChecker())
-
-# Use in routes (kernel enforces YOUR decision)
-@app.get("/workspace/{workspace_id}/data")
-async def get_data(
-    workspace_id: str,
-    user: UserIdentity = Depends(require_workspace_member),
-):
-    return {"data": "..."}
-```
-
-### Scope-Based Permissions
-
-```python
-from app_kernel.access import require_scope, check_scope
-
-@app.delete("/documents/{doc_id}")
-async def delete_doc(
-    doc_id: str,
-    user: UserIdentity = Depends(require_scope("delete", "document", "doc_id")),
-):
-    return {"deleted": True}
-
-# Programmatic check
-if await check_scope(user.id, "write", "project", project_id):
-    # User has write access
-    pass
-```
-
-## Strict Rules
-
-### Separation of Concerns
-
-| Kernel provides | Apps provide |
-|-----------------|--------------|
-| Mechanisms | Meaning |
-| Invariants | Business logic |
-| Protocol interfaces | Implementations |
-| Enforcement | Decisions |
-
-### Invariants
-
-1. **app_kernel never imports app code** - Apps may import app_kernel, not vice versa
-2. **Task processors live ONLY in apps** - Kernel dispatches, apps implement
-3. **Kernel code must be safe to reuse unchanged across apps**
-4. **All configuration is immutable after initialization** - No per-request mutation
-5. **Streaming safety works across multiple servers** - Redis-backed, not process-local
-6. **Workers are separate processes** - Never inside FastAPI lifecycle
-7. **Registry metadata is advisory** - Kernel is not a scheduler
-8. **Kernel does not define domain semantics** - "Workspace", "scope", etc. are app concepts
-
-## Success Criteria
-
-After using this kernel, a new backend service can be created by:
-1. Importing app_kernel
-2. Defining tasks (app provides meaning)
-3. Implementing access checkers (app provides decisions)
-4. Registering them with kernel (kernel enforces)
-5. Deploying workers separately (deployment decides how)
-
-No infrastructure re-implementation is needed. Streaming, jobs, auth, and safety work out of the box.
+Then hit `http://localhost:8000/docs` 🎉
 
 ---
 
+## API Reference
+
 <div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
 
+### Database Functions
 
-### class `KernelSettings`
+| Function | Usage | Description |
+|----------|-------|-------------|
+| `db_connection` | `db=Depends(db_connection)` | FastAPI dependency - use in routes |
+| `get_db_connection()` | `async with get_db_connection() as db:` | Context manager - use in workers/scripts |
+| `get_db_manager()` | `manager = get_db_manager()` | Get underlying DatabaseManager (rarely needed) |
+| `init_db_session(...)` | Called by kernel | Initialize connection pool (internal) |
+| `close_db()` | Called by kernel | Close connections on shutdown (internal) |
 
-Complete configuration for app_kernel initialization.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `redis` | | `RedisSettings` | Configuration | Redis connection settings for jobs and streaming. |
-| | `streaming` | | `StreamingSettings` | Configuration | Streaming lifecycle settings. |
-| | `jobs` | | `JobSettings` | Configuration | Job queue settings. |
-| | `auth` | | `AuthSettings` | Configuration | Auth configuration. |
-| | `observability` | | `ObservabilitySettings` | Configuration | Logging and metrics settings. |
-| | `reliability` | | `ReliabilitySettings` | Configuration | Rate limiting and idempotency settings. |
-| | `database_url` | | `Optional[str]` | Configuration | Database URL for auth stores. |
-
-</details>
-
-<br>
-
-<details>
-<summary><strong>Private/Internal Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `__init__` | `redis: RedisSettings=None`, `streaming: StreamingSettings=None`, `jobs: JobSettings=None`, `auth: AuthSettings=None`, `observability: ObservabilitySettings=None`, `reliability: ReliabilitySettings=None`, `database_url: str=None` | | Initialization | Initializes kernel settings with all configuration components. |
-| | `__post_init__` | | | Validation | Validates settings after initialization. |
-
-</details>
-
-<br>
-
+**⚠️ NEVER use `DatabaseManager.connect()` directly in apps. The kernel manages the connection pool.**
 
 </div>
 
-
-
 <div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
 
+### class `ServiceConfig`
 
-### class `FeatureSettings`
-
-Feature flags for auto-mounted kernel routers.
+Configuration for `create_service()` with sensible defaults.
 
 <details>
 <summary><strong>Public Methods</strong></summary>
 
 | Decorators | Method | Args | Returns | Category | Description |
 |------------|--------|------|---------|----------|-------------|
-| | `enable_health_routes` | | `bool` | Feature | Enable health endpoints (/healthz, /readyz). Default: True |
-| | `health_path` | | `str` | Feature | Path for liveness probe. Default: "/healthz" |
-| | `ready_path` | | `str` | Feature | Path for readiness probe. Default: "/readyz" |
-| | `enable_metrics` | | `bool` | Feature | Enable metrics endpoint. Default: True |
-| | `metrics_path` | | `str` | Feature | Path for Prometheus metrics. Default: "/metrics" |
-| | `protect_metrics` | | `Literal["admin", "internal", "none"]` | Feature | Metrics protection level. Default: "admin" |
-| | `enable_auth_routes` | | `bool` | Feature | Enable auth endpoints (login, me, register). Default: True |
-| | `auth_mode` | | `Literal["local", "apikey", "external"]` | Feature | Authentication mode. Default: "local" |
-| | `allow_self_signup` | | `bool` | Feature | Enable /auth/register. Default: False (important!) |
-| | `auth_prefix` | | `str` | Feature | URL prefix for auth routes. Default: "/auth" |
-| | `enable_audit_routes` | | `bool` | Feature | Enable audit query endpoint. Default: False |
-| | `audit_path` | | `str` | Feature | Path for audit endpoint. Default: "/audit" |
-| `@classmethod` | `from_env` | | `FeatureSettings` | Factory | Create settings from environment variables. |
+| `@classmethod` | `from_env` | `prefix: str=""` | `ServiceConfig` | Factory | Load config from environment variables. |
 
 </details>
 
 <br>
+
+<details>
+<summary><strong>Attributes</strong></summary>
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `jwt_secret` | `str` | `"dev-secret-change-me"` | JWT signing secret (required for production) |
+| `jwt_expiry_hours` | `int` | `24` | Access token expiry |
+| `auth_enabled` | `bool` | `True` | Enable authentication |
+| `allow_self_signup` | `bool` | `False` | Allow `/auth/register` |
+| `database_name` | `str` | `None` | Database name or file path |
+| `database_type` | `str` | `"sqlite"` | `"sqlite"`, `"postgres"`, or `"mysql"` |
+| `database_host` | `str` | `"localhost"` | Database host |
+| `database_port` | `int` | `None` | Database port (None = default for type) |
+| `database_user` | `str` | `None` | Database user |
+| `database_password` | `str` | `None` | Database password |
+| `redis_url` | `str` | `None` | Redis URL (enables jobs, rate limiting) |
+| `cors_origins` | `List[str]` | `["*"]` | CORS allowed origins |
+| `rate_limit_requests` | `int` | `100` | Rate limit requests per window |
+| `rate_limit_window` | `int` | `60` | Rate limit window in seconds |
+| `debug` | `bool` | `False` | Enable debug mode |
+
+</details>
 
 </div>
 
-
-
 <div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
 
+### function `create_service`
 
-### class `JobRegistry`
-
-Registry mapping task names to processor functions.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `register` | `name: str`, `processor: ProcessorFunc`, `timeout: float=None`, `max_attempts: int=None`, `description: str=None` | `None` | Registration | Register a task processor with optional configuration. |
-| | `task` | `name: str`, `timeout: float=None`, `max_attempts: int=None`, `description: str=None` | `Callable` | Registration | Decorator for registering a task processor. |
-| | `get` | `name: str` | `Optional[ProcessorFunc]` | Query | Get a processor by name. |
-| | `get_metadata` | `name: str` | `Optional[Dict]` | Query | Get metadata for a task. |
-| | `has` | `name: str` | `bool` | Query | Check if a task is registered. |
-| | `tasks` | | `Dict[str, ProcessorFunc]` | Query | Get all registered tasks (read-only view). |
-
-</details>
-
-<br>
+Create a production-ready FastAPI service with all kernel features.
+```python
+app = create_service(
+    name="my_service",
+    routers=[router],
+    tasks={"task_name": handler},
+    schema_init=init_schema,
+    config=ServiceConfig.from_env(),
+    health_checks=[check_db],
+)
+```
 
 <details>
-<summary><strong>Private/Internal Methods</strong></summary>
+<summary><strong>Parameters</strong></summary>
 
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `__init__` | | | Initialization | Initializes empty registry. |
-| | `__contains__` | `name: str` | `bool` | Query | Check if task name in registry. |
-| | `__len__` | | `int` | Query | Get number of registered tasks. |
-| | `__iter__` | | `Iterator` | Query | Iterate over task names. |
-
-</details>
-
-<br>
-
-
-</div>
-
-
-
-<div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
-
-
-### class `JobClient`
-
-Client for enqueueing jobs.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| `async` | `enqueue` | `task_name: str`, `payload: Dict`, `job_id: str=None`, `priority: str="normal"`, `user_id: str=None`, `timeout: float=None`, `max_attempts: int=None`, `delay_seconds: float=None`, `metadata: Dict=None`, `on_success: str=None`, `on_failure: str=None` | `EnqueueResult` | Enqueue | Enqueue a job for processing. |
-| `async` | `enqueue_many` | `task_name: str`, `payloads: list[Dict]`, `priority: str="normal"`, `user_id: str=None` | `list[EnqueueResult]` | Enqueue | Enqueue multiple jobs efficiently. |
-| `async` | `get_queue_status` | | `Dict[str, Any]` | Status | Get status of all queues. |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | `str` | Yes | Service name |
+| `routers` | `List[APIRouter]` | Yes | FastAPI routers to mount |
+| `config` | `ServiceConfig` | No | Configuration (defaults to `ServiceConfig()`) |
+| `tasks` | `Dict[str, Callable]` | No | Background task handlers |
+| `schema_init` | `Callable[[db], Awaitable]` | No | Database schema initializer |
+| `health_checks` | `List[Callable]` | No | Custom health check functions |
+| `on_startup` | `Callable` | No | Additional startup hook |
+| `on_shutdown` | `Callable` | No | Additional shutdown hook |
+| `version` | `str` | No | API version (default: `"1.0.0"`) |
+| `description` | `str` | No | API description |
 
 </details>
-
-<br>
-
-
-</div>
-
-
-
-<div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
-
-
-### class `StreamLeaseLimiter`
-
-Lease-based concurrent stream limiter using Redis.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `acquire_stream_lease` | `user_id: str` | `Optional[str]` | Lease | Try to acquire a lease for user. Returns lease_id if allowed, else None. |
-| | `release_stream_lease` | `user_id: str`, `lease_id: str` | `None` | Lease | Release a previously acquired lease. |
-| | `refresh_stream_lease` | `user_id: str`, `lease_id: str` | `bool` | Lease | Extend lease while streaming continues. Returns False if expired. |
-| | `get_active_streams` | `user_id: str` | `int` | Query | Returns number of active (non-expired) leases. |
-
-</details>
-
-<br>
-
-
-</div>
-
-
-
-<div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
-
-
-### class `UserIdentity`
-
-Core user identity for auth primitives.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| `@property` | `is_admin` | | `bool` | Query | Check if user has admin role. |
-| | `to_dict` | | `dict` | Serialization | Convert to dictionary. |
-| `@classmethod` | `from_dict` | `data: dict` | `UserIdentity` | Serialization | Create from dictionary. |
-
-</details>
-
-<br>
-
-<details>
-<summary><strong>Private/Internal Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `__init__` | `id: str=auto`, `email: str=""`, `role: str="user"`, `is_active: bool=True`, `created_at: datetime=auto` | | Initialization | Initializes user identity. |
-
-</details>
-
-<br>
-
-
-</div>
-
-
-
-<div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
-
-
-### class `RateLimiter`
-
-Redis-backed sliding window rate limiter.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `check` | `identifier: str`, `limit: int=None`, `window: int=None` | `bool` | Limit | Check if request is allowed and record it. Returns True if allowed. |
-| | `get_remaining` | `identifier: str`, `limit: int=None`, `window: int=None` | `int` | Query | Get remaining requests in window. |
-| | `reset` | `identifier: str` | `None` | Admin | Reset rate limit for identifier. |
-
-</details>
-
-<br>
-
-
-</div>
-
-
-
-<div style="background-color:#f8f9fa; border:1px solid #ddd; padding: 16px; border-radius: 8px; margin-bottom: 24px;margin-top: 24px;">
-
-
-### class `AuditLogger`
-
-Audit logger for recording security events.
-
-<details>
-<summary><strong>Public Methods</strong></summary>
-
-| Decorators | Method | Args | Returns | Category | Description |
-|------------|--------|------|---------|----------|-------------|
-| | `set_store` | `store: AuditStore` | `None` | Configuration | Set the audit store implementation. |
-| `async` | `log` | `action: str`, `status: str="success"`, `actor_id: str=None`, `actor_type: str="user"`, `resource_type: str=None`, `resource_id: str=None`, `request_id: str=None`, `ip_address: str=None`, `user_agent: str=None`, `metadata: Dict=None` | `AuditEvent` | Logging | Log an audit event. |
-| `async` | `query` | `actor_id: str=None`, `action: str=None`, `resource_type: str=None`, `resource_id: str=None`, `after: datetime=None`, `before: datetime=None`, `limit: int=100` | `List[AuditEvent]` | Query | Query audit events. |
-
-</details>
-
-<br>
-
 
 </div>

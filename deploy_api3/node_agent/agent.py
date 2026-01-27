@@ -1,30 +1,38 @@
+# =============================================================================
+# node_agent/agent.py
+# =============================================================================
 """
 Node Agent - Flask app that runs ON each droplet.
-Serialized and embedded into snapshot via cloud-init.
 
 Endpoints:
-- GET  /ping                           - Agent health check
-- POST /upload                         - Receive Docker image
-- POST /start_container                - Start a container
-- POST /remove_container               - Stop and remove container
-- GET  /health?container_name=xxx      - Health check with log parsing + TCP ping
-- GET  /containers/<name>/status       - Get container status
-- POST /containers/<name>/restart      - Restart container
-- POST /configure_nginx                - Configure nginx upstream
+- GET  /ping                    - Agent health check
+- POST /upload                  - Receive Docker image tar
+- POST /build                   - Build image from git/zips
+- POST /start_container         - Start a container
+- POST /remove_container        - Stop and remove container
+- GET  /health                  - Health check with log parsing + TCP ping
+- GET  /containers/<n>/status   - Get container status
+- POST /containers/<n>/restart  - Restart container
+- POST /configure_nginx         - Configure nginx upstream
 """
 
 import os
+import io
 import re
+import base64
 import socket
 import subprocess
 import tempfile
+import shutil
+import zipfile
+from typing import Dict
 from datetime import datetime
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Simple API key auth (derived from DO token during snapshot creation)
 API_KEY = os.environ.get('NODE_AGENT_API_KEY', 'dev-key')
+CHUNK_SIZE = 64 * 1024  # 64KB
 
 
 def require_auth(f):
@@ -67,13 +75,14 @@ def upload():
         return jsonify({'error': 'name required'}), 400
     
     try:
-        # Stream to temp file to avoid memory issues
         with tempfile.NamedTemporaryFile(delete=False, suffix='.tar') as f:
-            for chunk in request.stream:
+            while True:
+                chunk = request.stream.read(CHUNK_SIZE)
+                if not chunk:
+                    break
                 f.write(chunk)
             temp_path = f.name
         
-        # Load image
         result = subprocess.run(
             ['docker', 'load', '-i', temp_path],
             capture_output=True, text=True
@@ -87,6 +96,136 @@ def upload():
         return jsonify({'status': 'loaded', 'image': image_name})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# =============================================================================
+# BUILD FROM GIT / ZIPS
+# =============================================================================
+
+def _repo_name_from_url(url: str) -> str:
+    """Extract repo name from git URL."""
+    name = url.rstrip('/').split('/')[-1]
+    return name[:-4] if name.endswith('.git') else name
+
+
+@app.route('/build', methods=['POST'])
+@require_auth
+def build():
+    """
+    Build Docker image from any combination of git repos and zips.
+    
+    JSON: {
+        image_name: str,
+        git_repos?: [{url, branch?, token?}, ...],
+        zips?: {name: base64_data, ...},
+        dockerfile_content?: str
+    }
+    
+    All sources extracted as siblings in build dir:
+    /tmp/build-xxx/
+    ├── app/           ← from git (name from URL)
+    ├── shared-lib/    ← from git
+    ├── pkg/           ← from zip
+    └── Dockerfile
+    """
+    build_dir = None
+    
+    try:
+        build_dir = tempfile.mkdtemp(prefix='build-')
+        data = request.json
+        
+        image_name = data.get('image_name')
+        dockerfile_content = data.get('dockerfile_content')
+        git_repos = data.get('git_repos', [])
+        zips = data.get('zips', {})
+        
+        if not image_name:
+            return jsonify({'error': 'image_name required'}), 400
+        
+        if not git_repos and not zips and not dockerfile_content:
+            return jsonify({'error': 'need git_repos, zips, or dockerfile_content'}), 400
+        
+        # Clone git repos
+        for repo in git_repos:
+            url = repo.get('url')
+            if not url:
+                return jsonify({'error': 'git repo needs url'}), 400
+            
+            name = _repo_name_from_url(url)
+            branch = repo.get('branch', 'main')
+            token = repo.get('token')
+            
+            clone_url = url.replace('https://', f'https://{token}@') if token else url
+            target_dir = os.path.join(build_dir, name)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            result = subprocess.run(
+                ['git', 'clone', '--depth=1', '--branch', branch, clone_url, '.'],
+                cwd=target_dir,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if result.returncode != 0:
+                return jsonify({'error': f'Git clone failed for {name}: {result.stderr}'}), 500
+        
+        # Extract zips
+        for name, data_b64 in zips.items():
+            target_dir = os.path.join(build_dir, name)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            zip_bytes = base64.b64decode(data_b64)
+            with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zf:
+                for member in zf.namelist():
+                    if '..' in member or member.startswith('/'):
+                        continue
+                    zf.extract(member, target_dir)
+            
+            # Flatten single root folder
+            contents = os.listdir(target_dir)
+            if len(contents) == 1 and os.path.isdir(os.path.join(target_dir, contents[0])):
+                inner = os.path.join(target_dir, contents[0])
+                for item in os.listdir(inner):
+                    shutil.move(os.path.join(inner, item), target_dir)
+                os.rmdir(inner)
+        
+        # Write Dockerfile
+        if dockerfile_content:
+            with open(os.path.join(build_dir, 'Dockerfile'), 'w') as f:
+                f.write(dockerfile_content)
+        
+        if not os.path.exists(os.path.join(build_dir, 'Dockerfile')):
+            return jsonify({'error': 'No Dockerfile'}), 400
+        
+        # Build with resource limits
+        result = subprocess.run(
+            ['docker', 'build', '--memory=2g', '--cpu-quota=100000', '-t', image_name, '.'],
+            cwd=build_dir,
+            capture_output=True,
+            text=True,
+            timeout=600
+        )
+        
+        if result.returncode != 0:
+            return jsonify({
+                'status': 'failed',
+                'error': result.stderr[-2000:],
+                'logs': result.stdout[-2000:]
+            }), 500
+        
+        return jsonify({
+            'status': 'built',
+            'image': image_name,
+            'logs': result.stdout[-2000:]
+        })
+    
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'Build timeout'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if build_dir:
+            shutil.rmtree(build_dir, ignore_errors=True)
 
 
 # =============================================================================
@@ -106,13 +245,14 @@ def start_container():
     env_variables = data.get('env_variables', [])
     container_port = data.get('container_port')
     host_port = data.get('host_port')
-    volumes = data.get('volumes', ['/data:/app/data'])
     
     if not all([container_name, image_name, container_port, host_port]):
         return jsonify({'error': 'missing required fields'}), 400
     
     try:
-        # Build docker run command
+        # Remove existing container if any
+        subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True)
+        
         cmd = [
             'docker', 'run', '-d',
             '--name', container_name,
@@ -121,14 +261,8 @@ def start_container():
             '--restart', 'unless-stopped',
         ]
         
-        # Add environment variables
         for env in env_variables:
             cmd.extend(['-e', env])
-        
-        # Add custom volumes
-        for vol in volumes:
-            if vol != '/data:/app/data':  # Already added
-                cmd.extend(['-v', vol])
         
         cmd.append(image_name)
         
@@ -149,20 +283,14 @@ def start_container():
 @app.route('/remove_container', methods=['POST'])
 @require_auth
 def remove_container():
-    """
-    Stop and remove a container.
-    JSON body or query param: container_name
-    """
+    """Stop and remove a container."""
     container_name = request.args.get('container_name') or (request.json or {}).get('container_name')
     if not container_name:
         return jsonify({'error': 'container_name required'}), 400
     
     try:
-        # Stop
         subprocess.run(['docker', 'stop', container_name], capture_output=True)
-        # Remove
         subprocess.run(['docker', 'rm', '-f', container_name], capture_output=True)
-        
         return jsonify({'status': 'removed', 'container_name': container_name})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -202,29 +330,22 @@ def container_status(container_name):
             return jsonify({'error': 'not_found'}), 404
         
         parts = result.stdout.strip().split('|')
-        state = parts[0] if parts else 'unknown'
-        health = parts[1] if len(parts) > 1 else 'none'
-        running = parts[2] == 'true' if len(parts) > 2 else False
-        
         return jsonify({
             'container_name': container_name,
-            'state': state,
-            'health_status': health,
-            'running': running
+            'state': parts[0] if parts else 'unknown',
+            'health_status': parts[1] if len(parts) > 1 else 'none',
+            'running': parts[2] == 'true' if len(parts) > 2 else False
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
 # =============================================================================
-# HEALTH CHECK (with log parsing + TCP ping)
+# HEALTH CHECK
 # =============================================================================
 
 def parse_logs_for_errors(container_name, max_errors=5):
-    """
-    Parse docker logs for errors.
-    Returns list of up to max_errors error messages.
-    """
+    """Parse docker logs for errors."""
     try:
         result = subprocess.run(
             ['docker', 'logs', '--tail', '200', container_name],
@@ -232,8 +353,6 @@ def parse_logs_for_errors(container_name, max_errors=5):
         )
         
         logs = result.stdout + result.stderr
-        
-        # Look for common error patterns
         error_patterns = [
             r'(?i)error[:\s].*',
             r'(?i)exception[:\s].*',
@@ -248,24 +367,19 @@ def parse_logs_for_errors(container_name, max_errors=5):
         for line in logs.split('\n'):
             for pattern in error_patterns:
                 if re.search(pattern, line):
-                    # Clean and truncate
                     clean_line = line.strip()[:200]
                     if clean_line and clean_line not in errors:
                         errors.append(clean_line)
                         if len(errors) >= max_errors:
                             return errors
                     break
-        
         return errors
     except Exception:
         return []
 
 
 def tcp_ping(host, port, timeout=5):
-    """
-    TCP ping to check if port is reachable.
-    Returns True if connection successful.
-    """
+    """TCP ping to check if port is reachable."""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -287,16 +401,13 @@ def get_container_host_port(container_name):
         if result.returncode != 0:
             return None
         
-        # Parse output like "8000/tcp -> 0.0.0.0:12345"
         for line in result.stdout.strip().split('\n'):
             if '->' in line:
-                # Get the host port
                 parts = line.split('->')
                 if len(parts) == 2:
                     host_part = parts[1].strip()
                     if ':' in host_part:
-                        port_str = host_part.split(':')[-1]
-                        return int(port_str)
+                        return int(host_part.split(':')[-1])
         return None
     except Exception:
         return None
@@ -331,24 +442,16 @@ def get_container_info(container_name):
 def health():
     """
     Health check for a container.
-    
-    Flow (per pseudo code):
-    1. Parse logs for errors (up to 5)
-    2. Check if container is running
-    3. Get host port and TCP ping
-    4. Return status based on results
-    
-    Returns:
-        {'status': 'healthy|unhealthy|degraded', 'reason': '...', 'details': [...], 'container_info': {...}}
+    1. Parse logs for errors
+    2. Check if running
+    3. TCP ping
+    4. Return status
     """
     container_name = request.args.get('container_name')
     if not container_name:
         return jsonify({'error': 'container_name required'}), 400
     
-    # 1. Parse logs for errors
     errors = parse_logs_for_errors(container_name)
-    
-    # 2. Check if container is running
     container_info = get_container_info(container_name)
     
     if not container_info or container_info.get('status') != 'running':
@@ -359,25 +462,20 @@ def health():
             'container_info': container_info
         })
     
-    # 3. Get host port and TCP ping
     host_port = get_container_host_port(container_name)
     
-    if host_port:
-        reachable = tcp_ping('127.0.0.1', host_port, timeout=5)
-        
-        if not reachable:
-            return jsonify({
-                'status': 'unhealthy',
-                'reason': 'running but timed out',
-                'details': errors,
-                'container_info': container_info
-            })
+    if host_port and not tcp_ping('127.0.0.1', host_port, timeout=5):
+        return jsonify({
+            'status': 'unhealthy',
+            'reason': 'running but timed out',
+            'details': errors,
+            'container_info': container_info
+        })
     
-    # 4. Check for errors in logs
-    if len(errors) > 0:
+    if errors:
         return jsonify({
             'status': 'degraded',
-            'reason': 'running fine but some errors can be found in the log',
+            'reason': 'running but errors in logs',
             'details': errors,
             'container_info': container_info
         })
@@ -411,7 +509,6 @@ def configure_nginx():
         short = domain.replace('.digitalpixo.com', '')
         conf_path = f'/etc/nginx/sites-enabled/{short}.conf'
         
-        # Build upstream servers list
         upstream_servers = '\n    '.join(f'server {ip}:{host_port};' for ip in private_ips)
         
         content = f'''upstream {short}_backend {{
@@ -437,7 +534,6 @@ server {{
         with open(conf_path, 'w') as f:
             f.write(content)
         
-        # Reload nginx
         result = subprocess.run(['nginx', '-s', 'reload'], capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -458,3 +554,4 @@ server {{
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=9999)
+
