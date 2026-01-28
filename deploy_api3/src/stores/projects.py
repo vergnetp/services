@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from .base import BaseStore
-from _gen.entities import Project
+from ..models import Project
 
 
 class ProjectStore(BaseStore[Project]):

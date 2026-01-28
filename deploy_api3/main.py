@@ -6,7 +6,7 @@ from shared_libs.backend.app_kernel import create_service, ServiceConfig, load_e
 from shared_libs.backend.app_kernel.auth import hash_password
 
 from .src.routes import router
-from .src.stores import init_schema
+from .src.stores import init_indexes
 
 
 SERVICE_DIR = Path(__file__).parent
@@ -25,7 +25,7 @@ async def seed_admin(db):
         })
 
 async def full_init(db):
-    await init_schema(db)
+    await init_indexes(db)
     await seed_admin(db)
 
 def create_app() -> FastAPI:

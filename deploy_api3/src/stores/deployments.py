@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from .base import BaseStore
-from _gen.entities import Deployment
+from ..models import Deployment
 
 
 class DeploymentStore(BaseStore[Deployment]):

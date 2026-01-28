@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from .base import BaseStore
-from _gen.entities import Snapshot
+from ..models import Snapshot
 
 
 class SnapshotStore(BaseStore[Snapshot]):

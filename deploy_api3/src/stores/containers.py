@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from .base import BaseStore, _now_iso, _generate_id
-from _gen.entities import Container
+from ..models import Container
 import json
 
 
