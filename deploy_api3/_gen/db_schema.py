@@ -1,39 +1,15 @@
-# src/stores/__init__.py
 """
-Database stores with typed entity returns.
-
-All stores return typed dataclass entities from _gen/entities.py,
-providing IDE autocomplete and compile-time type checking.
-
-Usage:
-    from src.stores import projects, droplets
-    
-    project = await projects.get(db, project_id)
-    project.name         # ✅ IDE autocomplete
-    project.workspace_id # ✅ type checked
-    
-    droplets = await droplets.list_for_workspace(db, workspace_id)
-    for d in droplets:
-        print(d.ip)      # ✅ typed as Droplet
+Database schema - AUTO-GENERATED from manifest.yaml
+DO NOT EDIT - changes will be overwritten on regenerate
 """
 
-from . import projects, services, deployments, droplets, containers, snapshots
-
-__all__ = [
-    "projects",
-    "services", 
-    "deployments",
-    "droplets",
-    "containers",
-    "snapshots",
-    "init_schema",
-]
+from typing import Any
 
 
-async def init_schema(db) -> None:
-    """Initialize database schema."""
-    
-    # Projects
+async def init_schema(db: Any) -> None:
+    """Initialize database schema. Called by kernel after DB connection."""
+
+    # Project
     await db.execute("""
         CREATE TABLE IF NOT EXISTS projects (
             id TEXT PRIMARY KEY,
@@ -41,63 +17,53 @@ async def init_schema(db) -> None:
             name TEXT NOT NULL,
             created_at TEXT,
             updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT,
             deleted_at TEXT
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(workspace_id, name) WHERE deleted_at IS NULL")
-    
-    # Services
+
+    # Service
     await db.execute("""
         CREATE TABLE IF NOT EXISTS services (
             id TEXT PRIMARY KEY,
-            project_id TEXT,
+            project_id TEXT NOT NULL,
             name TEXT NOT NULL,
             description TEXT,
             service_type TEXT,
             created_at TEXT,
             updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT,
             deleted_at TEXT
         )
     """)
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id)")
-    
-    # Deployments
+
+    # Deployment
     await db.execute("""
         CREATE TABLE IF NOT EXISTS deployments (
             id TEXT PRIMARY KEY,
-            service_id TEXT,
-            env TEXT,
-            version INTEGER,
+            service_id TEXT NOT NULL,
+            env TEXT NOT NULL,
+            version INTEGER NOT NULL,
             image_name TEXT,
             container_name TEXT,
             env_variables TEXT,
             droplet_ids TEXT,
             is_rollback INTEGER DEFAULT 0,
-            status TEXT,
+            status TEXT DEFAULT 'pending',
             error TEXT,
             log TEXT,
             triggered_by TEXT,
             triggered_at TEXT,
             created_at TEXT,
-            updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT
+            updated_at TEXT
         )
     """)
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_deployments_service ON deployments(service_id, env)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status)")
-    
-    # Droplets
+
+    # Droplet
     await db.execute("""
         CREATE TABLE IF NOT EXISTS droplets (
             id TEXT PRIMARY KEY,
             workspace_id TEXT,
-            do_droplet_id INTEGER,
+            do_droplet_id TEXT,
             name TEXT,
             ip TEXT,
             private_ip TEXT,
@@ -116,15 +82,12 @@ async def init_schema(db) -> None:
             last_reboot_at TEXT,
             created_at TEXT,
             updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT,
             deleted_at TEXT
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_droplets_workspace ON droplets(workspace_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_droplets_do_id ON droplets(do_droplet_id)")
-    
-    # Containers
+
+    # Container
     await db.execute("""
         CREATE TABLE IF NOT EXISTS containers (
             id TEXT PRIMARY KEY,
@@ -141,16 +104,11 @@ async def init_schema(db) -> None:
             last_checked TEXT,
             error TEXT,
             created_at TEXT,
-            updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT
+            updated_at TEXT
         )
     """)
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_containers_droplet ON containers(droplet_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_containers_deployment ON containers(deployment_id)")
-    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_containers_name_droplet ON containers(container_name, droplet_id)")
-    
-    # Snapshots
+
+    # Snapshot
     await db.execute("""
         CREATE TABLE IF NOT EXISTS snapshots (
             id TEXT PRIMARY KEY,
@@ -158,14 +116,11 @@ async def init_schema(db) -> None:
             do_snapshot_id TEXT,
             name TEXT,
             region TEXT,
-            size_gigabytes REAL,
+            size_gigabytes REAL DEFAULT 0,
             agent_version TEXT,
             is_base INTEGER DEFAULT 0,
             created_at TEXT,
-            updated_at TEXT,
-            created_by TEXT,
-            updated_by TEXT
+            updated_at TEXT
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_workspace ON snapshots(workspace_id)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_do_id ON snapshots(do_snapshot_id)")

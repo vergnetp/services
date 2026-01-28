@@ -1,7 +1,7 @@
-# =============================================================================
-# src/snapshot.py
-# =============================================================================
-"""Snapshot provisioning with template caching."""
+"""
+Snapshot provisioning with template caching.
+Uses typed entities.
+"""
 
 import os
 import hmac
@@ -58,10 +58,13 @@ async def create_base_snapshot(
             # 1. Get or create template
             # =================================================================
             existing = await client.list_snapshots()
-            template = next((s for s in existing if s.get('name') == TEMPLATE_SNAPSHOT_NAME), None)
+            template = next(
+                (s for s in existing if s.name == TEMPLATE_SNAPSHOT_NAME), 
+                None
+            )
             
             if template:
-                template_id = template['id']
+                template_id = template.id
             else:
                 result = {}
                 async for event in _create_template(
@@ -81,7 +84,7 @@ async def create_base_snapshot(
                 image=template_id,
                 tags=[f'user:{user_id}', 'temp-snapshot'],
             )
-            do_droplet_id = droplet_result['id']
+            do_droplet_id = droplet_result.id
             
             # Wait for IP
             ip = await _wait_for_ip(client, do_droplet_id, stream)
@@ -174,13 +177,18 @@ WantedBy=multi-user.target'''
             # Snapshot
             stream('Creating snapshot...')
             yield sse_log(stream._logs[-1])
-            snapshot = await client.create_snapshot(do_droplet_id, name='base')
-            do_snapshot_id = snapshot['id']
+            snapshot = await client.create_snapshot_from_droplet(do_droplet_id, name='base')
+            
+            # Get snapshot info
+            snap_list = await client.list_snapshots()
+            do_snapshot = next((s for s in snap_list if s.name == 'base'), None)
+            do_snapshot_id = do_snapshot.id if do_snapshot else str(snapshot.id)
+            size_gb = do_snapshot.size_gigabytes if do_snapshot else 0
             
             # Cleanup temp droplet
             stream('Cleaning up temp droplet...')
             yield sse_log(stream._logs[-1])
-            await client.delete_droplet(do_droplet_id)
+            await client.delete_droplet(do_droplet_id, force=True)
             do_droplet_id = None
             
             # Save to DB
@@ -189,20 +197,20 @@ WantedBy=multi-user.target'''
                 'do_snapshot_id': str(do_snapshot_id),
                 'name': 'base',
                 'region': region,
-                'size_gigabytes': snapshot.get('size_gigabytes'),
+                'size_gigabytes': size_gb,
                 'agent_version': AGENT_VERSION,
                 'is_base': True,
             })
             
             stream('Base snapshot ready!')
             yield sse_log(stream._logs[-1])
-            yield sse_complete(True, snap['id'])
+            yield sse_complete(True, snap.id)
     
     except Exception as e:
         if do_droplet_id:
             try:
                 async with AsyncDOClient(api_token=do_token) as client:
-                    await client.delete_droplet(do_droplet_id)
+                    await client.delete_droplet(do_droplet_id, force=True)
             except:
                 pass
         
@@ -236,11 +244,8 @@ async def create_custom_snapshot(
     3. Test run (verify it starts)
     4. Snapshot droplet
     5. Cleanup
-    
-    Image always named 'base'. Use in Dockerfile: FROM local/base
     """
     stream = StreamContext()
-    droplet = None
     droplet_id = None
     image_name = 'base'
     
@@ -253,10 +258,10 @@ async def create_custom_snapshot(
         
         # Get base snapshot
         if not base_snapshot_id:
-            base = await snapshots.get_by_name(db, user_id, 'base')
+            base = await snapshots.get_base(db, user_id)
             if not base:
                 raise Exception("No base snapshot. Run create_base_snapshot first.")
-            base_snapshot_id = base['id']
+            base_snapshot_id = base.id
         
         # 1. Create temp droplet
         stream('Creating temp droplet...')
@@ -264,7 +269,7 @@ async def create_custom_snapshot(
         
         from .droplet import create_droplet
         droplet = await create_droplet(db, user_id, base_snapshot_id, region, size, do_token)
-        if droplet.get('error'):
+        if isinstance(droplet, dict) and droplet.get('error'):
             raise Exception(f"Droplet creation failed: {droplet['error']}")
         
         droplet_id = droplet['id']
@@ -315,23 +320,38 @@ async def create_custom_snapshot(
         
         await agent_client.remove_container(droplet_ip, container_name, do_token)
         
+        # 4. Get droplet's DO ID for snapshot
+        db_droplet = await droplets.get(db, droplet_id)
+        if not db_droplet:
+            raise Exception("Droplet not found in DB")
+        
         # 4. Power off and snapshot
         stream('Powering off droplet...')
         yield sse_log(stream._logs[-1])
         
         async with AsyncDOClient(api_token=do_token) as client:
-            await client.power_off_droplet(droplet['do_droplet_id'])
+            await client.power_off_droplet(db_droplet.do_droplet_id)
             await asyncio.sleep(10)
             
             stream(f'Creating snapshot: {snapshot_name}...')
             yield sse_log(stream._logs[-1])
-            snapshot = await client.create_snapshot(droplet['do_droplet_id'], name=snapshot_name)
-            do_snapshot_id = snapshot['id']
+            snapshot_action = await client.create_snapshot_from_droplet(
+                db_droplet.do_droplet_id, name=snapshot_name
+            )
+            
+            # Get snapshot info
+            snap_list = await client.list_snapshots()
+            do_snapshot = next((s for s in snap_list if s.name == snapshot_name), None)
+            do_snapshot_id = do_snapshot.id if do_snapshot else None
+            size_gb = do_snapshot.size_gigabytes if do_snapshot else 0
+            
+            if not do_snapshot_id:
+                raise Exception("Snapshot not found after creation")
             
             # 5. Cleanup
             stream('Cleaning up...')
             yield sse_log(stream._logs[-1])
-            await client.delete_droplet(droplet['do_droplet_id'])
+            await client.delete_droplet(db_droplet.do_droplet_id, force=True)
         
         await droplets.delete(db, droplet_id)
         droplet_id = None
@@ -342,14 +362,14 @@ async def create_custom_snapshot(
             'do_snapshot_id': str(do_snapshot_id),
             'name': snapshot_name,
             'region': region,
-            'size_gigabytes': snapshot.get('size_gigabytes'),
+            'size_gigabytes': size_gb,
             'is_base': False,
         })
         
         stream(f'Custom snapshot ready: {snapshot_name}')
         stream('Use in Dockerfile: FROM local/base')
         yield sse_log(stream._logs[-1])
-        yield sse_complete(True, snap['id'])
+        yield sse_complete(True, snap.id)
     
     except Exception as e:
         # Cleanup on error
@@ -358,7 +378,7 @@ async def create_custom_snapshot(
                 d = await droplets.get(db, droplet_id)
                 if d:
                     async with AsyncDOClient(api_token=do_token) as client:
-                        await client.delete_droplet(d['do_droplet_id'])
+                        await client.delete_droplet(d.do_droplet_id, force=True)
                     await droplets.delete(db, droplet_id)
             except:
                 pass
@@ -377,7 +397,7 @@ async def _create_template(
     region: str, size: str, images: List[str], do_token: str,
     result: Dict[str, Any]
 ) -> AsyncIterator[str]:
-    """Create template snapshot: Docker + nginx + SSL + git + images. No agent, no firewall."""
+    """Create template snapshot: Docker + nginx + SSL + git + images."""
     
     template_droplet_id = None
     
@@ -391,7 +411,7 @@ async def _create_template(
             image='ubuntu-24-04-x64',
             tags=[f'user:{user_id}', 'temp-snapshot'],
         )
-        template_droplet_id = droplet['id']
+        template_droplet_id = droplet.id
         
         # Wait for IP
         ip = await _wait_for_ip(client, template_droplet_id, stream)
@@ -483,24 +503,28 @@ async def _create_template(
         # Create snapshot
         stream('Creating template snapshot...')
         yield sse_log(stream._logs[-1])
-        snapshot = await client.create_snapshot(template_droplet_id, name=TEMPLATE_SNAPSHOT_NAME)
+        await client.create_snapshot_from_droplet(template_droplet_id, name=TEMPLATE_SNAPSHOT_NAME)
+        
+        # Get snapshot ID
+        snap_list = await client.list_snapshots()
+        snapshot = next((s for s in snap_list if s.name == TEMPLATE_SNAPSHOT_NAME), None)
         
         # Delete temp droplet
         stream('Cleaning up template droplet...')
         yield sse_log(stream._logs[-1])
-        await client.delete_droplet(template_droplet_id)
+        await client.delete_droplet(template_droplet_id, force=True)
         template_droplet_id = None
         
         stream('Template created.')
         yield sse_log(stream._logs[-1])
         
         # Return via mutable container
-        result['template_id'] = snapshot['id']
+        result['template_id'] = snapshot.id if snapshot else None
     
     except Exception as e:
         if template_droplet_id:
             try:
-                await client.delete_droplet(template_droplet_id)
+                await client.delete_droplet(template_droplet_id, force=True)
             except:
                 pass
         raise
@@ -510,16 +534,15 @@ async def _create_template(
 # Helpers
 # =============================================================================
 
-async def _wait_for_ip(client: AsyncDOClient, droplet_id: str, stream: StreamContext, timeout: int = 60) -> str:
+async def _wait_for_ip(client: AsyncDOClient, droplet_id: int, stream: StreamContext, timeout: int = 60) -> str:
     """Wait for droplet to get an IP address."""
     stream('Waiting for droplet IP...')
     
     for i in range(timeout // 2):
         await asyncio.sleep(2)
         info = await client.get_droplet(droplet_id)
-        for net in info.get('networks', {}).get('v4', []):
-            if net.get('type') == 'public':
-                return net.get('ip_address')
+        if info and info.ip:
+            return info.ip
         if i % 5 == 4:
             stream(f'Still waiting for IP... ({i*2}s)')
     
@@ -538,15 +561,14 @@ async def delete_snapshot(db, snapshot_id: str, do_token: str) -> Dict[str, Any]
     
     async with AsyncDOClient(api_token=do_token) as client:
         try:
-            await client.delete_snapshot(snap['do_snapshot_id'])
+            await client.delete_snapshot(snap.do_snapshot_id)
         except:
             pass
     
     await snapshots.delete(db, snapshot_id)
-    return {'status': 'deleted', 'name': snap.get('name')}
+    return {'status': 'deleted', 'name': snap.name}
 
 
 async def list_base_images() -> List[Dict[str, Any]]:
     """Return list of available base images with ports."""
     return [{'image': img, 'port': port} for img, port in BASE_IMAGES.items()]
-
