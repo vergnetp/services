@@ -1,8 +1,6 @@
-# =============================================================================
-# src/service.py
-# =============================================================================
 """
 Deployment orchestration - calls node agent via HTTP for all container operations.
+Uses typed entities.
 """
 
 import json
@@ -88,18 +86,25 @@ async def _deploy_to(
         if status.get('status') == 'healthy':
             stream(f'deployed to server {droplet_ip}.')
             await containers.upsert(db, {
-                'container_name': container_name, 'droplet_id': droplet_id,
-                'deployment_id': deployment_id, 'status': 'running',
-                'health_status': 'healthy', 'last_checked': now_iso(),
+                'container_name': container_name, 
+                'droplet_id': droplet_id,
+                'deployment_id': deployment_id, 
+                'status': 'running',
+                'health_status': 'healthy', 
+                'last_checked': now_iso(),
             })
             return {'status': 'success', 'error': None}
         else:
             error = status.get('reason', 'health check failed')
             stream(f'failed to deploy to server {droplet_ip}: {error}')
             await containers.upsert(db, {
-                'container_name': container_name, 'droplet_id': droplet_id,
-                'deployment_id': deployment_id, 'status': 'failed',
-                'health_status': 'unhealthy', 'error': error, 'last_checked': now_iso(),
+                'container_name': container_name, 
+                'droplet_id': droplet_id,
+                'deployment_id': deployment_id, 
+                'status': 'failed',
+                'health_status': 'unhealthy', 
+                'error': error, 
+                'last_checked': now_iso(),
             })
             return {'status': 'failed', 'error': error}
     
@@ -107,9 +112,13 @@ async def _deploy_to(
         error = str(e)
         stream(f'failed to deploy to server {droplet_ip}: {error}')
         await containers.upsert(db, {
-            'container_name': container_name, 'droplet_id': droplet_id,
-            'deployment_id': deployment_id, 'status': 'failed',
-            'health_status': 'unhealthy', 'error': error, 'last_checked': now_iso(),
+            'container_name': container_name, 
+            'droplet_id': droplet_id,
+            'deployment_id': deployment_id, 
+            'status': 'failed',
+            'health_status': 'unhealthy', 
+            'error': error, 
+            'last_checked': now_iso(),
         })
         return {'status': 'failed', 'error': error}
 
@@ -143,7 +152,6 @@ async def deploy_service(
     - image_name only: Rollback (image already exists on droplet)
     - git_repos + dockerfile_content: Build from git on droplet
     - source_zips + dockerfile_content: Build from zips on droplet
-    - git_repos + source_zips: Mix both (all extracted as siblings)
     """
     deployment_id = None
     lock_id = None
@@ -171,9 +179,11 @@ async def deploy_service(
             stream(f'Provisioning {new_droplets_nb} new droplets...')
             yield sse_log(stream._logs[-1])
             from .droplet import create_droplet
-            tasks = [create_droplet(db, user_id, new_droplets_snapshot_id, 
-                                   new_droplets_region, new_droplets_size, do_token)
-                    for _ in range(new_droplets_nb)]
+            tasks = [
+                create_droplet(db, user_id, new_droplets_snapshot_id, 
+                              new_droplets_region, new_droplets_size, do_token)
+                for _ in range(new_droplets_nb)
+            ]
             new_droplets = await asyncio.gather(*tasks)
             stream(f'{new_droplets_nb} droplets created.')
             yield sse_log(stream._logs[-1])
@@ -183,18 +193,23 @@ async def deploy_service(
         yield sse_log(stream._logs[-1])
         project = await projects.get_by_name(db, user_id, project_name)
         if not project:
-            project = await projects.create(db, {'workspace_id': user_id, 'name': project_name})
+            project = await projects.create(db, {
+                'workspace_id': user_id, 
+                'name': project_name
+            })
         
         # Create service if needed
         stream('Setting up service...')
         yield sse_log(stream._logs[-1])
-        service = await services.get_by_name(db, project['id'], service_name)
+        service = await services.get_by_name(db, project.id, service_name)
         if not service:
             service = await services.create(db, {
-                'project_id': project['id'], 'name': service_name,
-                'description': service_description, 'service_type': service_type,
+                'project_id': project.id, 
+                'name': service_name,
+                'description': service_description, 
+                'service_type': service_type,
             })
-        service_id = service['id']
+        service_id = service.id
         
         # Acquire lock
         lock_id = await acquire_deploy_lock(service_id, env, timeout=600, holder=user_id)
@@ -204,10 +219,19 @@ async def deploy_service(
         # Get target droplets
         stream('Finding target servers...')
         yield sse_log(stream._logs[-1])
-        existing_infos = [await droplets.get(db, did) for did in existing_droplet_ids]
-        existing_infos = [d for d in existing_infos if d and d.get('ip')]
         
-        all_droplets = existing_infos + [d for d in new_droplets if d and not d.get('error')]
+        # Fetch existing droplet info
+        existing_infos = []
+        for did in existing_droplet_ids:
+            d = await droplets.get(db, did)
+            if d and d.ip:
+                existing_infos.append({'id': d.id, 'ip': d.ip, 'private_ip': d.private_ip})
+        
+        # Combine with new droplets (new_droplets are already dicts from create_droplet)
+        all_droplets = existing_infos + [
+            d for d in new_droplets 
+            if isinstance(d, dict) and d.get('ip') and not d.get('error')
+        ]
         
         if not all_droplets:
             raise Exception("No valid droplets available")
@@ -222,13 +246,17 @@ async def deploy_service(
         stream('Finding version...')
         yield sse_log(stream._logs[-1])
         last_deployment = await deployments.get_latest(db, service_id, env, status='success')
-        last_version = last_deployment['version'] if last_deployment else 0
+        last_version = last_deployment.version if last_deployment else 0
         version = last_version + 1
         stream(f'New version: v{version}')
         yield sse_log(stream._logs[-1])
         
         # Container/image names
-        last_container_name = get_container_name(user_id, project_name, service_name, env, last_version) if last_version > 0 else None
+        last_container_name = None
+        if last_version > 0:
+            last_container_name = get_container_name(
+                user_id, project_name, service_name, env, last_version
+            )
         container_name = get_container_name(user_id, project_name, service_name, env, version)
         
         # Use provided image_name or generate one
@@ -245,7 +273,7 @@ async def deploy_service(
         if not is_stateful(service_type):
             stream('Resolving stateful URLs...')
             yield sse_log(stream._logs[-1])
-            stateful_urls, warnings = await get_stateful_urls(db, project['id'], env)
+            stateful_urls, warnings = await get_stateful_urls(db, project.id, env)
             env_dict.update(stateful_urls)
             for w in warnings:
                 stream(f'  Warning: {w}')
@@ -253,13 +281,18 @@ async def deploy_service(
         
         # Create deployment record
         deployment = await deployments.create(db, {
-            'service_id': service_id, 'env': env, 'version': version,
-            'image_name': image_name, 'container_name': container_name,
+            'service_id': service_id, 
+            'env': env, 
+            'version': version,
+            'image_name': image_name, 
+            'container_name': container_name,
             'env_variables': json.dumps(env_dict),
             'droplet_ids': json.dumps(ids),
-            'status': 'deploying', 'triggered_by': user_id, 'triggered_at': now_iso(),
+            'status': 'deploying', 
+            'triggered_by': user_id, 
+            'triggered_at': now_iso(),
         })
-        deployment_id = deployment['id']
+        deployment_id = deployment.id
         
         # Deploy to all droplets
         stream(f'Deploying to {len(all_droplets)} servers...')
@@ -290,7 +323,10 @@ async def deploy_service(
             elif isinstance(r, Exception):
                 yield sse_log(f"Deploy exception: {r}", 'error')
         
-        statuses = [r if isinstance(r, dict) else {'status': 'failed', 'error': str(r)} for r in results]
+        statuses = [
+            r if isinstance(r, dict) else {'status': 'failed', 'error': str(r)} 
+            for r in results
+        ]
         success_count = sum(1 for s in statuses if s.get('status') == 'success')
         
         # Handle old containers
@@ -298,7 +334,8 @@ async def deploy_service(
             stream('Removing old containers...')
             yield sse_log(stream._logs[-1])
             await asyncio.gather(
-                *[agent_client.remove_container(d['ip'], last_container_name, do_token) for d in all_droplets],
+                *[agent_client.remove_container(d['ip'], last_container_name, do_token) 
+                  for d in all_droplets],
                 return_exceptions=True
             )
         
@@ -308,7 +345,8 @@ async def deploy_service(
             yield sse_log(stream._logs[-1])
             domain = get_domain_name(user_id, project_name, service_name, env)
             await asyncio.gather(
-                *[agent_client.configure_nginx(d['ip'], private_ips, host_port, domain, do_token) for d in all_droplets],
+                *[agent_client.configure_nginx(d['ip'], private_ips, host_port, domain, do_token) 
+                  for d in all_droplets],
                 return_exceptions=True
             )
             
@@ -320,21 +358,38 @@ async def deploy_service(
         
         # Final status
         if success_count == len(all_droplets):
-            await deployments.update(db, deployment_id, {'status': 'success', 'log': stream.flush()})
+            await deployments.update(db, deployment_id, {
+                'status': 'success', 
+                'log': stream.flush()
+            })
             stream(f'Deployment complete: v{version} on {success_count} servers.')
             yield sse_log(stream._logs[-1])
             yield sse_complete(True, deployment_id)
         
         elif success_count == 0:
-            first_error = next((s.get('error') for s in statuses if s.get('error')), 'All failed')
-            await deployments.update(db, deployment_id, {'status': 'failed', 'error': first_error, 'log': stream.flush()})
+            first_error = next(
+                (s.get('error') for s in statuses if s.get('error')), 
+                'All failed'
+            )
+            await deployments.update(db, deployment_id, {
+                'status': 'failed', 
+                'error': first_error, 
+                'log': stream.flush()
+            })
             stream(f'Deployment failed: {first_error}')
             yield sse_log(stream._logs[-1], 'error')
             yield sse_complete(False, deployment_id, first_error)
         
         else:
-            first_error = next((s.get('error') for s in statuses if s.get('error')), 'Partial failure')
-            await deployments.update(db, deployment_id, {'status': 'partial', 'error': first_error, 'log': stream.flush()})
+            first_error = next(
+                (s.get('error') for s in statuses if s.get('error')), 
+                'Partial failure'
+            )
+            await deployments.update(db, deployment_id, {
+                'status': 'partial', 
+                'error': first_error, 
+                'log': stream.flush()
+            })
             stream(f'Deployment partial: {success_count}/{len(all_droplets)} succeeded.')
             yield sse_log(stream._logs[-1], 'warning')
             yield sse_complete(False, deployment_id, first_error)
@@ -344,7 +399,11 @@ async def deploy_service(
         stream(f'Error: {error}')
         yield sse_log(stream._logs[-1], 'error')
         if deployment_id:
-            await deployments.update(db, deployment_id, {'status': 'failed', 'error': error, 'log': stream.flush()})
+            await deployments.update(db, deployment_id, {
+                'status': 'failed', 
+                'error': error, 
+                'log': stream.flush()
+            })
         yield sse_complete(False, deployment_id or '', error)
     
     finally:
@@ -366,9 +425,16 @@ async def rollback_service(
     try:
         stream('Fetching service info...')
         yield sse_log(stream._logs[-1])
+        
         service = await services.get(db, service_id)
-        project = await projects.get(db, service['project_id'])
-        stream(f'Rolling back {project["name"]}/{service["name"]}')
+        if not service:
+            raise Exception('Service not found')
+        
+        project = await projects.get(db, service.project_id)
+        if not project:
+            raise Exception('Project not found')
+        
+        stream(f'Rolling back {project.name}/{service.name}')
         yield sse_log(stream._logs[-1])
         
         # Find current version
@@ -376,8 +442,8 @@ async def rollback_service(
         if not current:
             raise Exception('No successful deployment to rollback from')
         
-        current_version = current['version']
-        current_ids = current.get('droplet_ids', [])
+        current_version = current.version
+        current_ids = current.droplet_ids
         if isinstance(current_ids, str):
             current_ids = json.loads(current_ids)
         stream(f'Current: v{current_version} on {len(current_ids)} servers.')
@@ -385,25 +451,28 @@ async def rollback_service(
         
         # Find target version
         if target_version is None:
-            target = await deployments.get_previous(db, service_id, env, current_version, status='success')
+            target = await deployments.get_previous(
+                db, service_id, env, current_version, status='success'
+            )
         else:
             target = await deployments.get_by_version(db, service_id, env, target_version)
         
         if not target:
             raise Exception('No previous version to rollback to')
         
-        target_version = target['version']
-        target_image_name = target['image_name']
-        target_env_variables = target.get('env_variables', {})
+        target_version = target.version
+        target_image_name = target.image_name
+        target_env_variables = target.env_variables
         if isinstance(target_env_variables, str):
             target_env_variables = json.loads(target_env_variables)
+        target_env_variables = target_env_variables or {}
         
         stream(f'Rolling back to v{target_version}')
         yield sse_log(stream._logs[-1])
         
         # Deploy with existing image
         async for event in deploy_service(
-            db, user_id, project['name'], service['name'], None, service['service_type'],
+            db, user_id, project.name, service.name, None, service.service_type,
             env_variables=[f"{k}={v}" for k, v in target_env_variables.items()],
             env=env, do_token=do_token, cf_token=cf_token,
             image_name=target_image_name,
@@ -421,8 +490,10 @@ async def rollback_service(
 # Delete Service
 # =============================================================================
 
-async def delete_service(db, user_id: str, service_id: str, env: str = None, 
-                         do_token: str = None, cf_token: str = None) -> AsyncIterator[str]:
+async def delete_service(
+    db, user_id: str, service_id: str, env: str = None, 
+    do_token: str = None, cf_token: str = None
+) -> AsyncIterator[str]:
     """Delete a service (all envs or specific env)."""
     stream = StreamContext()
     
@@ -431,9 +502,12 @@ async def delete_service(db, user_id: str, service_id: str, env: str = None,
         if not service:
             raise Exception('Service not found')
         
-        project = await projects.get(db, service['project_id'])
+        project = await projects.get(db, service.project_id)
+        if not project:
+            raise Exception('Project not found')
         
-        stream(f'Deleting {project["name"]}/{service["name"]}' + (f' ({env})' if env else ' (all envs)'))
+        env_suffix = f' ({env})' if env else ' (all envs)'
+        stream(f'Deleting {project.name}/{service.name}{env_suffix}')
         yield sse_log(stream._logs[-1])
         
         service_deps = await deployments.list_for_service(db, service_id, env=env)
@@ -451,14 +525,16 @@ async def delete_service(db, user_id: str, service_id: str, env: str = None,
         # Collect containers to stop
         to_remove = []
         for dep in service_deps:
-            dep_ids = dep.get('droplet_ids', [])
+            dep_ids = dep.droplet_ids
             if isinstance(dep_ids, str):
                 dep_ids = json.loads(dep_ids)
-            for did in dep_ids:
+            for did in (dep_ids or []):
                 d = await droplets.get(db, did)
-                if d and d.get('ip'):
-                    cn = get_container_name(user_id, project['name'], service['name'], dep['env'], dep['version'])
-                    to_remove.append((d['ip'], cn))
+                if d and d.ip:
+                    cn = get_container_name(
+                        user_id, project.name, service.name, dep.env, dep.version
+                    )
+                    to_remove.append((d.ip, cn))
         
         # Stop containers
         stream(f'Stopping {len(to_remove)} containers...')
@@ -469,16 +545,27 @@ async def delete_service(db, user_id: str, service_id: str, env: str = None,
         )
         
         # Remove DNS (webservice only)
-        if is_webservice(service.get('service_type', '')):
-            envs_used = set(dep['env'] for dep in service_deps)
-            domains = [get_domain_name(user_id, project['name'], service['name'], e) for e in envs_used]
+        if is_webservice(service.service_type or ''):
+            envs_used = set(dep.env for dep in service_deps)
+            domains = [
+                get_domain_name(user_id, project.name, service.name, e) 
+                for e in envs_used
+            ]
             stream(f'Removing DNS: {domains}')
             yield sse_log(stream._logs[-1])
             from .dns import remove_domain
-            await asyncio.gather(*[remove_domain(cf_token, d) for d in domains], return_exceptions=True)
+            await asyncio.gather(
+                *[remove_domain(cf_token, d) for d in domains], 
+                return_exceptions=True
+            )
         
         # Clean DB
-        await containers.delete_by_service(db, service_id, env=env)
+        # Note: containers.delete_by_service doesn't exist, so we delete by deployment
+        for dep in service_deps:
+            dep_containers = await containers.list_for_deployment(db, dep.id)
+            for c in dep_containers:
+                await containers.delete(db, c.id)
+        
         await deployments.delete_by_service(db, service_id, env=env)
         
         if not env:
@@ -492,4 +579,3 @@ async def delete_service(db, user_id: str, service_id: str, env: str = None,
     except Exception as e:
         yield sse_log(f'Error: {e}', 'error')
         yield sse_complete(False, '', str(e))
-

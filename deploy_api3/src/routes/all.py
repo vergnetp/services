@@ -15,7 +15,7 @@ from ...src import snapshot, service, scale, droplet, project
 from ..stores import snapshots, services, projects, droplets, deployments
 
 
-router = APIRouter(prefix="/api/v1", tags=["deploy"])
+router = APIRouter( tags=["deployer"])
 
 
 # =============================================================================

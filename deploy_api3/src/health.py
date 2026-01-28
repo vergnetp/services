@@ -1,6 +1,6 @@
 """
-Health monitoring & healing - matches pseudo code exactly.
-Calls node agent via HTTP for health checks.
+Health monitoring & healing.
+Uses typed entities.
 """
 
 import logging
@@ -12,21 +12,20 @@ from . import agent_client
 from .stores import droplets, containers
 from .utils import now_iso
 
-logger = logging.getLogger(__name__) # todo: use shared_libs.backend.log
+logger = logging.getLogger(__name__)
 
 MAX_CONTAINER_RESTARTS = 3
 MAX_DROPLET_REBOOTS = 2
 
 
-
 # =============================================================================
-# Main Health Check Loop (matches pseudo code)
+# Main Health Check Loop
 # =============================================================================
 
 async def check_health_all(db, do_token: str):
     """
     Main health check loop. Called by background worker.
-    Checks ALL droplets (healthy, unreachable, problematic - all of them).
+    Checks ALL droplets (healthy, unreachable, problematic).
     """
     all_droplets = await droplets.list_active(db)
     
@@ -34,15 +33,15 @@ async def check_health_all(db, do_token: str):
         try:
             await check_droplet_health(db, droplet, do_token)
         except Exception as e:
-            logger.error(f"Error checking droplet {droplet.get('name')}: {e}")
+            logger.error(f"Error checking droplet {droplet.name}: {e}")
 
 
-async def check_droplet_health(db, droplet: Dict[str, Any], do_token: str):
+async def check_droplet_health(db, droplet, do_token: str):
     """
     Check droplet reachability and all its containers.
     Triggers healing if needed.
     """
-    ip = droplet.get('ip')
+    ip = droplet.ip
     if not ip:
         return
     
@@ -58,8 +57,8 @@ async def check_droplet_health(db, droplet: Dict[str, Any], do_token: str):
         return
     
     # 2. Agent OK - reset ALL failure state
-    if droplet.get('failure_count', 0) > 0 or droplet.get('health_status') != 'healthy':
-        await droplets.update(db, droplet['id'], {
+    if (droplet.failure_count or 0) > 0 or droplet.health_status != 'healthy':
+        await droplets.update(db, droplet.id, {
             'health_status': 'healthy',
             'failure_count': 0,
             'problematic_reason': None,
@@ -68,22 +67,21 @@ async def check_droplet_health(db, droplet: Dict[str, Any], do_token: str):
         })
     
     # 3. Check all containers on this droplet
-    droplet_containers = await containers.list_for_droplet(db, droplet['id'])
+    droplet_containers = await containers.list_for_droplet(db, droplet.id)
     
     for container in droplet_containers:
         await check_container_health(db, droplet, container, do_token)
 
 
-async def check_container_health(db, droplet: Dict[str, Any], container: Dict[str, Any], do_token: str):
+async def check_container_health(db, droplet, container, do_token: str):
     """
     Check single container health via node agent.
-    Agent returns: {'status': 'healthy|unhealthy|degraded', 'reason': '...', 'details': [...]}
+    Agent returns: {'status': 'healthy|unhealthy|degraded', 'reason': '...'}
     """
-    ip = droplet.get('ip')
-    container_name = container.get('container_name')
+    ip = droplet.ip
+    container_name = container.container_name
     
     try:
-        # Call agent's /containers/{name}/status endpoint
         status = await agent_client.container_status(ip, container_name, do_token)
     except Exception:
         status = None
@@ -106,8 +104,8 @@ async def check_container_health(db, droplet: Dict[str, Any], container: Dict[st
         return
     
     # Healthy - reset failure count
-    if container.get('failure_count', 0) > 0 or container.get('health_status') != 'healthy':
-        await containers.update(db, container['id'], {
+    if (container.failure_count or 0) > 0 or container.health_status != 'healthy':
+        await containers.update(db, container.id, {
             'health_status': 'healthy',
             'failure_count': 0,
             'last_healthy_at': now_iso(),
@@ -115,48 +113,55 @@ async def check_container_health(db, droplet: Dict[str, Any], container: Dict[st
         })
 
 
-async def mark_container_unhealthy(db, container: Dict[str, Any], reason: str):
+async def mark_container_unhealthy(db, container, reason: str):
     """Record container failure."""
-    await containers.update(db, container['id'], {
+    await containers.update(db, container.id, {
         'health_status': 'unhealthy',
-        'failure_count': container.get('failure_count', 0) + 1,
+        'failure_count': (container.failure_count or 0) + 1,
         'last_failure_at': now_iso(),
         'last_failure_reason': reason,
         'last_checked': now_iso(),
     })
-    logger.warning(f"Container {container.get('container_name')} unhealthy: {reason}")
+    logger.warning(f"Container {container.container_name} unhealthy: {reason}")
 
 
 # =============================================================================
-# Healing (matches pseudo code)
+# Healing
 # =============================================================================
 
-async def heal_container(db, droplet: Dict[str, Any], container: Dict[str, Any], do_token: str):
+async def heal_container(db, droplet, container, do_token: str):
     """
     Attempt to restart unhealthy container.
     If too many failures, flag droplet as problematic.
     """
-    if container.get('failure_count', 0) >= MAX_CONTAINER_RESTARTS:
-        logger.warning(f"Container {container.get('container_name')} failed {container.get('failure_count')} times, flagging droplet")
-        await flag_droplet_problematic(db, droplet, f"container {container.get('container_name')} keeps failing")
+    failure_count = container.failure_count or 0
+    
+    if failure_count >= MAX_CONTAINER_RESTARTS:
+        logger.warning(
+            f"Container {container.container_name} failed {failure_count} times, "
+            f"flagging droplet"
+        )
+        await flag_droplet_problematic(
+            db, droplet, f"container {container.container_name} keeps failing"
+        )
         return
     
-    logger.info(f"Restarting container {container.get('container_name')} on {droplet.get('ip')}")
+    logger.info(f"Restarting container {container.container_name} on {droplet.ip}")
     
     try:
-        await agent_client.restart_container(droplet.get('ip'), container.get('container_name'), do_token)
-        await containers.update(db, container['id'], {'last_restart_at': now_iso()})
+        await agent_client.restart_container(droplet.ip, container.container_name, do_token)
+        await containers.update(db, container.id, {'last_restart_at': now_iso()})
     except Exception as e:
         logger.error(f"Failed to restart container: {e}")
 
 
-async def handle_droplet_unreachable(db, droplet: Dict[str, Any], do_token: str):
+async def handle_droplet_unreachable(db, droplet, do_token: str):
     """
     Droplet agent not responding. Increment failure count, maybe reboot.
     """
-    new_count = droplet.get('failure_count', 0) + 1
+    new_count = (droplet.failure_count or 0) + 1
     
-    await droplets.update(db, droplet['id'], {
+    await droplets.update(db, droplet.id, {
         'health_status': 'unreachable',
         'failure_count': new_count,
         'last_failure_at': now_iso(),
@@ -166,31 +171,31 @@ async def handle_droplet_unreachable(db, droplet: Dict[str, Any], do_token: str)
         await flag_droplet_problematic(db, droplet, 'unreachable after reboots')
         return
     
-    logger.warning(f"Droplet {droplet.get('name')} unreachable (attempt {new_count}), rebooting...")
+    logger.warning(f"Droplet {droplet.name} unreachable (attempt {new_count}), rebooting...")
     await heal_droplet(db, droplet, do_token)
 
 
-async def heal_droplet(db, droplet: Dict[str, Any], do_token: str):
+async def heal_droplet(db, droplet, do_token: str):
     """Reboot droplet via DigitalOcean API."""
-    try:        
+    try:
         async with AsyncDOClient(api_token=do_token) as client:
-            await client.reboot_droplet(droplet['do_droplet_id'])
+            await client.reboot_droplet(droplet.do_droplet_id)
         
-        await droplets.update(db, droplet['id'], {'last_reboot_at': now_iso()})
-        logger.info(f"Reboot initiated for {droplet.get('name')}")
+        await droplets.update(db, droplet.id, {'last_reboot_at': now_iso()})
+        logger.info(f"Reboot initiated for {droplet.name}")
     except Exception as e:
         logger.error(f"Failed to reboot droplet: {e}")
         await flag_droplet_problematic(db, droplet, f'reboot failed: {e}')
 
 
-async def flag_droplet_problematic(db, droplet: Dict[str, Any], reason: str):
+async def flag_droplet_problematic(db, droplet, reason: str):
     """Mark droplet as needing manual intervention."""
-    await droplets.update(db, droplet['id'], {
+    await droplets.update(db, droplet.id, {
         'health_status': 'problematic',
         'problematic_reason': reason,
         'flagged_at': now_iso(),
     })
-    logger.error(f"DROPLET FLAGGED: {droplet.get('name')} - {reason}")
+    logger.error(f"DROPLET FLAGGED: {droplet.name} - {reason}")
     # TODO: send alert (email, slack, etc.)
 
 
@@ -207,12 +212,12 @@ async def get_health_overview(db) -> Dict[str, Any]:
     container_stats = {'healthy': 0, 'unhealthy': 0, 'degraded': 0, 'unknown': 0}
     
     for d in all_droplets:
-        status = d.get('health_status', 'unknown')
+        status = d.health_status or 'unknown'
         if status in droplet_stats:
             droplet_stats[status] += 1
     
     for c in all_containers:
-        status = c.get('health_status', 'unknown')
+        status = c.health_status or 'unknown'
         if status in container_stats:
             container_stats[status] += 1
         else:
@@ -221,8 +226,8 @@ async def get_health_overview(db) -> Dict[str, Any]:
     return {
         'droplets': droplet_stats,
         'containers': container_stats,
-        'problematic_droplets': [d for d in all_droplets if d.get('health_status') == 'problematic'],
-        'unhealthy_containers': [c for c in all_containers if c.get('health_status') == 'unhealthy'],
+        'problematic_droplets': [d for d in all_droplets if d.health_status == 'problematic'],
+        'unhealthy_containers': [c for c in all_containers if c.health_status == 'unhealthy'],
     }
 
 
@@ -239,4 +244,4 @@ async def clear_problematic_flag(db, droplet_id: str) -> Dict[str, Any]:
         'flagged_at': None,
     })
     
-    return {'status': 'cleared', 'droplet': droplet['name']}
+    return {'status': 'cleared', 'droplet': droplet.name}
