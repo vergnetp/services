@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from .base import BaseStore
-from _gen.entities import Droplet
+from ..models import Droplet
 
 
 class DropletStore(BaseStore[Droplet]):

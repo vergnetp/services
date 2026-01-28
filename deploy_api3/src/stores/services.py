@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from .base import BaseStore
-from _gen.entities import Service
+from ..models import Service
 
 
 class ServiceStore(BaseStore[Service]):
