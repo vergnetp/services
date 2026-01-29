@@ -49,6 +49,7 @@ async def create_base_snapshot(
     """
     stream = StreamContext()
     do_droplet_id = None
+    ssh_key_id = None
     images = images or list(BASE_IMAGES.keys())
     
     try:
@@ -76,6 +77,19 @@ async def create_base_snapshot(
             # =================================================================
             # 2. Create base from template
             # =================================================================
+            
+            # Generate ephemeral SSH key pair
+            stream('Generating SSH key...')
+            yield sse_log(stream._logs[-1])
+            
+            private_key = asyncssh.generate_private_key('ssh-rsa', 2048)
+            public_key = private_key.export_public_key().decode('utf-8')
+            
+            # Register key with DigitalOcean
+            key_name = f'deploy-base-{user_id[:8]}-{int(asyncio.get_event_loop().time())}'
+            ssh_key_obj = await client.add_ssh_key(name=key_name, public_key=public_key)
+            ssh_key_id = ssh_key_obj.id
+            
             stream('Creating temp droplet from template...')
             yield sse_log(stream._logs[-1])
             
@@ -83,6 +97,7 @@ async def create_base_snapshot(
                 name='temp-base', region=region, size=size,
                 image=template_id,
                 tags=[f'user:{user_id}', 'temp-snapshot'],
+                ssh_keys=[ssh_key_id] if ssh_key_id else None,
             )
             do_droplet_id = droplet_result.id
             
@@ -101,8 +116,8 @@ async def create_base_snapshot(
             yield sse_log(stream._logs[-1])
             await asyncio.sleep(20)
             
-            # Install agent + firewall + user restrictions
-            async with asyncssh.connect(ip, username='root', known_hosts=None) as conn:
+            # Install agent + firewall + user restrictions (using generated key)
+            async with asyncssh.connect(ip, username='root', known_hosts=None, client_keys=[private_key]) as conn:
                 # Create agent user
                 stream('Creating agent user...')
                 yield sse_log(stream._logs[-1])
@@ -191,6 +206,14 @@ WantedBy=multi-user.target'''
             await client.delete_droplet(do_droplet_id, force=True)
             do_droplet_id = None
             
+            # Cleanup temp SSH key
+            if ssh_key_id:
+                try:
+                    await client.delete_ssh_key(ssh_key_id)
+                except:
+                    pass
+                ssh_key_id = None
+            
             # Save to DB
             snap = await snapshots.create(db, {
                 'workspace_id': user_id,
@@ -207,12 +230,18 @@ WantedBy=multi-user.target'''
             yield sse_complete(True, snap.id)
     
     except Exception as e:
-        if do_droplet_id:
-            try:
-                async with AsyncDOClient(api_token=do_token) as client:
+        # Cleanup on error
+        async with AsyncDOClient(api_token=do_token) as client:
+            if do_droplet_id:
+                try:
                     await client.delete_droplet(do_droplet_id, force=True)
-            except:
-                pass
+                except:
+                    pass
+            if ssh_key_id:
+                try:
+                    await client.delete_ssh_key(ssh_key_id)
+                except:
+                    pass
         
         stream(f'Error: {e}')
         yield sse_log(stream._logs[-1], 'error')
@@ -400,8 +429,24 @@ async def _create_template(
     """Create template snapshot: Docker + nginx + SSL + git + images."""
     
     template_droplet_id = None
+    ssh_key_id = None
     
     try:
+        # Generate ephemeral SSH key pair
+        stream('Generating SSH key...')
+        yield sse_log(stream._logs[-1])
+        
+        private_key = asyncssh.generate_private_key('ssh-rsa', 2048)
+        public_key = private_key.export_public_key().decode('utf-8')
+        
+        # Register key with DigitalOcean
+        stream('Registering SSH key with DigitalOcean...')
+        yield sse_log(stream._logs[-1])
+        
+        key_name = f'deploy-temp-{user_id[:8]}-{int(asyncio.get_event_loop().time())}'
+        ssh_key_obj = await client.add_ssh_key(name=key_name, public_key=public_key)
+        ssh_key_id = ssh_key_obj.id
+        
         # Create droplet from Ubuntu
         stream('Creating temp droplet for template...')
         yield sse_log(stream._logs[-1])
@@ -410,6 +455,7 @@ async def _create_template(
             name='temp-template', region=region, size=size,
             image='ubuntu-24-04-x64',
             tags=[f'user:{user_id}', 'temp-snapshot'],
+            ssh_keys=[ssh_key_id] if ssh_key_id else None,
         )
         template_droplet_id = droplet.id
         
@@ -428,8 +474,8 @@ async def _create_template(
         yield sse_log(stream._logs[-1])
         await asyncio.sleep(30)
         
-        # SSH and install everything
-        async with asyncssh.connect(ip, username='root', known_hosts=None) as conn:
+        # SSH and install everything (using our generated private key)
+        async with asyncssh.connect(ip, username='root', known_hosts=None, client_keys=[private_key]) as conn:
             # Update system
             stream('Updating system packages...')
             yield sse_log(stream._logs[-1])
@@ -515,6 +561,14 @@ async def _create_template(
         await client.delete_droplet(template_droplet_id, force=True)
         template_droplet_id = None
         
+        # Delete temp SSH key
+        if ssh_key_id:
+            try:
+                await client.delete_ssh_key(ssh_key_id)
+            except:
+                pass
+            ssh_key_id = None
+        
         stream('Template created.')
         yield sse_log(stream._logs[-1])
         
@@ -525,6 +579,11 @@ async def _create_template(
         if template_droplet_id:
             try:
                 await client.delete_droplet(template_droplet_id, force=True)
+            except:
+                pass
+        if ssh_key_id:
+            try:
+                await client.delete_ssh_key(ssh_key_id)
             except:
                 pass
         raise
