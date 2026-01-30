@@ -191,6 +191,7 @@ class Snapshot:
     size_gigabytes: Optional[float] = None
     agent_version: Optional[str] = None
     is_base: bool = False
+    is_managed: bool = False
     id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

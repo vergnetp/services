@@ -6,7 +6,7 @@ from ..models import Deployment
 
 
 class DeploymentStore(BaseStore[Deployment]):
-    table_name = "deployments"  # Note: plural to match schema
+    table_name = "deployments"
     entity_class = Deployment
     
     @classmethod
@@ -14,39 +14,53 @@ class DeploymentStore(BaseStore[Deployment]):
         cls, db, service_id: str, env: str, status: str = None
     ) -> Optional[Deployment]:
         """Get most recent deployment for service/env."""
-        sql = f"SELECT * FROM {cls.table_name} WHERE service_id = ? AND env = ?"
+        where = "service_id = ? AND env = ?"
         params = [service_id, env]
         if status:
-            sql += " AND status = ?"
+            where += " AND status = ?"
             params.append(status)
-        sql += " ORDER BY version DESC LIMIT 1"
-        row = await db.fetchone(sql, tuple(params))
-        return cls._to_entity(row)
+        
+        results = await cls.find(
+            db,
+            where_clause=where,
+            params=tuple(params),
+            order_by="version DESC",
+            limit=1,
+        )
+        return results[0] if results else None
     
     @classmethod
     async def get_previous(
         cls, db, service_id: str, env: str, before_version: int, status: str = None
     ) -> Optional[Deployment]:
         """Get deployment before a specific version (for rollback)."""
-        sql = f"SELECT * FROM {cls.table_name} WHERE service_id = ? AND env = ? AND version < ?"
+        where = "service_id = ? AND env = ? AND version < ?"
         params = [service_id, env, before_version]
         if status:
-            sql += " AND status = ?"
+            where += " AND status = ?"
             params.append(status)
-        sql += " ORDER BY version DESC LIMIT 1"
-        row = await db.fetchone(sql, tuple(params))
-        return cls._to_entity(row)
+        
+        results = await cls.find(
+            db,
+            where_clause=where,
+            params=tuple(params),
+            order_by="version DESC",
+            limit=1,
+        )
+        return results[0] if results else None
     
     @classmethod
     async def get_by_version(
         cls, db, service_id: str, env: str, version: int
     ) -> Optional[Deployment]:
         """Get specific version of deployment."""
-        row = await db.fetchone(
-            f"SELECT * FROM {cls.table_name} WHERE service_id = ? AND env = ? AND version = ?",
-            (service_id, env, version)
+        results = await cls.find(
+            db,
+            where_clause="service_id = ? AND env = ? AND version = ?",
+            params=(service_id, env, version),
+            limit=1,
         )
-        return cls._to_entity(row)
+        return results[0] if results else None
     
     @classmethod
     async def list_for_service(
@@ -54,16 +68,21 @@ class DeploymentStore(BaseStore[Deployment]):
     ) -> List[Deployment]:
         """List deployments for a service."""
         if env:
-            rows = await db.fetchall(
-                f"SELECT * FROM {cls.table_name} WHERE service_id = ? AND env = ? ORDER BY version DESC LIMIT ?",
-                (service_id, env, limit)
+            return await cls.find(
+                db,
+                where_clause="service_id = ? AND env = ?",
+                params=(service_id, env),
+                order_by="version DESC",
+                limit=limit,
             )
         else:
-            rows = await db.fetchall(
-                f"SELECT * FROM {cls.table_name} WHERE service_id = ? ORDER BY version DESC LIMIT ?",
-                (service_id, limit)
+            return await cls.find(
+                db,
+                where_clause="service_id = ?",
+                params=(service_id,),
+                order_by="version DESC",
+                limit=limit,
             )
-        return cls._to_entities(rows)
     
     @classmethod
     async def delete_by_service(cls, db, service_id: str, env: str = None) -> None:

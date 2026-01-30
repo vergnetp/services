@@ -6,32 +6,34 @@ from ..models import Droplet
 
 
 class DropletStore(BaseStore[Droplet]):
-    table_name = "droplets"  # Note: plural to match schema
+    table_name = "droplets"
     entity_class = Droplet
     
     @classmethod
     async def list_active(cls, db) -> List[Droplet]:
-        rows = await db.fetchall(
-            f"SELECT * FROM {cls.table_name} WHERE deleted_at IS NULL"
-        )
-        return cls._to_entities(rows)
+        return await cls.find(db, where_clause="deleted_at IS NULL")
     
     @classmethod
     async def list_for_workspace(cls, db, workspace_id: str) -> List[Droplet]:
-        rows = await db.fetchall(
-            f"SELECT * FROM {cls.table_name} WHERE workspace_id = ? AND deleted_at IS NULL",
-            (workspace_id,)
+        return await cls.find(
+            db,
+            where_clause="workspace_id = ? AND deleted_at IS NULL",
+            params=(workspace_id,),
         )
-        return cls._to_entities(rows)
     
     @classmethod
     async def get_by_do_id(cls, db, do_droplet_id: int) -> Optional[Droplet]:
         """Get droplet by DigitalOcean ID."""
-        row = await db.fetchone(
-            f"SELECT * FROM {cls.table_name} WHERE do_droplet_id = ?",
-            (do_droplet_id,)
+        results = await cls.find(
+            db,
+            where_clause="do_droplet_id = ?",
+            params=(do_droplet_id,),
+            limit=1,
         )
-        return cls._to_entity(row)
+        return results[0] if results else None
+    
+    # Alias
+    list_for_user = list_for_workspace
 
 
 # Module-level functions
@@ -42,5 +44,5 @@ delete = DropletStore.delete
 soft_delete = DropletStore.soft_delete
 list_active = DropletStore.list_active
 list_for_workspace = DropletStore.list_for_workspace
-list_for_user = DropletStore.list_for_workspace  # Alias for consistency
+list_for_user = DropletStore.list_for_user
 get_by_do_id = DropletStore.get_by_do_id

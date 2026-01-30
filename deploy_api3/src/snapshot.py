@@ -171,12 +171,12 @@ async def create_base_snapshot(
                 if is_managed:
                     stream('  Managed PaaS mode detected (same DO account)')
                     yield sse_log(stream._logs[-1])
-                    stream('  -> Agent will bind to VPC IP only (more secure)')
+                    stream('  -> Firewall restricts agent to VPC traffic only')
                     yield sse_log(stream._logs[-1])
                 else:
                     stream('  Customer mode detected (different DO account)')
                     yield sse_log(stream._logs[-1])
-                    stream('  -> Agent will bind to 0.0.0.0 (accessible externally)')
+                    stream('  -> Agent accessible externally')
                     yield sse_log(stream._logs[-1])
                 
                 service_content = f'''[Unit]
@@ -224,6 +224,9 @@ WantedBy=multi-user.target'''
                 
                 await conn.run('ufw --force enable', check=True)
             
+            # Wait for agent to fully start
+            await asyncio.sleep(3)
+            
             # =================================================================
             # 3. Verify node agent is healthy (via SSH since agent may bind to VPC)
             # =================================================================
@@ -248,7 +251,8 @@ WantedBy=multi-user.target'''
                             except:
                                 agent_msg = f'Invalid response: {result.stdout[:50]}'
                         else:
-                            agent_msg = f'curl failed: {result.stdout[:50] if result.stdout else "no output"}'
+                            stderr_info = f' stderr={result.stderr[:50]}' if result.stderr else ''
+                            agent_msg = f'curl failed (rc={result.returncode}): {result.stdout[:50] if result.stdout else "no output"}{stderr_info}'
                 except Exception as e:
                     agent_msg = f'{type(e).__name__}: {e}'
                 await asyncio.sleep(3)

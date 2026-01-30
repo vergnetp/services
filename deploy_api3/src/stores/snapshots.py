@@ -12,29 +12,34 @@ class SnapshotStore(BaseStore[Snapshot]):
     @classmethod
     async def list_for_workspace(cls, db, workspace_id: str) -> List[Snapshot]:
         """List all snapshots for a workspace."""
-        rows = await db.fetchall(
-            f"SELECT * FROM {cls.table_name} WHERE workspace_id = ? ORDER BY created_at DESC",
-            (workspace_id,)
+        return await cls.find(
+            db,
+            where_clause="workspace_id = ?",
+            params=(workspace_id,),
+            order_by="created_at DESC",
         )
-        return cls._to_entities(rows)
     
     @classmethod
     async def get_by_do_id(cls, db, do_snapshot_id: str) -> Optional[Snapshot]:
         """Get snapshot by DigitalOcean ID."""
-        row = await db.fetchone(
-            f"SELECT * FROM {cls.table_name} WHERE do_snapshot_id = ?",
-            (do_snapshot_id,)
+        results = await cls.find(
+            db,
+            where_clause="do_snapshot_id = ?",
+            params=(do_snapshot_id,),
+            limit=1,
         )
-        return cls._to_entity(row)
+        return results[0] if results else None
     
     @classmethod
     async def get_base(cls, db, workspace_id: str) -> Optional[Snapshot]:
         """Get the base snapshot for a workspace."""
-        row = await db.fetchone(
-            f"SELECT * FROM {cls.table_name} WHERE workspace_id = ? AND is_base = 1",
-            (workspace_id,)
+        results = await cls.find(
+            db,
+            where_clause="workspace_id = ? AND is_base = 1",
+            params=(workspace_id,),
+            limit=1,
         )
-        return cls._to_entity(row)
+        return results[0] if results else None
     
     @classmethod
     async def set_base(cls, db, snapshot_id: str, workspace_id: str) -> Optional[Snapshot]:
@@ -45,11 +50,10 @@ class SnapshotStore(BaseStore[Snapshot]):
             (workspace_id,)
         )
         # Set new base
-        await db.execute(
-            f"UPDATE {cls.table_name} SET is_base = 1 WHERE id = ?",
-            (snapshot_id,)
-        )
-        return await cls.get(db, snapshot_id)
+        return await cls.update(db, snapshot_id, {'is_base': True})
+    
+    # Aliases
+    list_for_user = list_for_workspace
 
 
 # Module-level functions
@@ -58,10 +62,10 @@ create = SnapshotStore.create
 update = SnapshotStore.update
 delete = SnapshotStore.delete
 list_for_workspace = SnapshotStore.list_for_workspace
+list_for_user = SnapshotStore.list_for_user
 get_by_do_id = SnapshotStore.get_by_do_id
 get_base = SnapshotStore.get_base
 set_base = SnapshotStore.set_base
 
 # Backward-compat aliases
-list_for_user = list_for_workspace
 save = create

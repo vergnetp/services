@@ -6,27 +6,32 @@ from ..models import Project
 
 
 class ProjectStore(BaseStore[Project]):
-    table_name = "projects"  # Note: plural to match schema
+    table_name = "projects"
     entity_class = Project
     
     @classmethod
     async def get_by_name(cls, db, workspace_id: str, name: str) -> Optional[Project]:
-        row = await db.fetchone(
-            f"SELECT * FROM {cls.table_name} WHERE workspace_id = ? AND name = ? AND deleted_at IS NULL",
-            (workspace_id, name)
+        results = await cls.find(
+            db,
+            where_clause="workspace_id = ? AND name = ? AND deleted_at IS NULL",
+            params=(workspace_id, name),
+            limit=1,
         )
-        return cls._to_entity(row)
+        return results[0] if results else None
     
     @classmethod
     async def list_for_workspace(cls, db, workspace_id: str) -> List[Project]:
-        rows = await db.fetchall(
-            f"SELECT * FROM {cls.table_name} WHERE workspace_id = ? AND deleted_at IS NULL",
-            (workspace_id,)
+        return await cls.find(
+            db,
+            where_clause="workspace_id = ? AND deleted_at IS NULL",
+            params=(workspace_id,),
         )
-        return cls._to_entities(rows)
+    
+    # Alias
+    list_for_user = list_for_workspace
 
 
-# Module-level functions for convenience
+# Module-level functions
 get = ProjectStore.get
 create = ProjectStore.create
 update = ProjectStore.update
@@ -34,3 +39,4 @@ delete = ProjectStore.delete
 soft_delete = ProjectStore.soft_delete
 get_by_name = ProjectStore.get_by_name
 list_for_workspace = ProjectStore.list_for_workspace
+list_for_user = ProjectStore.list_for_user

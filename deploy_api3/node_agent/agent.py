@@ -40,6 +40,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+AGENT_VERSION = '1.1.0'  # Bump when agent behavior changes
 API_KEY = os.environ.get('NODE_AGENT_API_KEY', 'dev-key')
 CHUNK_SIZE = 64 * 1024  # 64KB
 
@@ -132,7 +133,11 @@ def require_auth(f):
 @require_auth
 def ping():
     """Agent health check."""
-    return jsonify({'status': 'ok', 'timestamp': datetime.utcnow().isoformat()})
+    return jsonify({
+        'status': 'ok', 
+        'version': AGENT_VERSION,
+        'timestamp': datetime.utcnow().isoformat()
+    })
 
 
 # =============================================================================
@@ -651,19 +656,15 @@ def get_private_ip() -> str:
 
 
 if __name__ == '__main__':
-    # Managed mode: bind to VPC IP only (more secure)
-    # Customer mode: bind to all interfaces (required for external access)
+    # Always bind to all interfaces - firewall rules handle access control
+    # In managed mode: firewall allows 9999 from 10.0.0.0/8 only (VPC)
+    # In customer mode: firewall allows 9999 from anywhere
     managed_mode = os.environ.get('MANAGED_MODE', 'false').lower() == 'true'
     
     if managed_mode:
-        private_ip = get_private_ip()
-        if private_ip:
-            print(f"[Managed Mode] Binding to VPC IP: {private_ip}")
-            app.run(host=private_ip, port=9999)
-        else:
-            print("[Managed Mode] Warning: No private IP found, falling back to 0.0.0.0")
-            app.run(host='0.0.0.0', port=9999)
+        print("[Managed Mode] Binding to 0.0.0.0 (firewall restricts to VPC)")
     else:
-        print("[Customer Mode] Binding to all interfaces: 0.0.0.0")
-        app.run(host='0.0.0.0', port=9999)
+        print("[Customer Mode] Binding to 0.0.0.0 (accessible externally)")
+    
+    app.run(host='0.0.0.0', port=9999)
 
