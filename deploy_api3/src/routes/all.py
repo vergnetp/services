@@ -4,7 +4,7 @@
 """FastAPI routes for deploy_api3."""
 
 import os
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -379,8 +379,22 @@ async def list_droplets(
     user: UserIdentity = Depends(get_current_user),
     db=Depends(db_connection),
 ):
-    """List all droplets."""
+    """List all droplets from local database."""
     return await droplets.list_for_user(db, user.id)
+
+
+@router.get("/droplets/do", summary="List droplets from DigitalOcean")
+async def list_do_droplets(
+    do_token: str = Header(..., alias="X-DO-Token"),
+    user: UserIdentity = Depends(get_current_user),
+):
+    """
+    List droplets directly from DigitalOcean API.
+    Only returns droplets tagged with 'deploy-api' (created by this system).
+    Useful for syncing or finding orphaned droplets.
+    """
+    from ..utils import list_do_droplets_by_tag
+    return await list_do_droplets_by_tag(do_token)
 
 
 # =============================================================================

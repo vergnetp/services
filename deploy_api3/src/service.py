@@ -16,7 +16,7 @@ from .naming import (
     get_domain_name, get_container_name, get_image_name,
     get_container_port, get_host_port
 )
-from .utils import now_iso, parse_env_variables, is_stateful, is_webservice
+from .utils import now_iso, parse_env_variables, is_stateful, is_webservice, get_is_managed, get_agent_ip_for_droplet
 from .stateful import get_stateful_urls
 from .locks import acquire_deploy_lock, release_deploy_lock
 from .sse_streaming import StreamContext, sse_complete, sse_log
@@ -175,18 +175,13 @@ async def deploy_service(
         
         # Determine if managed mode (agent binds to VPC IP only)
         # Check snapshot's is_managed flag - if True, use private_ip for agent calls
-        is_managed = False
-        if new_droplets_snapshot_id:
-            snap = await snapshots.get(db, new_droplets_snapshot_id)
-            if snap:
-                is_managed = getattr(snap, 'is_managed', False)
-        elif existing_droplet_ids:
+        snapshot_id_to_check = new_droplets_snapshot_id
+        if not snapshot_id_to_check and existing_droplet_ids:
             # Check first existing droplet's snapshot
             first_droplet = await droplets.get(db, existing_droplet_ids[0])
-            if first_droplet and first_droplet.snapshot_id:
-                snap = await snapshots.get(db, first_droplet.snapshot_id)
-                if snap:
-                    is_managed = getattr(snap, 'is_managed', False)
+            snapshot_id_to_check = first_droplet.snapshot_id if first_droplet else None
+        
+        is_managed = await get_is_managed(db, snapshot_id_to_check)
         
         # Provision new droplets if needed
         new_droplets = []
@@ -557,10 +552,11 @@ async def delete_service(
             for did in (dep_ids or []):
                 d = await droplets.get(db, did)
                 if d and d.ip:
+                    agent_ip = await get_agent_ip_for_droplet(db, d)
                     cn = get_container_name(
                         user_id, project.name, service.name, dep.env, dep.version
                     )
-                    to_remove.append((d.ip, cn))
+                    to_remove.append((agent_ip, cn))
         
         # Stop containers
         stream(f'Stopping {len(to_remove)} containers...')

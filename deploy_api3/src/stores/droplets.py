@@ -42,4 +42,5 @@ delete = DropletStore.delete
 soft_delete = DropletStore.soft_delete
 list_active = DropletStore.list_active
 list_for_workspace = DropletStore.list_for_workspace
+list_for_user = DropletStore.list_for_workspace  # Alias for consistency
 get_by_do_id = DropletStore.get_by_do_id

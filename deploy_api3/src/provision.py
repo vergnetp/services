@@ -5,6 +5,7 @@ from typing import Dict, Any, List
 
 from .stores import droplets, snapshots
 from .naming import create_droplet_name, create_vpc_name
+from .utils import DEPLOY_API_TAG
 
 
 async def ensure_vpc(do_client, vpc_name: str, region: str) -> str:
@@ -34,7 +35,7 @@ async def create_droplet(db, user_id: str, snapshot_id: str, region: str, size: 
         result = await client.create_droplet(
             name=droplet_name, region=region, size=size,
             image=snap.get('do_snapshot_id'), vpc_uuid=vpc_uuid,
-            tags=[f"user:{user_id}"],
+            tags=[DEPLOY_API_TAG, f"user:{user_id}"],
         )
         
         do_droplet_id = result['id']

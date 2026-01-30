@@ -8,6 +8,7 @@ import hmac
 import hashlib
 import asyncio
 import aiohttp
+import json
 from typing import Dict, Any, List, AsyncIterator, Optional
 import asyncssh
 
@@ -15,6 +16,7 @@ from shared_libs.backend.cloud import AsyncDOClient
 
 from .stores import snapshots, droplets
 from .sse_streaming import StreamContext, sse_complete, sse_log
+from .utils import DEPLOY_API_TAG
 from . import agent_client
 
 
@@ -105,7 +107,7 @@ async def create_base_snapshot(
             droplet_result = await client.create_droplet(
                 name='temp-base', region=region, size=size,
                 image=template_id,
-                tags=[f'user:{user_id}', 'temp-snapshot'],
+                tags=[DEPLOY_API_TAG, f'user:{user_id}', 'temp-snapshot'],
                 ssh_keys=[str(ssh_key_id)],
                 wait=False,
             )
@@ -223,12 +225,34 @@ WantedBy=multi-user.target'''
                 await conn.run('ufw --force enable', check=True)
             
             # =================================================================
-            # 3. Verify node agent is healthy
+            # 3. Verify node agent is healthy (via SSH since agent may bind to VPC)
             # =================================================================
             stream('Verifying node agent...')
             yield sse_log(stream._logs[-1])
             
-            agent_ok, agent_msg = await _check_agent_health(droplet_ip, api_key)
+            # In managed mode, agent binds to VPC IP which we can't reach from outside
+            # So we check via SSH by curling localhost
+            agent_ok = False
+            agent_msg = 'unknown'
+            for attempt in range(5):
+                try:
+                    async with asyncssh.connect(droplet_ip, username='root', known_hosts=None, client_keys=[ssh_key_path]) as conn:
+                        result = await conn.run(f'curl -s -H "X-API-Key: {api_key}" http://localhost:9999/ping', check=False)
+                        if result.returncode == 0 and 'version' in result.stdout:
+                            try:
+                                data = json.loads(result.stdout)
+                                version = data.get('version', 'unknown')
+                                agent_ok = True
+                                agent_msg = f'v{version} responding'
+                                break
+                            except:
+                                agent_msg = f'Invalid response: {result.stdout[:50]}'
+                        else:
+                            agent_msg = f'curl failed: {result.stdout[:50] if result.stdout else "no output"}'
+                except Exception as e:
+                    agent_msg = f'{type(e).__name__}: {e}'
+                await asyncio.sleep(3)
+            
             if not agent_ok:
                 stream(f'Agent health check failed: {agent_msg}')
                 yield sse_log(stream._logs[-1], 'error')
@@ -533,7 +557,7 @@ async def _create_template(
         droplet = await client.create_droplet(
             name='temp-template', region=region, size=size,
             image='ubuntu-24-04-x64',
-            tags=[f'user:{user_id}', 'temp-snapshot'],
+            tags=[DEPLOY_API_TAG, f'user:{user_id}', 'temp-snapshot'],
             ssh_keys=[str(ssh_key_id)],
             vpc_uuid=vpc_uuid,
             auto_vpc=False,

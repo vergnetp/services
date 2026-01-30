@@ -6,11 +6,11 @@ import json
 import asyncio
 from typing import AsyncIterator
 
-from .stores import projects, services, deployments, droplets, containers
+from .stores import projects, services, deployments, droplets, containers, snapshots
 from . import agent_client
 from .naming import get_domain_name, get_container_name, get_host_port
 from .service import deploy_service
-from .utils import is_webservice
+from .utils import is_webservice, get_is_managed
 from .sse_streaming import StreamContext, sse_complete, sse_log
 
 
@@ -83,9 +83,16 @@ async def scale(
             keep_ids = current_ids[:target_count]
             remove_ids = current_ids[target_count:]
             
-            # Get droplet info for IPs
+            # Get droplet info and determine managed mode
             remove_infos = [await droplets.get(db, did) for did in remove_ids]
-            remove_ips = [d.ip for d in remove_infos if d and d.ip]
+            remove_infos = [d for d in remove_infos if d and d.ip]
+            
+            # Determine managed mode from first droplet's snapshot
+            snapshot_id = remove_infos[0].snapshot_id if remove_infos else None
+            is_managed = await get_is_managed(db, snapshot_id)
+            
+            # Get agent IPs based on managed mode
+            remove_agent_ips = [d.private_ip or d.ip if is_managed else d.ip for d in remove_infos]
             
             container_name = get_container_name(
                 user_id, project.name, service.name, env, current.version
@@ -96,7 +103,7 @@ async def scale(
             yield sse_log(stream._logs[-1])
             await asyncio.gather(
                 *[agent_client.remove_container(ip, container_name, do_token) 
-                  for ip in remove_ips],
+                  for ip in remove_agent_ips],
                 return_exceptions=True
             )
             
@@ -115,8 +122,12 @@ async def scale(
                 yield sse_log(stream._logs[-1])
                 
                 keep_infos = [await droplets.get(db, did) for did in keep_ids]
-                keep_ips = [d.ip for d in keep_infos if d and d.ip]
-                keep_private_ips = [d.private_ip or d.ip for d in keep_infos if d and d.ip]
+                keep_infos = [d for d in keep_infos if d and d.ip]
+                
+                # Agent IPs for calling configure_nginx
+                keep_agent_ips = [d.private_ip or d.ip if is_managed else d.ip for d in keep_infos]
+                # Private IPs for nginx upstream (always use private for internal traffic)
+                keep_private_ips = [d.private_ip or d.ip for d in keep_infos]
                 
                 host_port = get_host_port(
                     user_id, project.name, service.name, env, 
@@ -126,7 +137,7 @@ async def scale(
                 
                 await asyncio.gather(
                     *[agent_client.configure_nginx(ip, keep_private_ips, host_port, domain, do_token) 
-                      for ip in keep_ips],
+                      for ip in keep_agent_ips],
                     return_exceptions=True
                 )
             

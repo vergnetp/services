@@ -131,22 +131,8 @@ async def get_agent_ip(db, droplet) -> str:
     Returns:
         IP address to use for agent calls
     """
-    from .stores import snapshots
-    
-    # Check if droplet's snapshot is managed
-    is_managed = False
-    snapshot_id = getattr(droplet, 'snapshot_id', None)
-    if snapshot_id:
-        snap = await snapshots.get(db, snapshot_id)
-        if snap:
-            is_managed = getattr(snap, 'is_managed', False)
-    
-    if is_managed:
-        # Use VPC IP (fallback to public if no private IP)
-        return getattr(droplet, 'private_ip', None) or droplet.ip
-    else:
-        # Use public IP
-        return droplet.ip
+    from .utils import get_agent_ip_for_droplet
+    return await get_agent_ip_for_droplet(db, droplet)
 
 
 # =============================================================================

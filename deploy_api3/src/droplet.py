@@ -12,7 +12,7 @@ from ...shared_libs.backend.cloud import AsyncDOClient
 from .stores import projects, services, deployments, droplets, containers, snapshots
 from . import agent_client
 from .naming import get_domain_name, get_host_port
-from .utils import is_webservice
+from .utils import is_webservice, get_is_managed, DEPLOY_API_TAG
 from .naming import create_droplet_name, create_vpc_name
 from .sse_streaming import StreamContext, sse_complete, sse_log
 
@@ -48,7 +48,7 @@ async def create_droplet(
         result = await do_client.create_droplet(
             name=droplet_name, region=region, size=size,
             image=snap.do_snapshot_id, vpc_uuid=vpc_uuid,
-            tags=[f"user:{user_id}"],
+            tags=[DEPLOY_API_TAG, f"user:{user_id}"],
         )
         
         do_droplet_id = result.id
@@ -148,8 +148,15 @@ async def delete_droplet(
                 
                 # Update nginx on remaining droplets
                 remaining_infos = [await droplets.get(db, did) for did in remaining_ids]
-                remaining_ips = [d.ip for d in remaining_infos if d and d.ip]
-                remaining_private = [d.private_ip or d.ip for d in remaining_infos if d and d.ip]
+                remaining_infos = [d for d in remaining_infos if d and d.ip]
+                
+                # Determine managed mode from first droplet's snapshot
+                snapshot_id = remaining_infos[0].snapshot_id if remaining_infos else None
+                is_managed = await get_is_managed(db, snapshot_id)
+                
+                remaining_agent_ips = [d.private_ip or d.ip if is_managed else d.ip for d in remaining_infos]
+                remaining_private = [d.private_ip or d.ip for d in remaining_infos]
+                remaining_public_ips = [d.ip for d in remaining_infos]  # For DNS
                 host_port = get_host_port(
                     user_id, project.name, service.name, 
                     dep.env, dep.version, service.service_type
@@ -159,15 +166,15 @@ async def delete_droplet(
                 yield sse_log(stream._logs[-1])
                 await asyncio.gather(
                     *[agent_client.configure_nginx(ip, remaining_private, host_port, domain, do_token) 
-                      for ip in remaining_ips],
+                      for ip in remaining_agent_ips],
                     return_exceptions=True
                 )
                 
-                # Update DNS
+                # Update DNS (uses public IPs)
                 stream(f'  updating DNS for {domain}...')
                 yield sse_log(stream._logs[-1])
                 from .dns import setup_multi_server
-                await setup_multi_server(cf_token, domain, remaining_ips)
+                await setup_multi_server(cf_token, domain, remaining_public_ips)
             
             # Delete container records
             await containers.delete_by_droplet(db, droplet_id)
