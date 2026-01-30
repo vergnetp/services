@@ -103,6 +103,7 @@ async def create_base_snapshot(
                 image=template_id,
                 tags=[f'user:{user_id}', 'temp-snapshot'],
                 ssh_keys=[str(ssh_key_id)],
+                wait=False,  # We have our own _wait_for_ip
             )
             do_droplet_id = droplet_result.id
             
@@ -505,6 +506,15 @@ async def _create_template(
         stream(f'SSH key ready (ID: {ssh_key_id})')
         yield sse_log(stream._logs[-1])
         
+        # Ensure VPC exists (explicit step for debugging)
+        stream(f'Ensuring VPC in {region}...')
+        yield sse_log(stream._logs[-1])
+        
+        vpc_uuid = await client.ensure_vpc(region=region)
+        
+        stream(f'VPC ready: {vpc_uuid[:8]}...')
+        yield sse_log(stream._logs[-1])
+        
         # Create droplet from Ubuntu
         stream('Creating temp droplet for template...')
         yield sse_log(stream._logs[-1])
@@ -514,7 +524,14 @@ async def _create_template(
             image='ubuntu-24-04-x64',
             tags=[f'user:{user_id}', 'temp-snapshot'],
             ssh_keys=[str(ssh_key_id)],
+            vpc_uuid=vpc_uuid,
+            auto_vpc=False,  # Already have it
+            wait=False,  # We have our own _wait_for_ip
         )
+        
+        stream(f'Droplet created: {droplet.id}')
+        yield sse_log(stream._logs[-1])
+        
         template_droplet_id = droplet.id
         
         # Wait for IP
@@ -566,10 +583,10 @@ async def _create_template(
                 yield sse_log(stream._logs[-1])
                 await asyncio.sleep(10)
             
-            # Update system
-            stream('Updating system packages...')
+            # Update system (skip upgrade - takes too long, not needed for temp droplet)
+            stream('Updating package lists...')
             yield sse_log(stream._logs[-1])
-            await conn.run('apt-get update && apt-get upgrade -y', check=True)
+            await conn.run('DEBIAN_FRONTEND=noninteractive apt-get update -q', check=True)
             
             # Docker
             stream('Installing Docker...')
@@ -580,13 +597,13 @@ async def _create_template(
             # Nginx
             stream('Installing nginx...')
             yield sse_log(stream._logs[-1])
-            await conn.run('apt-get install -y nginx', check=True)
+            await conn.run('DEBIAN_FRONTEND=noninteractive apt-get install -y -q nginx', check=True)
             await conn.run('systemctl enable nginx', check=True)
             
             # Git
             stream('Installing git...')
             yield sse_log(stream._logs[-1])
-            await conn.run('apt-get install -y git', check=True)
+            await conn.run('DEBIAN_FRONTEND=noninteractive apt-get install -y -q git', check=True)
             
             # SSL certificates
             stream('Uploading SSL certificates...')
@@ -606,8 +623,20 @@ async def _create_template(
             # Python for agent
             stream('Installing Python dependencies...')
             yield sse_log(stream._logs[-1])
-            await conn.run('apt-get install -y python3-pip', check=True)
-            await conn.run('pip3 install flask --break-system-packages', check=True)
+            
+            result = await conn.run('DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip 2>&1', check=False)
+            if result.returncode != 0:
+                output = result.stdout[:200] if result.stdout else "no output"
+                stream(f'apt-get python3-pip failed: {output}')
+                yield sse_log(stream._logs[-1], 'error')
+                raise Exception(f'apt-get python3-pip failed')
+            
+            result = await conn.run('pip3 install flask --break-system-packages -q 2>&1', check=False)
+            if result.returncode != 0:
+                output = result.stdout[:200] if result.stdout else "no output"
+                stream(f'pip3 flask failed: {output}')
+                yield sse_log(stream._logs[-1], 'error')
+                raise Exception(f'pip3 flask failed')
             
             # Create directories
             await conn.run('mkdir -p /data', check=True)
