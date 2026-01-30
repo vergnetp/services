@@ -1,48 +1,46 @@
-"""Droplet store - returns typed Droplet entities."""
+"""
+Droplet store - custom queries + entity re-exports.
+
+Basic CRUD: Droplet.get(), Droplet.save(), Droplet.update(), Droplet.delete()
+"""
 
 from typing import List, Optional
-from .base import BaseStore
-from ..models import Droplet
+from ...schemas import Droplet
 
 
-class DropletStore(BaseStore[Droplet]):
-    table_name = "droplets"
-    entity_class = Droplet
-    
-    @classmethod
-    async def list_active(cls, db) -> List[Droplet]:
-        return await cls.find(db, where_clause="deleted_at IS NULL")
-    
-    @classmethod
-    async def list_for_workspace(cls, db, workspace_id: str) -> List[Droplet]:
-        return await cls.find(
-            db,
-            where_clause="workspace_id = ? AND deleted_at IS NULL",
-            params=(workspace_id,),
-        )
-    
-    @classmethod
-    async def get_by_do_id(cls, db, do_droplet_id: int) -> Optional[Droplet]:
-        """Get droplet by DigitalOcean ID."""
-        results = await cls.find(
-            db,
-            where_clause="do_droplet_id = ?",
-            params=(do_droplet_id,),
-            limit=1,
-        )
-        return results[0] if results else None
-    
-    # Alias
-    list_for_user = list_for_workspace
+# Re-export entity methods for backward compatibility
+get = Droplet.get
+create = Droplet.save
+save = Droplet.save
+update = Droplet.update
+delete = Droplet.delete
+soft_delete = Droplet.soft_delete
 
 
-# Module-level functions
-get = DropletStore.get
-create = DropletStore.create
-update = DropletStore.update
-delete = DropletStore.delete
-soft_delete = DropletStore.soft_delete
-list_active = DropletStore.list_active
-list_for_workspace = DropletStore.list_for_workspace
-list_for_user = DropletStore.list_for_user
-get_by_do_id = DropletStore.get_by_do_id
+async def list_active(db) -> List[Droplet]:
+    """List all active (non-deleted) droplets."""
+    return await Droplet.find(db, where="deleted_at IS NULL")
+
+
+async def list_for_workspace(db, workspace_id: str) -> List[Droplet]:
+    """List droplets for a workspace."""
+    return await Droplet.find(
+        db,
+        where="workspace_id = ? AND deleted_at IS NULL",
+        params=(workspace_id,),
+    )
+
+
+async def get_by_do_id(db, do_droplet_id: int) -> Optional[Droplet]:
+    """Get droplet by DigitalOcean ID."""
+    results = await Droplet.find(
+        db,
+        where="do_droplet_id = ?",
+        params=(do_droplet_id,),
+        limit=1,
+    )
+    return results[0] if results else None
+
+
+# Alias
+list_for_user = list_for_workspace

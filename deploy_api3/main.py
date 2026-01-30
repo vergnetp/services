@@ -6,7 +6,8 @@ from shared_libs.backend.app_kernel import create_service, ServiceConfig, load_e
 from shared_libs.backend.app_kernel.auth import hash_password
 
 from .src.routes import router
-from .src.stores import init_schema
+# Import schemas to register @entity decorators (must be before create_service)
+from . import schemas
 
 
 SERVICE_DIR = Path(__file__).parent
@@ -23,10 +24,6 @@ async def seed_admin(db):
             "role": "admin",
             "is_active": True,
         })
-
-async def full_init(db):
-    await init_schema(db)
-    await seed_admin(db)
 
 def create_app() -> FastAPI:
     """Application factory."""
@@ -47,10 +44,13 @@ def create_app() -> FastAPI:
         debug=os.environ.get("DEBUG", "false").lower() == "true",
     )
     
+    # Schema now managed by @entity decorators in schemas.py
+    # Auto-migration happens in app_kernel.bootstrap
+    # Just need to seed admin user
     return create_service(
         name="deploy_api3",
         routers=[router],
-        schema_init=full_init,
+        schema_init=seed_admin,  # Now just seeds admin, schema handled by lifecycle
         config=config,
     )
 

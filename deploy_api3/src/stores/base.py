@@ -1,10 +1,14 @@
 """
-Base store using app_kernel's schemaless entity framework.
+Base store using schema-first entity framework.
 
-Uses db.save_entity() and db.find_entities() which auto-add columns.
+Uses db.save_entity() and db.find_entities() with explicit schemas.
+Schema defined in schemas.py with @entity decorators.
+
+Serialization/deserialization handled by databases module:
+- save_entity() auto-serializes lists/dicts to JSON
+- find_entities(deserialize=True) auto-deserializes back
 """
 
-import json
 import uuid
 from typing import Dict, Any, List, Optional, TypeVar, Type, Generic
 from datetime import datetime, timezone
@@ -23,9 +27,10 @@ T = TypeVar('T')
 
 class BaseStore(Generic[T]):
     """
-    Base store using app_kernel's schemaless entity framework.
+    Base store using schema-first entity framework.
     
-    Uses save_entity/find_entities which auto-add missing columns.
+    Schema is defined in schemas.py with @entity decorators.
+    Auto-migration applies schema changes on startup.
     
     Usage:
         class ProjectStore(BaseStore[Project]):
@@ -51,19 +56,6 @@ class BaseStore(Generic[T]):
         return [cls._to_entity(r) for r in rows]
     
     @classmethod
-    def _serialize(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Serialize complex types to JSON strings."""
-        serialized = {}
-        for k, v in data.items():
-            if isinstance(v, (dict, list)):
-                serialized[k] = json.dumps(v)
-            elif isinstance(v, bool):
-                serialized[k] = 1 if v else 0
-            else:
-                serialized[k] = v
-        return serialized
-    
-    @classmethod
     async def get(cls, db, id: str) -> Optional[T]:
         """Get entity by ID."""
         results = await db.find_entities(
@@ -71,24 +63,25 @@ class BaseStore(Generic[T]):
             where_clause="id = ?",
             params=(id,),
             limit=1,
+            deserialize=True,
         )
         return cls._to_entity(results[0]) if results else None
     
     @classmethod
     async def create(cls, db, data: Dict[str, Any]) -> T:
-        """Create new entity (schemaless - auto-adds columns)."""
+        """Create new entity (schema managed by @entity decorators)."""
         data['id'] = data.get('id') or _generate_id()
         data['created_at'] = data.get('created_at') or _now_iso()
         data['updated_at'] = _now_iso()
         
-        serialized = cls._serialize(data)
-        await db.save_entity(cls.table_name, serialized)
+        # save_entity handles serialization
+        await db.save_entity(cls.table_name, data)
         
         return cls._to_entity(data)
     
     @classmethod
     async def update(cls, db, id: str, data: Dict[str, Any]) -> T:
-        """Update entity (schemaless - auto-adds columns)."""
+        """Update entity (schema managed by @entity decorators)."""
         # Get existing
         existing = await cls.get(db, id)
         if not existing:
@@ -102,8 +95,8 @@ class BaseStore(Generic[T]):
         
         merged['updated_at'] = _now_iso()
         
-        serialized = cls._serialize(merged)
-        await db.save_entity(cls.table_name, serialized)
+        # save_entity handles serialization
+        await db.save_entity(cls.table_name, merged)
         
         return await cls.get(db, id)
     
@@ -128,5 +121,6 @@ class BaseStore(Generic[T]):
             params=params,
             limit=limit,
             order_by=order_by,
+            deserialize=True,
         )
         return cls._to_entities(results)

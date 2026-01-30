@@ -1,42 +1,41 @@
-"""Project store - returns typed Project entities."""
+"""
+Project store - custom queries + entity re-exports.
+
+Basic CRUD: Project.get(), Project.save(), Project.update(), Project.delete()
+"""
 
 from typing import List, Optional
-from .base import BaseStore
-from ..models import Project
+from ...schemas import Project
 
 
-class ProjectStore(BaseStore[Project]):
-    table_name = "projects"
-    entity_class = Project
-    
-    @classmethod
-    async def get_by_name(cls, db, workspace_id: str, name: str) -> Optional[Project]:
-        results = await cls.find(
-            db,
-            where_clause="workspace_id = ? AND name = ? AND deleted_at IS NULL",
-            params=(workspace_id, name),
-            limit=1,
-        )
-        return results[0] if results else None
-    
-    @classmethod
-    async def list_for_workspace(cls, db, workspace_id: str) -> List[Project]:
-        return await cls.find(
-            db,
-            where_clause="workspace_id = ? AND deleted_at IS NULL",
-            params=(workspace_id,),
-        )
-    
-    # Alias
-    list_for_user = list_for_workspace
+# Re-export entity methods for backward compatibility
+get = Project.get
+create = Project.save
+save = Project.save
+update = Project.update
+delete = Project.delete
+soft_delete = Project.soft_delete
 
 
-# Module-level functions
-get = ProjectStore.get
-create = ProjectStore.create
-update = ProjectStore.update
-delete = ProjectStore.delete
-soft_delete = ProjectStore.soft_delete
-get_by_name = ProjectStore.get_by_name
-list_for_workspace = ProjectStore.list_for_workspace
-list_for_user = ProjectStore.list_for_user
+async def get_by_name(db, workspace_id: str, name: str) -> Optional[Project]:
+    """Get project by workspace and name."""
+    results = await Project.find(
+        db,
+        where="workspace_id = ? AND name = ? AND deleted_at IS NULL",
+        params=(workspace_id, name),
+        limit=1,
+    )
+    return results[0] if results else None
+
+
+async def list_for_workspace(db, workspace_id: str) -> List[Project]:
+    """List all projects in a workspace."""
+    return await Project.find(
+        db,
+        where="workspace_id = ? AND deleted_at IS NULL",
+        params=(workspace_id,),
+    )
+
+
+# Alias
+list_for_user = list_for_workspace

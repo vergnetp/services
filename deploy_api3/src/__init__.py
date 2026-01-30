@@ -2,12 +2,12 @@
 """
 deploy_api3 business logic.
 
-- models.py: Entity dataclasses (schema definitions)
+- schemas.py: Entity definitions (in package root)
 - stores/: Database access layer
 - routes/: API endpoints
 """
 
-from .models import Project, Service, Deployment, Droplet, Container, Snapshot
+from ..schemas import Project, Service, Deployment, Droplet, Container, Snapshot
 
 __all__ = [
     "Project",
