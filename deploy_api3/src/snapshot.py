@@ -7,7 +7,7 @@ import os
 import hmac
 import hashlib
 import asyncio
-from typing import Dict, Any, List, AsyncIterator
+from typing import Dict, Any, List, AsyncIterator, Optional
 import asyncssh
 
 from shared_libs.backend.cloud import AsyncDOClient
@@ -49,7 +49,6 @@ async def create_base_snapshot(
     """
     stream = StreamContext()
     do_droplet_id = None
-    ssh_key_id = None
     images = images or list(BASE_IMAGES.keys())
     
     try:
@@ -78,17 +77,16 @@ async def create_base_snapshot(
             # 2. Create base from template
             # =================================================================
             
-            # Generate ephemeral SSH key pair
-            stream('Generating SSH key...')
+            # Get SSH key path from env or default
+            ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH', os.path.expanduser('~/.ssh/id_ed25519'))
+            
+            # Ensure SSH key exists and is registered with DO
+            stream('Setting up SSH key...')
             yield sse_log(stream._logs[-1])
             
-            private_key = asyncssh.generate_private_key('ssh-rsa', 2048)
-            public_key = private_key.export_public_key().decode('utf-8')
-            
-            # Register key with DigitalOcean
-            key_name = f'deploy-base-{user_id[:8]}-{int(asyncio.get_event_loop().time())}'
-            ssh_key_obj = await client.add_ssh_key(name=key_name, public_key=public_key)
-            ssh_key_id = ssh_key_obj.id
+            ssh_key_id = await _ensure_ssh_key(client, ssh_key_path, stream)
+            if not ssh_key_id:
+                raise Exception(f'SSH key setup failed. Ensure private key exists at {ssh_key_path}')
             
             stream('Creating temp droplet from template...')
             yield sse_log(stream._logs[-1])
@@ -97,7 +95,7 @@ async def create_base_snapshot(
                 name='temp-base', region=region, size=size,
                 image=template_id,
                 tags=[f'user:{user_id}', 'temp-snapshot'],
-                ssh_keys=[ssh_key_id] if ssh_key_id else None,
+                ssh_keys=[str(ssh_key_id)],
             )
             do_droplet_id = droplet_result.id
             
@@ -116,8 +114,8 @@ async def create_base_snapshot(
             yield sse_log(stream._logs[-1])
             await asyncio.sleep(20)
             
-            # Install agent + firewall + user restrictions (using generated key)
-            async with asyncssh.connect(ip, username='root', known_hosts=None, client_keys=[private_key]) as conn:
+            # Install agent + firewall + user restrictions
+            async with asyncssh.connect(ip, username='root', known_hosts=None, client_keys=[ssh_key_path]) as conn:
                 # Create agent user
                 stream('Creating agent user...')
                 yield sse_log(stream._logs[-1])
@@ -206,14 +204,6 @@ WantedBy=multi-user.target'''
             await client.delete_droplet(do_droplet_id, force=True)
             do_droplet_id = None
             
-            # Cleanup temp SSH key
-            if ssh_key_id:
-                try:
-                    await client.delete_ssh_key(ssh_key_id)
-                except:
-                    pass
-                ssh_key_id = None
-            
             # Save to DB
             snap = await snapshots.create(db, {
                 'workspace_id': user_id,
@@ -231,17 +221,12 @@ WantedBy=multi-user.target'''
     
     except Exception as e:
         # Cleanup on error
-        async with AsyncDOClient(api_token=do_token) as client:
-            if do_droplet_id:
-                try:
+        if do_droplet_id:
+            try:
+                async with AsyncDOClient(api_token=do_token) as client:
                     await client.delete_droplet(do_droplet_id, force=True)
-                except:
-                    pass
-            if ssh_key_id:
-                try:
-                    await client.delete_ssh_key(ssh_key_id)
-                except:
-                    pass
+            except:
+                pass
         
         stream(f'Error: {e}')
         yield sse_log(stream._logs[-1], 'error')
@@ -429,23 +414,21 @@ async def _create_template(
     """Create template snapshot: Docker + nginx + SSL + git + images."""
     
     template_droplet_id = None
-    ssh_key_id = None
+    
+    # Get SSH key path from env or default
+    ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH', os.path.expanduser('~/.ssh/id_ed25519'))
     
     try:
-        # Generate ephemeral SSH key pair
-        stream('Generating SSH key...')
+        # Ensure SSH key exists and is registered with DO
+        stream('Setting up SSH key...')
         yield sse_log(stream._logs[-1])
         
-        private_key = asyncssh.generate_private_key('ssh-rsa', 2048)
-        public_key = private_key.export_public_key().decode('utf-8')
+        ssh_key_id = await _ensure_ssh_key(client, ssh_key_path, stream)
+        if not ssh_key_id:
+            raise Exception(f'SSH key setup failed. Ensure private key exists at {ssh_key_path}')
         
-        # Register key with DigitalOcean
-        stream('Registering SSH key with DigitalOcean...')
+        stream(f'SSH key ready (ID: {ssh_key_id})')
         yield sse_log(stream._logs[-1])
-        
-        key_name = f'deploy-temp-{user_id[:8]}-{int(asyncio.get_event_loop().time())}'
-        ssh_key_obj = await client.add_ssh_key(name=key_name, public_key=public_key)
-        ssh_key_id = ssh_key_obj.id
         
         # Create droplet from Ubuntu
         stream('Creating temp droplet for template...')
@@ -455,7 +438,7 @@ async def _create_template(
             name='temp-template', region=region, size=size,
             image='ubuntu-24-04-x64',
             tags=[f'user:{user_id}', 'temp-snapshot'],
-            ssh_keys=[ssh_key_id] if ssh_key_id else None,
+            ssh_keys=[str(ssh_key_id)],
         )
         template_droplet_id = droplet.id
         
@@ -474,8 +457,8 @@ async def _create_template(
         yield sse_log(stream._logs[-1])
         await asyncio.sleep(30)
         
-        # SSH and install everything (using our generated private key)
-        async with asyncssh.connect(ip, username='root', known_hosts=None, client_keys=[private_key]) as conn:
+        # SSH and install everything
+        async with asyncssh.connect(ip, username='root', known_hosts=None, client_keys=[ssh_key_path]) as conn:
             # Update system
             stream('Updating system packages...')
             yield sse_log(stream._logs[-1])
@@ -561,14 +544,6 @@ async def _create_template(
         await client.delete_droplet(template_droplet_id, force=True)
         template_droplet_id = None
         
-        # Delete temp SSH key
-        if ssh_key_id:
-            try:
-                await client.delete_ssh_key(ssh_key_id)
-            except:
-                pass
-            ssh_key_id = None
-        
         stream('Template created.')
         yield sse_log(stream._logs[-1])
         
@@ -581,17 +556,71 @@ async def _create_template(
                 await client.delete_droplet(template_droplet_id, force=True)
             except:
                 pass
-        if ssh_key_id:
-            try:
-                await client.delete_ssh_key(ssh_key_id)
-            except:
-                pass
         raise
 
 
 # =============================================================================
 # Helpers
 # =============================================================================
+
+async def _ensure_ssh_key(client: AsyncDOClient, private_key_path: str, stream: StreamContext) -> Optional[int]:
+    """
+    Ensure SSH key exists locally and is registered with DO.
+    
+    Args:
+        client: DO API client
+        private_key_path: Path to private key file (e.g. ~/.ssh/id_ed25519)
+        stream: For logging
+        
+    Returns:
+        SSH key ID in DO, or None on failure
+    """
+    import subprocess
+    from pathlib import Path
+    
+    private_key_path = Path(private_key_path).expanduser()
+    public_key_path = Path(str(private_key_path) + ".pub")
+    
+    # Generate key if it doesn't exist
+    if not private_key_path.exists():
+        stream(f'Generating SSH key at {private_key_path}...')
+        private_key_path.parent.mkdir(mode=0o700, exist_ok=True)
+        try:
+            subprocess.run([
+                "ssh-keygen", "-t", "ed25519",
+                "-f", str(private_key_path),
+                "-N", "", "-C", "deployer@deploy-api"
+            ], capture_output=True, check=True)
+            private_key_path.chmod(0o600)
+        except Exception as e:
+            stream(f'Failed to generate SSH key: {e}')
+            return None
+    
+    if not public_key_path.exists():
+        stream(f'Public key not found at {public_key_path}')
+        return None
+    
+    public_key = public_key_path.read_text().strip()
+    
+    # Get fingerprint for unique naming (last 8 chars of key hash)
+    key_hash = hashlib.sha256(public_key.encode()).hexdigest()[:8]
+    
+    # Check if already registered with DO (by matching public key content)
+    existing_keys = await client.list_ssh_keys()
+    for key in existing_keys:
+        if key.public_key.strip() == public_key:
+            return key.id
+    
+    # Upload new key with unique name
+    key_name = f"deployer-{key_hash}"
+    try:
+        new_key = await client.add_ssh_key(key_name, public_key)
+        stream(f'Registered new SSH key: {key_name}')
+        return new_key.id
+    except Exception as e:
+        stream(f'Failed to register SSH key with DO: {e}')
+        return None
+
 
 async def _wait_for_ip(client: AsyncDOClient, droplet_id: int, stream: StreamContext, timeout: int = 60) -> str:
     """Wait for droplet to get an IP address."""
