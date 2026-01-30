@@ -4,6 +4,11 @@
 """
 Node Agent - Flask app that runs ON each droplet.
 
+Authentication:
+- Accepts Bearer JWT tokens (short-lived, 10 min)
+- JWT signed with HMAC-SHA256 using the long-lived API key
+- Falls back to X-API-Key header for backwards compatibility
+
 Endpoints:
 - GET  /ping                    - Agent health check
 - POST /upload                  - Receive Docker image tar
@@ -25,7 +30,11 @@ import subprocess
 import tempfile
 import shutil
 import zipfile
-from typing import Dict
+import hmac
+import hashlib
+import json
+import time
+from typing import Dict, Optional, Tuple
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -35,15 +44,83 @@ API_KEY = os.environ.get('NODE_AGENT_API_KEY', 'dev-key')
 CHUNK_SIZE = 64 * 1024  # 64KB
 
 
+# =============================================================================
+# JWT Verification
+# =============================================================================
+
+def b64url_decode(data: str) -> bytes:
+    """Decode base64url (handles missing padding)."""
+    padding = 4 - len(data) % 4
+    if padding != 4:
+        data += '=' * padding
+    return base64.urlsafe_b64decode(data)
+
+
+def verify_jwt(token: str, secret: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
+    """
+    Verify JWT token signature and expiry.
+    
+    Returns:
+        (valid, payload, error) - valid=True if token is good
+    """
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return False, None, "invalid token format"
+        
+        header_b64, payload_b64, signature_b64 = parts
+        
+        # Verify signature
+        message = f"{header_b64}.{payload_b64}"
+        expected_sig = hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()
+        actual_sig = b64url_decode(signature_b64)
+        
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            return False, None, "invalid signature"
+        
+        # Decode payload
+        payload = json.loads(b64url_decode(payload_b64).decode())
+        
+        # Check expiry
+        exp = payload.get('exp', 0)
+        if exp < time.time():
+            return False, payload, "token expired"
+        
+        return True, payload, None
+        
+    except Exception as e:
+        return False, None, f"token error: {e}"
+
+
 def require_auth(f):
-    """Simple API key authentication decorator."""
+    """
+    Authentication decorator supporting both JWT and legacy API key.
+    
+    Priority:
+    1. Bearer token (JWT) in Authorization header
+    2. X-API-Key header (legacy, for backwards compatibility)
+    """
     from functools import wraps
+    
     @wraps(f)
     def decorated(*args, **kwargs):
-        key = request.headers.get('X-API-Key')
-        if key != API_KEY:
-            return jsonify({'error': 'unauthorized'}), 401
-        return f(*args, **kwargs)
+        # Try Bearer token first
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+            valid, payload, error = verify_jwt(token, API_KEY)
+            if valid:
+                return f(*args, **kwargs)
+            else:
+                return jsonify({'error': 'unauthorized', 'detail': error}), 401
+        
+        # Fall back to X-API-Key (legacy)
+        api_key = request.headers.get('X-API-Key')
+        if api_key == API_KEY:
+            return f(*args, **kwargs)
+        
+        return jsonify({'error': 'unauthorized', 'detail': 'missing or invalid credentials'}), 401
+    
     return decorated
 
 
@@ -552,6 +629,41 @@ server {{
 # MAIN
 # =============================================================================
 
+def get_private_ip() -> str:
+    """Get the droplet's private/VPC IP address."""
+    try:
+        # DigitalOcean private IPs are typically on eth1 or in 10.x.x.x range
+        result = subprocess.run(
+            ['ip', '-4', 'addr', 'show'],
+            capture_output=True, text=True
+        )
+        
+        for line in result.stdout.split('\n'):
+            if 'inet ' in line and '10.' in line:
+                # Extract IP from "inet 10.x.x.x/xx" format
+                match = re.search(r'inet (10\.\d+\.\d+\.\d+)', line)
+                if match:
+                    return match.group(1)
+        
+        return None
+    except Exception:
+        return None
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=9999)
+    # Managed mode: bind to VPC IP only (more secure)
+    # Customer mode: bind to all interfaces (required for external access)
+    managed_mode = os.environ.get('MANAGED_MODE', 'false').lower() == 'true'
+    
+    if managed_mode:
+        private_ip = get_private_ip()
+        if private_ip:
+            print(f"[Managed Mode] Binding to VPC IP: {private_ip}")
+            app.run(host=private_ip, port=9999)
+        else:
+            print("[Managed Mode] Warning: No private IP found, falling back to 0.0.0.0")
+            app.run(host='0.0.0.0', port=9999)
+    else:
+        print("[Customer Mode] Binding to all interfaces: 0.0.0.0")
+        app.run(host='0.0.0.0', port=9999)
 

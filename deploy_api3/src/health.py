@@ -41,9 +41,11 @@ async def check_droplet_health(db, droplet, do_token: str):
     Check droplet reachability and all its containers.
     Triggers healing if needed.
     """
-    ip = droplet.ip
-    if not ip:
+    if not droplet.ip:
         return
+    
+    # Get the correct IP for agent calls (VPC IP in managed mode)
+    ip = await agent_client.get_agent_ip(db, droplet)
     
     # 1. Check if agent is reachable
     try:
@@ -78,7 +80,7 @@ async def check_container_health(db, droplet, container, do_token: str):
     Check single container health via node agent.
     Agent returns: {'status': 'healthy|unhealthy|degraded', 'reason': '...'}
     """
-    ip = droplet.ip
+    ip = await agent_client.get_agent_ip(db, droplet)
     container_name = container.container_name
     
     try:
@@ -146,10 +148,11 @@ async def heal_container(db, droplet, container, do_token: str):
         )
         return
     
-    logger.info(f"Restarting container {container.container_name} on {droplet.ip}")
+    ip = await agent_client.get_agent_ip(db, droplet)
+    logger.info(f"Restarting container {container.container_name} on {ip}")
     
     try:
-        await agent_client.restart_container(droplet.ip, container.container_name, do_token)
+        await agent_client.restart_container(ip, container.container_name, do_token)
         await containers.update(db, container.id, {'last_restart_at': now_iso()})
     except Exception as e:
         logger.error(f"Failed to restart container: {e}")

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from shared_libs.backend.resilience import retry_with_backoff
 
-from .stores import projects, services, deployments, droplets, containers
+from .stores import projects, services, deployments, droplets, containers, snapshots
 from . import agent_client
 from .naming import (
     get_domain_name, get_container_name, get_image_name,
@@ -173,6 +173,21 @@ async def deploy_service(
         else:
             raise Exception('No source provided: need image, git_repos, source_zips, or image_name')
         
+        # Determine if managed mode (agent binds to VPC IP only)
+        # Check snapshot's is_managed flag - if True, use private_ip for agent calls
+        is_managed = False
+        if new_droplets_snapshot_id:
+            snap = await snapshots.get(db, new_droplets_snapshot_id)
+            if snap:
+                is_managed = getattr(snap, 'is_managed', False)
+        elif existing_droplet_ids:
+            # Check first existing droplet's snapshot
+            first_droplet = await droplets.get(db, existing_droplet_ids[0])
+            if first_droplet and first_droplet.snapshot_id:
+                snap = await snapshots.get(db, first_droplet.snapshot_id)
+                if snap:
+                    is_managed = getattr(snap, 'is_managed', False)
+        
         # Provision new droplets if needed
         new_droplets = []
         if new_droplets_nb > 0:
@@ -239,6 +254,17 @@ async def deploy_service(
         ids = [d['id'] for d in all_droplets]
         ips = [d['ip'] for d in all_droplets]
         private_ips = [d.get('private_ip') or d['ip'] for d in all_droplets]
+        
+        # In managed mode, use private IPs to call agents (they only listen on VPC)
+        # In customer mode, use public IPs
+        # Add agent_ip to each droplet dict for easy access
+        for i, d in enumerate(all_droplets):
+            d['agent_ip'] = private_ips[i] if is_managed else d['ip']
+        
+        if is_managed:
+            stream(f'Managed mode: using VPC IPs for agent calls')
+            yield sse_log(stream._logs[-1])
+        
         stream(f'Target servers: {ips}')
         yield sse_log(stream._logs[-1])
         
@@ -300,7 +326,7 @@ async def deploy_service(
         
         tasks = [
             _deploy_to(
-                db, d['id'], d['ip'], deployment_id, container_name, image_name,
+                db, d['id'], d['agent_ip'], deployment_id, container_name, image_name,
                 source_type=source_type,
                 image=image,
                 git_repos=git_repos,
@@ -334,7 +360,7 @@ async def deploy_service(
             stream('Removing old containers...')
             yield sse_log(stream._logs[-1])
             await asyncio.gather(
-                *[agent_client.remove_container(d['ip'], last_container_name, do_token) 
+                *[agent_client.remove_container(d['agent_ip'], last_container_name, do_token) 
                   for d in all_droplets],
                 return_exceptions=True
             )
@@ -345,7 +371,7 @@ async def deploy_service(
             yield sse_log(stream._logs[-1])
             domain = get_domain_name(user_id, project_name, service_name, env)
             await asyncio.gather(
-                *[agent_client.configure_nginx(d['ip'], private_ips, host_port, domain, do_token) 
+                *[agent_client.configure_nginx(d['agent_ip'], private_ips, host_port, domain, do_token) 
                   for d in all_droplets],
                 return_exceptions=True
             )
