@@ -12,7 +12,7 @@ Import this module in main.py to register schemas.
 
 from dataclasses import dataclass
 from typing import Optional
-from databases import entity, entity_field
+from shared_libs.backend.databases import entity, entity_field
 
 
 @entity(table="projects")
