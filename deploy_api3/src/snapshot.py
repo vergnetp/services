@@ -91,7 +91,11 @@ async def create_base_snapshot(
             stream('Setting up SSH key...')
             yield sse_log(stream._logs[-1])
             
-            ssh_key_id = await _ensure_ssh_key(client, ssh_key_path, stream)
+            ssh_key_id, ssh_messages = await _ensure_ssh_key(client, ssh_key_path)
+            for msg, level in ssh_messages:
+                stream(f'  {msg}')
+                yield sse_log(stream._logs[-1], level)
+            
             if not ssh_key_id:
                 raise Exception(f'SSH key setup failed. Ensure private key exists at {ssh_key_path}')
             
@@ -108,8 +112,10 @@ async def create_base_snapshot(
             do_droplet_id = droplet_result.id
             
             # Wait for IP
-            droplet_ip = await _wait_for_ip(client, do_droplet_id, stream)
-            yield sse_log(stream._logs[-1])
+            droplet_ip, ip_messages = await _wait_for_ip(client, do_droplet_id)
+            for msg, level in ip_messages:
+                stream(msg)
+                yield sse_log(stream._logs[-1], level)
             
             if not droplet_ip:
                 raise Exception('Timeout waiting for IP')
@@ -162,10 +168,12 @@ async def create_base_snapshot(
                 
                 if is_managed:
                     stream('  Managed PaaS mode detected (same DO account)')
+                    yield sse_log(stream._logs[-1])
                     stream('  -> Agent will bind to VPC IP only (more secure)')
                     yield sse_log(stream._logs[-1])
                 else:
                     stream('  Customer mode detected (different DO account)')
+                    yield sse_log(stream._logs[-1])
                     stream('  -> Agent will bind to 0.0.0.0 (accessible externally)')
                     yield sse_log(stream._logs[-1])
                 
@@ -500,7 +508,11 @@ async def _create_template(
         stream('Setting up SSH key...')
         yield sse_log(stream._logs[-1])
         
-        ssh_key_id = await _ensure_ssh_key(client, ssh_key_path, stream)
+        ssh_key_id, ssh_messages = await _ensure_ssh_key(client, ssh_key_path)
+        for msg, level in ssh_messages:
+            stream(f'  {msg}')
+            yield sse_log(stream._logs[-1], level)
+        
         if not ssh_key_id:
             raise Exception(f'SSH key setup failed. Ensure private key exists at {ssh_key_path}')
         
@@ -533,8 +545,10 @@ async def _create_template(
         
         template_droplet_id = droplet.id
         
-        droplet_ip = await _wait_for_ip(client, template_droplet_id, stream)
-        yield sse_log(stream._logs[-1])
+        droplet_ip, ip_messages = await _wait_for_ip(client, template_droplet_id)
+        for msg, level in ip_messages:
+            stream(msg)
+            yield sse_log(stream._logs[-1], level)
         
         if not droplet_ip:
             raise Exception('Timeout waiting for IP')
@@ -688,16 +702,24 @@ async def _create_template(
 # Helpers
 # =============================================================================
 
-async def _ensure_ssh_key(client: AsyncDOClient, private_key_path: str, stream: StreamContext) -> Optional[int]:
-    """Ensure SSH key exists locally and is registered with DO."""
+async def _ensure_ssh_key(client: AsyncDOClient, private_key_path: str) -> tuple:
+    """
+    Ensure SSH key exists locally and is registered with DO.
+    
+    Returns:
+        (ssh_key_id, messages) - ssh_key_id is None on failure
+        messages is a list of (message, level) tuples
+    """
     import subprocess
     from pathlib import Path
+    
+    messages = []
     
     private_key_path = Path(private_key_path).expanduser()
     public_key_path = Path(str(private_key_path) + ".pub")
     
     if not private_key_path.exists():
-        stream(f'Generating SSH key at {private_key_path}...')
+        messages.append((f'Generating SSH key at {private_key_path}...', 'info'))
         private_key_path.parent.mkdir(mode=0o700, exist_ok=True)
         try:
             subprocess.run([
@@ -706,13 +728,14 @@ async def _ensure_ssh_key(client: AsyncDOClient, private_key_path: str, stream: 
                 "-N", "", "-C", "deployer@deploy-api"
             ], capture_output=True, check=True)
             private_key_path.chmod(0o600)
+            messages.append(('SSH key generated', 'info'))
         except Exception as e:
-            stream(f'Failed to generate SSH key: {e}')
-            return None
+            messages.append((f'Failed to generate SSH key: {e}', 'error'))
+            return None, messages
     
     if not public_key_path.exists():
-        stream(f'Public key not found at {public_key_path}')
-        return None
+        messages.append((f'Public key not found at {public_key_path}', 'error'))
+        return None, messages
     
     public_key = public_key_path.read_text().strip()
     key_hash = hashlib.sha256(public_key.encode()).hexdigest()[:8]
@@ -720,31 +743,39 @@ async def _ensure_ssh_key(client: AsyncDOClient, private_key_path: str, stream: 
     existing_keys = await client.list_ssh_keys()
     for key in existing_keys:
         if key.public_key.strip() == public_key:
-            return key.id
+            messages.append((f'Using existing SSH key (ID: {key.id})', 'info'))
+            return key.id, messages
     
     key_name = f"deployer-{key_hash}"
     try:
         new_key = await client.add_ssh_key(key_name, public_key)
-        stream(f'Registered new SSH key: {key_name}')
-        return new_key.id
+        messages.append((f'Registered new SSH key: {key_name}', 'info'))
+        return new_key.id, messages
     except Exception as e:
-        stream(f'Failed to register SSH key with DO: {e}')
-        return None
+        messages.append((f'Failed to register SSH key with DO: {e}', 'error'))
+        return None, messages
 
 
-async def _wait_for_ip(client: AsyncDOClient, droplet_id: int, stream: StreamContext, timeout: int = 60) -> str:
-    """Wait for droplet to get an IP address."""
-    stream('Waiting for droplet IP...')
+async def _wait_for_ip(client: AsyncDOClient, droplet_id: int, timeout: int = 60) -> tuple:
+    """
+    Wait for droplet to get an IP address.
+    
+    Returns:
+        (ip, messages) - ip is None on timeout
+        messages is list of (message, level) tuples
+    """
+    messages = [('Waiting for droplet IP...', 'info')]
     
     for i in range(timeout // 2):
         await asyncio.sleep(2)
         info = await client.get_droplet(droplet_id)
         if info and info.ip:
-            return info.ip
+            return info.ip, messages
         if i % 5 == 4:
-            stream(f'Still waiting for IP... ({i*2}s)')
+            messages.append((f'Still waiting for IP... ({i*2}s)', 'info'))
     
-    return None
+    messages.append(('Timeout waiting for IP', 'error'))
+    return None, messages
 
 
 async def _check_agent_health(ip: str, api_key: str, retries: int = 5) -> tuple:

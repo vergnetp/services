@@ -23,7 +23,9 @@ def sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 def sse_log(message: str, level: str = "info") -> str:
+    print(f"[SSE] {level.upper()}: {message}")
     return sse_event("log", {"message": message, "level": level})
 
 def sse_complete(success: bool, deployment_id: str, error: str = None) -> str:
+    print(f"[SSE] COMPLETE: success={success}, id={deployment_id}, error={error}")
     return sse_event("complete", {"success": success, "deployment_id": deployment_id, "error": error})
