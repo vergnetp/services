@@ -148,7 +148,7 @@ async def create_base_snapshot(
                 yield sse_log(stream._logs[-1])
                 
                 agent_path = os.path.join(os.path.dirname(__file__), '..', 'node_agent', 'agent.py')
-                with open(agent_path) as f:
+                with open(agent_path, encoding='utf-8') as f:
                     agent_code = f.read()
                 
                 await conn.run(f"cat > /opt/node_agent/agent.py << 'AGENT_EOF'\n{agent_code}\nAGENT_EOF", check=True)
@@ -613,9 +613,9 @@ async def _create_template(
             yield sse_log(stream._logs[-1])
             
             cert_dir = os.path.dirname(os.path.dirname(__file__))
-            with open(os.path.join(cert_dir, 'certificate.pem')) as f:
+            with open(os.path.join(cert_dir, 'certificate.pem'), encoding='utf-8') as f:
                 cert_pem = f.read()
-            with open(os.path.join(cert_dir, 'certificate.key')) as f:
+            with open(os.path.join(cert_dir, 'certificate.key'), encoding='utf-8') as f:
                 cert_key = f.read()
             
             await conn.run('mkdir -p /etc/nginx', check=True)
