@@ -37,10 +37,12 @@ def create_app() -> FastAPI:
     data_dir = SERVICE_DIR / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     
+    db_path = data_dir / "deploy_api.db"
+    
     config = ServiceConfig(
-        jwt_secret=os.environ.get("JWT_SECRET", "dev-secret-change-me"),
-        database_url=f"sqlite:///{(data_dir / 'deploy_api.db').as_posix()}",
-        redis_url=os.environ.get("REDIS_URL") or None,
+        jwt_secret=os.environ.get("JWT_SECRET"),
+        database_url=f"sqlite:///{db_path}",
+        redis_url=os.environ.get("REDIS_URL", ""),
         cors_origins=["*"],
         debug=os.environ.get("DEBUG", "false").lower() == "true",
     )

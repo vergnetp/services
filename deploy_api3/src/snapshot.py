@@ -7,8 +7,7 @@ import os
 import hmac
 import hashlib
 import asyncio
-import aiohttp
-from typing import Dict, Any, List, AsyncIterator, Optional
+from typing import Dict, Any, List, AsyncIterator
 import asyncssh
 
 from shared_libs.backend.cloud import AsyncDOClient
@@ -40,23 +39,17 @@ TEMPLATE_SNAPSHOT_NAME = '_template'
 
 async def create_base_snapshot(
     db, user_id: str, region: str, do_token: str,
-    images: List[str] = None, size: str = 's-1vcpu-1gb',
-    cleanup_on_failure: bool = True,
+    images: List[str] = None, size: str = 's-1vcpu-1gb'
 ) -> AsyncIterator[str]:
     """
     Create base snapshot from template (creating template if needed).
     
     Template: Docker + nginx + SSL + git + images (no agent, no firewall)
     Base: Template + agent + firewall + user restrictions
-    
-    Args:
-        cleanup_on_failure: If False, keeps droplet on failure for SSH debugging
     """
     stream = StreamContext()
     do_droplet_id = None
-    droplet_ip = None
     images = images or list(BASE_IMAGES.keys())
-    ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH', os.path.expanduser('~/.ssh/id_ed25519'))
     
     try:
         async with AsyncDOClient(api_token=do_token) as client:
@@ -75,26 +68,14 @@ async def create_base_snapshot(
             else:
                 result = {}
                 async for event in _create_template(
-                    client, stream, user_id, region, size, images, do_token, result,
-                    cleanup_on_failure=cleanup_on_failure
+                    client, stream, user_id, region, size, images, do_token, result
                 ):
                     yield event
-                template_id = result.get('template_id')
-                if not template_id:
-                    return  # _create_template already yielded error
+                template_id = result['template_id']
             
             # =================================================================
             # 2. Create base from template
             # =================================================================
-            
-            # Ensure SSH key exists and is registered with DO
-            stream('Setting up SSH key...')
-            yield sse_log(stream._logs[-1])
-            
-            ssh_key_id = await _ensure_ssh_key(client, ssh_key_path, stream)
-            if not ssh_key_id:
-                raise Exception(f'SSH key setup failed. Ensure private key exists at {ssh_key_path}')
-            
             stream('Creating temp droplet from template...')
             yield sse_log(stream._logs[-1])
             
@@ -102,19 +83,17 @@ async def create_base_snapshot(
                 name='temp-base', region=region, size=size,
                 image=template_id,
                 tags=[f'user:{user_id}', 'temp-snapshot'],
-                ssh_keys=[str(ssh_key_id)],
-                wait=False,  # We have our own _wait_for_ip
             )
             do_droplet_id = droplet_result.id
             
             # Wait for IP
-            droplet_ip = await _wait_for_ip(client, do_droplet_id, stream)
+            ip = await _wait_for_ip(client, do_droplet_id, stream)
             yield sse_log(stream._logs[-1])
             
-            if not droplet_ip:
+            if not ip:
                 raise Exception('Timeout waiting for IP')
             
-            stream(f'Droplet ready at {droplet_ip}')
+            stream(f'Droplet ready at {ip}')
             yield sse_log(stream._logs[-1])
             
             # Wait for SSH
@@ -123,7 +102,7 @@ async def create_base_snapshot(
             await asyncio.sleep(20)
             
             # Install agent + firewall + user restrictions
-            async with asyncssh.connect(droplet_ip, username='root', known_hosts=None, client_keys=[ssh_key_path]) as conn:
+            async with asyncssh.connect(ip, username='root', known_hosts=None) as conn:
                 # Create agent user
                 stream('Creating agent user...')
                 yield sse_log(stream._logs[-1])
@@ -173,9 +152,6 @@ WantedBy=multi-user.target'''
                 await conn.run(f"cat > /etc/systemd/system/node-agent.service << 'EOF'\n{service_content}\nEOF", check=True)
                 await conn.run('systemctl daemon-reload && systemctl enable node-agent', check=True)
                 
-                # Start agent for health check
-                await conn.run('systemctl start node-agent', check=True)
-                
                 # Firewall
                 stream('Configuring firewall...')
                 yield sse_log(stream._logs[-1])
@@ -192,68 +168,13 @@ WantedBy=multi-user.target'''
                 
                 await conn.run('ufw --force enable', check=True)
             
-            # =================================================================
-            # 3. Verify node agent is healthy
-            # =================================================================
-            stream('Verifying node agent...')
-            yield sse_log(stream._logs[-1])
-            
-            agent_ok, agent_msg = await _check_agent_health(droplet_ip, api_key)
-            if not agent_ok:
-                stream(f'Agent health check failed: {agent_msg}')
-                yield sse_log(stream._logs[-1], 'error')
-                
-                # Get diagnostics
-                diag = await _get_agent_diagnostics(droplet_ip, ssh_key_path)
-                if diag:
-                    for line in diag.split('\n')[:10]:
-                        if line.strip():
-                            stream(f'  {line.strip()[:100]}')
-                            yield sse_log(stream._logs[-1])
-                
-                if cleanup_on_failure:
-                    await client.delete_droplet(do_droplet_id, force=True)
-                    stream('Droplet deleted')
-                    yield sse_log(stream._logs[-1])
-                else:
-                    stream(f'DROPLET KEPT FOR DEBUGGING: ssh root@{droplet_ip}')
-                    yield sse_log(stream._logs[-1])
-                
-                yield sse_complete(False, '', f'Node agent failed: {agent_msg}')
-                return
-            
-            stream(f'Agent healthy: {agent_msg}')
-            yield sse_log(stream._logs[-1])
-            
-            # =================================================================
-            # 4. Remove SSH keys from droplet (security)
-            # =================================================================
-            stream('Removing SSH keys from droplet...')
-            yield sse_log(stream._logs[-1])
-            
-            try:
-                async with asyncssh.connect(droplet_ip, username='root', known_hosts=None, client_keys=[ssh_key_path]) as conn:
-                    await conn.run('rm -f /root/.ssh/authorized_keys', check=False)
-                    stream('SSH keys cleared - snapshot will have no SSH access')
-                    yield sse_log(stream._logs[-1])
-            except Exception as e:
-                stream(f'Warning: could not clear SSH keys: {e}')
-                yield sse_log(stream._logs[-1])
-            
-            # =================================================================
-            # 5. Create snapshot
-            # =================================================================
+            # Power off
             stream('Powering off droplet...')
             yield sse_log(stream._logs[-1])
             await client.power_off_droplet(do_droplet_id)
+            await asyncio.sleep(10)
             
-            # Wait for power off
-            for _ in range(30):
-                info = await client.get_droplet(do_droplet_id)
-                if info and info.status == 'off':
-                    break
-                await asyncio.sleep(2)
-            
+            # Snapshot
             stream('Creating snapshot...')
             yield sse_log(stream._logs[-1])
             snapshot = await client.create_snapshot_from_droplet(do_droplet_id, name='base')
@@ -286,25 +207,16 @@ WantedBy=multi-user.target'''
             yield sse_complete(True, snap.id)
     
     except Exception as e:
-        error_msg = str(e)
-        stream(f'Error: {error_msg}')
-        yield sse_log(stream._logs[-1], 'error')
-        
-        # Cleanup on error
         if do_droplet_id:
-            if cleanup_on_failure:
-                try:
-                    async with AsyncDOClient(api_token=do_token) as client:
-                        await client.delete_droplet(do_droplet_id, force=True)
-                    stream('Droplet deleted')
-                    yield sse_log(stream._logs[-1])
-                except:
-                    pass
-            else:
-                stream(f'DROPLET KEPT FOR DEBUGGING: ssh root@{droplet_ip}')
-                yield sse_log(stream._logs[-1])
+            try:
+                async with AsyncDOClient(api_token=do_token) as client:
+                    await client.delete_droplet(do_droplet_id, force=True)
+            except:
+                pass
         
-        yield sse_complete(False, '', error_msg)
+        stream(f'Error: {e}')
+        yield sse_log(stream._logs[-1], 'error')
+        yield sse_complete(False, '', str(e))
 
 
 # =============================================================================
@@ -483,38 +395,13 @@ async def create_custom_snapshot(
 async def _create_template(
     client: AsyncDOClient, stream: StreamContext, user_id: str,
     region: str, size: str, images: List[str], do_token: str,
-    result: Dict[str, Any],
-    cleanup_on_failure: bool = True,
+    result: Dict[str, Any]
 ) -> AsyncIterator[str]:
     """Create template snapshot: Docker + nginx + SSL + git + images."""
     
     template_droplet_id = None
-    droplet_ip = None
-    
-    # Get SSH key path from env or default
-    ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH', os.path.expanduser('~/.ssh/id_ed25519'))
     
     try:
-        # Ensure SSH key exists and is registered with DO
-        stream('Setting up SSH key...')
-        yield sse_log(stream._logs[-1])
-        
-        ssh_key_id = await _ensure_ssh_key(client, ssh_key_path, stream)
-        if not ssh_key_id:
-            raise Exception(f'SSH key setup failed. Ensure private key exists at {ssh_key_path}')
-        
-        stream(f'SSH key ready (ID: {ssh_key_id})')
-        yield sse_log(stream._logs[-1])
-        
-        # Ensure VPC exists (explicit step for debugging)
-        stream(f'Ensuring VPC in {region}...')
-        yield sse_log(stream._logs[-1])
-        
-        vpc_uuid = await client.ensure_vpc(region=region)
-        
-        stream(f'VPC ready: {vpc_uuid[:8]}...')
-        yield sse_log(stream._logs[-1])
-        
         # Create droplet from Ubuntu
         stream('Creating temp droplet for template...')
         yield sse_log(stream._logs[-1])
@@ -523,70 +410,30 @@ async def _create_template(
             name='temp-template', region=region, size=size,
             image='ubuntu-24-04-x64',
             tags=[f'user:{user_id}', 'temp-snapshot'],
-            ssh_keys=[str(ssh_key_id)],
-            vpc_uuid=vpc_uuid,
-            auto_vpc=False,  # Already have it
-            wait=False,  # We have our own _wait_for_ip
         )
-        
-        stream(f'Droplet created: {droplet.id}')
-        yield sse_log(stream._logs[-1])
-        
         template_droplet_id = droplet.id
         
         # Wait for IP
-        droplet_ip = await _wait_for_ip(client, template_droplet_id, stream)
+        ip = await _wait_for_ip(client, template_droplet_id, stream)
         yield sse_log(stream._logs[-1])
         
-        if not droplet_ip:
+        if not ip:
             raise Exception('Timeout waiting for IP')
         
-        stream(f'Droplet ready at {droplet_ip}')
+        stream(f'Droplet ready at {ip}')
         yield sse_log(stream._logs[-1])
         
-        # Wait for SSH with retries
+        # Wait for SSH
         stream('Waiting for SSH...')
         yield sse_log(stream._logs[-1])
-        
-        ssh_ready = False
-        for attempt in range(6):  # 6 attempts, 10s apart = 60s total
-            await asyncio.sleep(10)
-            try:
-                async with asyncssh.connect(droplet_ip, username='root', known_hosts=None, 
-                                           client_keys=[ssh_key_path], connect_timeout=10) as test_conn:
-                    await test_conn.run('echo ok', check=True)
-                    ssh_ready = True
-                    break
-            except Exception as e:
-                stream(f'  SSH not ready yet ({attempt+1}/6): {type(e).__name__}')
-                yield sse_log(stream._logs[-1])
-        
-        if not ssh_ready:
-            raise Exception('SSH connection timeout after 60s')
-        
-        stream('SSH connected')
-        yield sse_log(stream._logs[-1])
+        await asyncio.sleep(30)
         
         # SSH and install everything
-        async with asyncssh.connect(droplet_ip, username='root', known_hosts=None, client_keys=[ssh_key_path]) as conn:
-            # Wait for cloud-init to finish (it holds apt lock)
-            stream('Waiting for cloud-init to complete...')
+        async with asyncssh.connect(ip, username='root', known_hosts=None) as conn:
+            # Update system
+            stream('Updating system packages...')
             yield sse_log(stream._logs[-1])
-            await conn.run('cloud-init status --wait', check=False)  # Don't fail if cloud-init has errors
-            
-            # Also wait for apt lock to be released
-            for attempt in range(6):
-                result = await conn.run('fuser /var/lib/dpkg/lock-frontend 2>/dev/null', check=False)
-                if result.returncode != 0:  # Lock not held
-                    break
-                stream(f'  Waiting for apt lock... ({attempt+1}/6)')
-                yield sse_log(stream._logs[-1])
-                await asyncio.sleep(10)
-            
-            # Update system (skip upgrade - takes too long, not needed for temp droplet)
-            stream('Updating package lists...')
-            yield sse_log(stream._logs[-1])
-            await conn.run('DEBIAN_FRONTEND=noninteractive apt-get update -q', check=True)
+            await conn.run('apt-get update && apt-get upgrade -y', check=True)
             
             # Docker
             stream('Installing Docker...')
@@ -597,13 +444,13 @@ async def _create_template(
             # Nginx
             stream('Installing nginx...')
             yield sse_log(stream._logs[-1])
-            await conn.run('DEBIAN_FRONTEND=noninteractive apt-get install -y -q nginx', check=True)
+            await conn.run('apt-get install -y nginx', check=True)
             await conn.run('systemctl enable nginx', check=True)
             
             # Git
             stream('Installing git...')
             yield sse_log(stream._logs[-1])
-            await conn.run('DEBIAN_FRONTEND=noninteractive apt-get install -y -q git', check=True)
+            await conn.run('apt-get install -y git', check=True)
             
             # SSL certificates
             stream('Uploading SSL certificates...')
@@ -620,23 +467,10 @@ async def _create_template(
             await conn.run(f"cat > /etc/nginx/certificate.key << 'EOF'\n{cert_key}\nEOF", check=True)
             await conn.run('chmod 600 /etc/nginx/certificate.key', check=True)
             
-            # Python for agent
+            # Python for agent (use apt, not pip - avoids Ubuntu 24.04 externally-managed issues)
             stream('Installing Python dependencies...')
             yield sse_log(stream._logs[-1])
-            
-            result = await conn.run('DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip 2>&1', check=False)
-            if result.returncode != 0:
-                output = result.stdout[:200] if result.stdout else "no output"
-                stream(f'apt-get python3-pip failed: {output}')
-                yield sse_log(stream._logs[-1], 'error')
-                raise Exception(f'apt-get python3-pip failed')
-            
-            result = await conn.run('pip3 install flask --break-system-packages -q 2>&1', check=False)
-            if result.returncode != 0:
-                output = result.stdout[:200] if result.stdout else "no output"
-                stream(f'pip3 flask failed: {output}')
-                yield sse_log(stream._logs[-1], 'error')
-                raise Exception(f'pip3 flask failed')
+            await conn.run('apt-get install -y python3-flask', check=True)
             
             # Create directories
             await conn.run('mkdir -p /data', check=True)
@@ -687,87 +521,17 @@ async def _create_template(
         result['template_id'] = snapshot.id if snapshot else None
     
     except Exception as e:
-        error_msg = str(e)
-        stream(f'Template creation failed: {error_msg}')
-        yield sse_log(stream._logs[-1], 'error')
-        
         if template_droplet_id:
-            if cleanup_on_failure:
-                try:
-                    await client.delete_droplet(template_droplet_id, force=True)
-                    stream('Droplet deleted')
-                    yield sse_log(stream._logs[-1])
-                except:
-                    pass
-            else:
-                stream(f'DROPLET KEPT FOR DEBUGGING: ssh root@{droplet_ip}')
-                yield sse_log(stream._logs[-1])
-        
-        yield sse_complete(False, '', f'Template creation failed: {error_msg}')
+            try:
+                await client.delete_droplet(template_droplet_id, force=True)
+            except:
+                pass
+        raise
 
 
 # =============================================================================
 # Helpers
 # =============================================================================
-
-async def _ensure_ssh_key(client: AsyncDOClient, private_key_path: str, stream: StreamContext) -> Optional[int]:
-    """
-    Ensure SSH key exists locally and is registered with DO.
-    
-    Args:
-        client: DO API client
-        private_key_path: Path to private key file (e.g. ~/.ssh/id_ed25519)
-        stream: For logging
-        
-    Returns:
-        SSH key ID in DO, or None on failure
-    """
-    import subprocess
-    from pathlib import Path
-    
-    private_key_path = Path(private_key_path).expanduser()
-    public_key_path = Path(str(private_key_path) + ".pub")
-    
-    # Generate key if it doesn't exist
-    if not private_key_path.exists():
-        stream(f'Generating SSH key at {private_key_path}...')
-        private_key_path.parent.mkdir(mode=0o700, exist_ok=True)
-        try:
-            subprocess.run([
-                "ssh-keygen", "-t", "ed25519",
-                "-f", str(private_key_path),
-                "-N", "", "-C", "deployer@deploy-api"
-            ], capture_output=True, check=True)
-            private_key_path.chmod(0o600)
-        except Exception as e:
-            stream(f'Failed to generate SSH key: {e}')
-            return None
-    
-    if not public_key_path.exists():
-        stream(f'Public key not found at {public_key_path}')
-        return None
-    
-    public_key = public_key_path.read_text().strip()
-    
-    # Get fingerprint for unique naming (last 8 chars of key hash)
-    key_hash = hashlib.sha256(public_key.encode()).hexdigest()[:8]
-    
-    # Check if already registered with DO (by matching public key content)
-    existing_keys = await client.list_ssh_keys()
-    for key in existing_keys:
-        if key.public_key.strip() == public_key:
-            return key.id
-    
-    # Upload new key with unique name
-    key_name = f"deployer-{key_hash}"
-    try:
-        new_key = await client.add_ssh_key(key_name, public_key)
-        stream(f'Registered new SSH key: {key_name}')
-        return new_key.id
-    except Exception as e:
-        stream(f'Failed to register SSH key with DO: {e}')
-        return None
-
 
 async def _wait_for_ip(client: AsyncDOClient, droplet_id: int, stream: StreamContext, timeout: int = 60) -> str:
     """Wait for droplet to get an IP address."""
@@ -780,110 +544,6 @@ async def _wait_for_ip(client: AsyncDOClient, droplet_id: int, stream: StreamCon
             return info.ip
         if i % 5 == 4:
             stream(f'Still waiting for IP... ({i*2}s)')
-    
-    return None
-
-
-async def _check_agent_health(ip: str, api_key: str, retries: int = 5) -> tuple:
-    """
-    Check if node agent is responding.
-    
-    Returns:
-        (success: bool, message: str)
-    """
-    import aiohttp
-    
-    for attempt in range(retries):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f'http://{ip}:9999/ping',
-                    headers={'X-API-Key': api_key},
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        version = data.get('version', 'unknown')
-                        return True, f'v{version} responding'
-                    else:
-                        return False, f'HTTP {resp.status}'
-        except asyncio.TimeoutError:
-            pass
-        except Exception as e:
-            if attempt == retries - 1:
-                return False, f'{type(e).__name__}: {e}'
-        
-        await asyncio.sleep(3)
-    
-    return False, 'Connection timeout'
-
-
-async def _get_agent_diagnostics(ip: str, ssh_key_path: str) -> Optional[str]:
-    """
-    Get agent diagnostics via SSH.
-    
-    Returns diagnostic output or None on failure.
-    """
-    try:
-        async with asyncssh.connect(ip, username='root', known_hosts=None, 
-                                   client_keys=[ssh_key_path], connect_timeout=10) as conn:
-            # Get systemd status
-            result = await conn.run(
-                'systemctl status node-agent --no-pager 2>&1 | head -20; '
-                'echo "---"; '
-                'journalctl -u node-agent -n 30 --no-pager 2>&1',
-                check=False
-            )
-            return result.stdout if result.stdout else None
-    except Exception as e:
-        return f'SSH failed: {e}'
-
-
-def _parse_error_from_logs(logs: str) -> Optional[str]:
-    """
-    Parse cloud-init or agent logs to extract meaningful error message.
-    
-    Returns human-readable error string or None.
-    """
-    if not logs:
-        return None
-    
-    error_patterns = [
-        # Python errors
-        ("SyntaxError", "Python syntax error"),
-        ("ModuleNotFoundError", "Missing Python module"),
-        ("ImportError", "Import error"),
-        ("PermissionError", "Permission denied"),
-        ("FileNotFoundError", "File not found"),
-        
-        # pip/package errors
-        ("RECORD file not found", "Package conflict"),
-        ("Cannot uninstall", "Package conflict"),
-        ("externally-managed-environment", "Python env error - needs --break-system-packages"),
-        ("No matching distribution", "Package not found"),
-        
-        # apt errors
-        ("Unable to locate package", "APT package not found"),
-        ("E: Package", "APT error"),
-        ("dpkg: error", "DPKG error"),
-        
-        # Docker errors
-        ("Cannot connect to the Docker daemon", "Docker daemon not running"),
-        ("docker: command not found", "Docker not installed"),
-        ("Error response from daemon", "Docker error"),
-        
-        # General
-        ("command not found", "Command not found"),
-        ("Connection refused", "Connection refused"),
-    ]
-    
-    for line in logs.split('\n'):
-        line_lower = line.lower()
-        for pattern, message in error_patterns:
-            if pattern.lower() in line_lower:
-                # Extract relevant part
-                short = line.strip()[:100]
-                return f"{message}: {short}"
     
     return None
 

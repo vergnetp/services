@@ -23,12 +23,7 @@ def sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 def sse_log(message: str, level: str = "info") -> str:
-    # Also print to server console
-    prefix = "ERROR:" if level == "error" else "     "
-    print(f"{prefix} {message}", flush=True)
     return sse_event("log", {"message": message, "level": level})
 
 def sse_complete(success: bool, deployment_id: str, error: str = None) -> str:
-    status = "SUCCESS" if success else f"FAILED: {error}"
-    print(f"===== {status} =====", flush=True)
     return sse_event("complete", {"success": success, "deployment_id": deployment_id, "error": error})
