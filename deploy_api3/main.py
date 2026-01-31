@@ -14,11 +14,11 @@ SERVICE_DIR = Path(__file__).parent
 
 async def seed_admin(db):
     """Create admin user if none exists."""
-    existing = await db.find_entities("auth_users", where_clause="[role] = ?", params=("admin",), limit=1)
+    existing = await db.find_entities("kernel_auth_users", where_clause="[role] = ?", params=("admin",), limit=1)
     if not existing:
-        await db.save_entity("auth_users", {
+        await db.save_entity("kernel_auth_users", {
             "id": "admin",
-            "username": "admin",
+            "name": "admin",
             "email": "vergnetp@yahoo.fr",
             "password_hash": hash_password(os.environ.get('ADMIN_PASSWORD','admin')),
             "role": "admin",
