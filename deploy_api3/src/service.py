@@ -8,8 +8,6 @@ import asyncio
 from typing import Optional, List, Dict, Any, AsyncIterator
 from datetime import datetime, timezone
 
-from shared_libs.backend.resilience import retry_with_backoff
-
 from .stores import projects, services, deployments, droplets, containers, snapshots
 from . import agent_client
 from .naming import (
@@ -26,7 +24,6 @@ from .sse_streaming import StreamContext, sse_complete, sse_log
 # Deploy to Single Droplet
 # =============================================================================
 
-@retry_with_backoff(max_retries=2, base_delay=5.0, exceptions=(ConnectionError, TimeoutError, OSError))
 async def _deploy_to(
     db, droplet_id: str, droplet_ip: str, deployment_id: str, container_name: str,
     image_name: str,
@@ -51,8 +48,10 @@ async def _deploy_to(
         if source_type == 'image':
             stream(f'   {droplet_ip} - uploading image...')
             result = await agent_client.upload_image(droplet_ip, image, image_name, do_token)
-            if result.get('error'):
-                raise Exception(f"Upload failed: {result['error']}")
+            if not result or result.get('error'):
+                error_msg = result.get('error', 'Unknown error') if result else 'No response from agent'
+                stream(f'   {droplet_ip} - upload failed: {error_msg}')
+                return {'status': 'failed', 'error': f"Upload failed: {error_msg}"}
             stream(f'   {droplet_ip} - image uploaded.')
         
         elif source_type == 'build':
@@ -63,8 +62,10 @@ async def _deploy_to(
                 source_zips=source_zips,
                 dockerfile_content=dockerfile_content
             )
-            if result.get('status') == 'failed':
-                raise Exception(f"Build failed: {result.get('error')}")
+            if not result or result.get('status') == 'failed' or result.get('error'):
+                error_msg = result.get('error', 'Unknown error') if result else 'No response from agent'
+                stream(f'   {droplet_ip} - build failed: {error_msg}')
+                return {'status': 'failed', 'error': f"Build failed: {error_msg}"}
             stream(f'   {droplet_ip} - image built.')
         
         elif source_type == 'existing':
@@ -76,8 +77,10 @@ async def _deploy_to(
         result = await agent_client.start_container(
             droplet_ip, container_name, image_name, env_list, container_port, host_port, do_token
         )
-        if result.get('error'):
-            raise Exception(f"Start failed: {result['error']}")
+        if not result or result.get('error'):
+            error_msg = result.get('error', 'Unknown error') if result else 'No response from agent'
+            stream(f'   {droplet_ip} - start failed: {error_msg}')
+            return {'status': 'failed', 'error': f"Start failed: {error_msg}"}
         stream(f'   {droplet_ip} - container started.')
         
         # Health check
@@ -187,6 +190,23 @@ async def deploy_service(
             new_droplets = await asyncio.gather(*tasks)
             stream(f'{new_droplets_nb} droplets created.')
             yield sse_log(stream._logs[-1])
+            
+            # Wait for agents to be ready on new droplets
+            stream('Waiting for agents to be ready...')
+            yield sse_log(stream._logs[-1])
+            for d in new_droplets:
+                if isinstance(d, dict) and d.get('ip') and not d.get('error'):
+                    droplet_ip = d['ip']
+                    for attempt in range(30):  # 30 * 2s = 60s max
+                        result = await agent_client.ping(droplet_ip, do_token)
+                        if result.get('status') == 'ok':
+                            stream(f'  Agent ready on {droplet_ip}')
+                            yield sse_log(stream._logs[-1])
+                            break
+                        await asyncio.sleep(2)
+                    else:
+                        stream(f'  Warning: Agent not responding on {droplet_ip}')
+                        yield sse_log(stream._logs[-1])
         
         # Create project if needed
         stream('Setting up project...')
@@ -238,8 +258,9 @@ async def deploy_service(
         
         ids = [d['id'] for d in all_droplets]
         ips = [d['ip'] for d in all_droplets]
+        private_ips = [d.get('private_ip') or d['ip'] for d in all_droplets]
         
-        # Always use public IPs - firewall on droplet handles access control
+        # Always use public IPs for agent calls - firewall on droplet handles access control
         # (managed mode allows VPC + ADMIN_IPs, customer mode allows all)
         for d in all_droplets:
             d['agent_ip'] = d['ip']
