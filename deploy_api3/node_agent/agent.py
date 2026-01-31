@@ -40,7 +40,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-AGENT_VERSION = '1.1.0'  # Bump when agent behavior changes
+AGENT_VERSION = '1.2.0'  # Bump when agent behavior changes
 API_KEY = os.environ.get('NODE_AGENT_API_KEY', 'dev-key')
 CHUNK_SIZE = 64 * 1024  # 64KB
 
@@ -149,11 +149,14 @@ def ping():
 def upload():
     """
     Receive Docker image as stream and load it.
-    Query params: name (image name)
-    Body: raw image bytes (tar)
+    Query params: name (target image name to tag as)
+    Body: raw image bytes (tar from 'docker save')
+    
+    The loaded image will be tagged with the requested name so it can
+    be started with our naming convention.
     """
-    image_name = request.args.get('name')
-    if not image_name:
+    target_name = request.args.get('name')
+    if not target_name:
         return jsonify({'error': 'name required'}), 400
     
     try:
@@ -165,6 +168,7 @@ def upload():
                 f.write(chunk)
             temp_path = f.name
         
+        # Load the image
         result = subprocess.run(
             ['docker', 'load', '-i', temp_path],
             capture_output=True, text=True
@@ -175,7 +179,26 @@ def upload():
         if result.returncode != 0:
             return jsonify({'error': result.stderr}), 500
         
-        return jsonify({'status': 'loaded', 'image': image_name})
+        # Parse loaded image name from output: "Loaded image: name:tag"
+        loaded_name = None
+        for line in result.stdout.strip().split('\n'):
+            if line.startswith('Loaded image:'):
+                loaded_name = line.split(':', 1)[1].strip()
+                break
+        
+        if not loaded_name:
+            return jsonify({'error': f'Could not parse loaded image name from: {result.stdout}'}), 500
+        
+        # Tag with our target name if different
+        if loaded_name != target_name:
+            tag_result = subprocess.run(
+                ['docker', 'tag', loaded_name, target_name],
+                capture_output=True, text=True
+            )
+            if tag_result.returncode != 0:
+                return jsonify({'error': f'Failed to tag image: {tag_result.stderr}'}), 500
+        
+        return jsonify({'status': 'loaded', 'image': target_name, 'original': loaded_name})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

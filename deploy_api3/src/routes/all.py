@@ -251,7 +251,7 @@ async def deploy_service_route(
 
 @router.post("/deploy/upload", summary="Deploy service with file upload")
 async def deploy_service_upload(
-    source_zip: UploadFile = File(..., description="Zip file containing source code"),
+    source_zip: UploadFile = File(..., description="Zip file containing source code OR Docker image tar"),
     project_name: str = Form(...),
     service_name: str = Form(...),
     service_description: str = Form(None),
@@ -259,6 +259,8 @@ async def deploy_service_upload(
     env_variables: str = Form(None, description="Comma-separated: KEY1=val1,KEY2=val2"),
     env: str = Form('prod'),
     dockerfile_content: str = Form(None),
+    is_docker_image: bool = Form(False, description="True if uploading a Docker image tar (from 'docker save')"),
+    docker_image_name: str = Form(None, description="Original image name when is_docker_image=true (e.g. 'test:latest')"),
     existing_droplet_ids: str = Form(None, description="Comma-separated droplet IDs"),
     new_droplets_nb: int = Form(0),
     new_droplets_region: str = Form('lon1'),
@@ -268,19 +270,34 @@ async def deploy_service_upload(
     db=Depends(db_connection),
 ):
     """
-    Deploy a service by uploading a zip file.
+    Deploy a service by uploading a file.
     
-    The zip should contain your source code with a Dockerfile at the root,
-    or provide dockerfile_content to specify the Dockerfile inline.
+    Two modes:
+    1. Source code (is_docker_image=false): Upload a zip with Dockerfile, agent will build
+    2. Docker image (is_docker_image=true): Upload a tar from 'docker save', agent will load
     
-    Example curl:
+    Example curl (source code):
     ```
     curl -X POST http://localhost:8000/api/v1/deploy/upload \
       -H "Authorization: Bearer ..." \
       -F "source_zip=@myapp.zip" \
       -F "project_name=my-project" \
       -F "service_name=my-api" \
-      -F "dockerfile_content=FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install -r requirements.txt\nCMD [\"uvicorn\", \"main:app\", \"--host\", \"0.0.0.0\"]" \
+      -F "dockerfile_content=FROM python:3.12-slim..." \
+      -F "new_droplets_nb=1" \
+      -F "new_droplets_snapshot_id=your-snapshot-id"
+    ```
+    
+    Example curl (docker image):
+    ```
+    docker save myimage:latest > myimage.tar
+    curl -X POST http://localhost:8000/api/v1/deploy/upload \
+      -H "Authorization: Bearer ..." \
+      -F "source_zip=@myimage.tar" \
+      -F "project_name=my-project" \
+      -F "service_name=my-api" \
+      -F "is_docker_image=true" \
+      -F "docker_image_name=myimage:latest" \
       -F "new_droplets_nb=1" \
       -F "new_droplets_snapshot_id=your-snapshot-id"
     ```
@@ -288,9 +305,8 @@ async def deploy_service_upload(
     do_token = get_do_token()
     cf_token = get_cf_token()
     
-    # Read zip file
-    zip_bytes = await source_zip.read()
-    source_zips = {'source': zip_bytes}
+    # Read file
+    file_bytes = await source_zip.read()
     
     # Parse comma-separated values
     env_vars_list = []
@@ -301,21 +317,48 @@ async def deploy_service_upload(
     if existing_droplet_ids:
         droplet_ids_list = [v.strip() for v in existing_droplet_ids.split(',') if v.strip()]
     
-    return StreamingResponse(
-        sse_stream(service.deploy_service(
-            db, user.id, project_name, service_name, service_description,
-            service_type, env_vars_list, env,
-            do_token, cf_token,
-            source_zips=source_zips,
-            dockerfile_content=dockerfile_content,
-            existing_droplet_ids=droplet_ids_list or None,
-            new_droplets_nb=new_droplets_nb,
-            new_droplets_region=new_droplets_region,
-            new_droplets_size=new_droplets_size,
-            new_droplets_snapshot_id=new_droplets_snapshot_id,
-        )),
-        media_type="text/event-stream"
-    )
+    # Determine what to pass based on is_docker_image
+    if is_docker_image:
+        # Docker image tar - pass as 'image' for docker load
+        # docker_image_name is the name to use for the loaded image (can be anything)
+        if not docker_image_name:
+            raise HTTPException(
+                status_code=400,
+                detail="docker_image_name is required when is_docker_image=true (e.g. 'foo:latest')"
+            )
+        return StreamingResponse(
+            sse_stream(service.deploy_service(
+                db, user.id, project_name, service_name, service_description,
+                service_type, env_vars_list, env,
+                do_token, cf_token,
+                image=file_bytes,  # Raw image bytes for docker load
+                image_name=docker_image_name,  # Name to use for the image
+                existing_droplet_ids=droplet_ids_list or None,
+                new_droplets_nb=new_droplets_nb,
+                new_droplets_region=new_droplets_region,
+                new_droplets_size=new_droplets_size,
+                new_droplets_snapshot_id=new_droplets_snapshot_id,
+            )),
+            media_type="text/event-stream"
+        )
+    else:
+        # Source code zip - pass as source_zips for docker build
+        source_zips = {'source': file_bytes}
+        return StreamingResponse(
+            sse_stream(service.deploy_service(
+                db, user.id, project_name, service_name, service_description,
+                service_type, env_vars_list, env,
+                do_token, cf_token,
+                source_zips=source_zips,
+                dockerfile_content=dockerfile_content,
+                existing_droplet_ids=droplet_ids_list or None,
+                new_droplets_nb=new_droplets_nb,
+                new_droplets_region=new_droplets_region,
+                new_droplets_size=new_droplets_size,
+                new_droplets_snapshot_id=new_droplets_snapshot_id,
+            )),
+            media_type="text/event-stream"
+        )
 
 
 # =============================================================================
