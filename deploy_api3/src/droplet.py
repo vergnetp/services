@@ -18,12 +18,23 @@ from .sse_streaming import StreamContext, sse_complete, sse_log
 
 
 async def _ensure_vpc(do_client, vpc_name: str, region: str) -> str:
-    """Create VPC if not exists, return vpc_uuid."""
+    """Create VPC if not exists, return vpc_uuid.
+    
+    Reuses any existing VPC in the region to avoid IP range conflicts.
+    """
     existing = await do_client.list_vpcs()
+    
+    # First, try to find VPC with exact name
     for vpc in existing:
-        # VPC from DO client returns typed object now
         if vpc.name == vpc_name and vpc.region == region:
             return vpc.id
+    
+    # Otherwise, reuse any VPC in the same region (avoids IP range conflicts)
+    for vpc in existing:
+        if vpc.region == region:
+            return vpc.id
+    
+    # No VPC in region - create new one
     vpc = await do_client.create_vpc(name=vpc_name, region=region, ip_range="10.10.0.0/16")
     return vpc.id
 

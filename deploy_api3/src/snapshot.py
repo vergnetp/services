@@ -260,15 +260,17 @@ WantedBy=multi-user.target'''
                 await conn.run('ufw allow 443/tcp', check=True)
                 
                 if is_managed:
-                    # Managed mode: agent bound to VPC IP, allow 9999 from VPC only
+                    # Managed mode: restrict agent to VPC + admin IPs
                     await conn.run('ufw allow from 10.0.0.0/8 to any port 9999', check=True)
+                    
+                    # Admin IPs get SSH and agent access (for local development/ops)
+                    for admin_ip in os.environ.get('ADMIN_IPS', '').split(','):
+                        if admin_ip.strip():
+                            await conn.run(f'ufw allow from {admin_ip.strip()} to any port 22', check=True)
+                            await conn.run(f'ufw allow from {admin_ip.strip()} to any port 9999', check=True)
                 else:
-                    # Customer mode: agent on public IP, allow 9999 from anywhere
+                    # Customer mode: agent open to all (customer manages their own security)
                     await conn.run('ufw allow 9999/tcp', check=True)
-                
-                for admin_ip in os.environ.get('ADMIN_IPS', '').split(','):
-                    if admin_ip.strip():
-                        await conn.run(f'ufw allow from {admin_ip.strip()} to any port 22', check=True)
                 
                 await conn.run('ufw --force enable', check=True)
             

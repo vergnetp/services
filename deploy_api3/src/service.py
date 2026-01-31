@@ -16,7 +16,7 @@ from .naming import (
     get_domain_name, get_container_name, get_image_name,
     get_container_port, get_host_port
 )
-from .utils import now_iso, parse_env_variables, is_stateful, is_webservice, get_is_managed, get_agent_ip_for_droplet
+from .utils import now_iso, parse_env_variables, is_stateful, is_webservice
 from .stateful import get_stateful_urls
 from .locks import acquire_deploy_lock, release_deploy_lock
 from .sse_streaming import StreamContext, sse_complete, sse_log
@@ -173,16 +173,6 @@ async def deploy_service(
         else:
             raise Exception('No source provided: need image, git_repos, source_zips, or image_name')
         
-        # Determine if managed mode (agent binds to VPC IP only)
-        # Check snapshot's is_managed flag - if True, use private_ip for agent calls
-        snapshot_id_to_check = new_droplets_snapshot_id
-        if not snapshot_id_to_check and existing_droplet_ids:
-            # Check first existing droplet's snapshot
-            first_droplet = await droplets.get(db, existing_droplet_ids[0])
-            snapshot_id_to_check = first_droplet.snapshot_id if first_droplet else None
-        
-        is_managed = await get_is_managed(db, snapshot_id_to_check)
-        
         # Provision new droplets if needed
         new_droplets = []
         if new_droplets_nb > 0:
@@ -248,17 +238,11 @@ async def deploy_service(
         
         ids = [d['id'] for d in all_droplets]
         ips = [d['ip'] for d in all_droplets]
-        private_ips = [d.get('private_ip') or d['ip'] for d in all_droplets]
         
-        # In managed mode, use private IPs to call agents (they only listen on VPC)
-        # In customer mode, use public IPs
-        # Add agent_ip to each droplet dict for easy access
-        for i, d in enumerate(all_droplets):
-            d['agent_ip'] = private_ips[i] if is_managed else d['ip']
-        
-        if is_managed:
-            stream(f'Managed mode: using VPC IPs for agent calls')
-            yield sse_log(stream._logs[-1])
+        # Always use public IPs - firewall on droplet handles access control
+        # (managed mode allows VPC + ADMIN_IPs, customer mode allows all)
+        for d in all_droplets:
+            d['agent_ip'] = d['ip']
         
         stream(f'Target servers: {ips}')
         yield sse_log(stream._logs[-1])

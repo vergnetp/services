@@ -156,16 +156,16 @@ async def call_agent(droplet_ip: str, endpoint: str, do_token: str, method: str 
     if headers:
         req_headers.update(headers)
     
-    async with AsyncHttpClient(timeout=timeout) as client:
+    async with AsyncHttpClient() as client:
         try:
             if method == 'GET':
-                response = await client.get(url, params=params, headers=req_headers)
+                response = await client.get(url, params=params, headers=req_headers, timeout=timeout)
             elif method == 'POST':
                 if data:
                     req_headers["Content-Type"] = "application/octet-stream"
-                    response = await client.post(url, data=data, params=params, headers=req_headers)
+                    response = await client.post(url, data=data, params=params, headers=req_headers, timeout=timeout)
                 else:
-                    response = await client.post(url, json=json_data, params=params, headers=req_headers)
+                    response = await client.post(url, json=json_data, params=params, headers=req_headers, timeout=timeout)
             else:
                 return {'error': f'Unsupported method: {method}'}
             

@@ -63,7 +63,8 @@ async def get_agent_ip_for_droplet(db, droplet) -> str:
     """
     Get the IP to use for agent calls based on managed mode.
     
-    In managed mode (same DO account), agent only listens on VPC IP.
+    In managed mode (same DO account), use public IP but agent is protected
+    by firewall allowing only VPC + ADMIN_IPs.
     In customer mode (different DO account), agent listens on public IP.
     
     Args:
@@ -71,26 +72,13 @@ async def get_agent_ip_for_droplet(db, droplet) -> str:
         droplet: Droplet entity or dict with ip, private_ip, and snapshot_id
     
     Returns:
-        IP address to use for agent calls
+        IP address to use for agent calls (always public IP)
     """
-    # Get snapshot_id from droplet (handles both entity and dict)
+    # Always use public IP - firewall handles access control
     if isinstance(droplet, dict):
-        snapshot_id = droplet.get('snapshot_id')
-        private_ip = droplet.get('private_ip')
-        public_ip = droplet.get('ip')
+        return droplet.get('ip')
     else:
-        snapshot_id = getattr(droplet, 'snapshot_id', None)
-        private_ip = getattr(droplet, 'private_ip', None)
-        public_ip = getattr(droplet, 'ip', None)
-    
-    is_managed = await get_is_managed(db, snapshot_id)
-    
-    if is_managed:
-        # Use VPC IP (fallback to public if no private IP)
-        return private_ip or public_ip
-    else:
-        # Use public IP
-        return public_ip
+        return getattr(droplet, 'ip', None)
 
 
 async def list_do_droplets_by_tag(do_token: str, tag: str = None) -> List[Dict]:

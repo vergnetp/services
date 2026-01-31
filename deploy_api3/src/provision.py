@@ -9,13 +9,30 @@ from .utils import DEPLOY_API_TAG
 
 
 async def ensure_vpc(do_client, vpc_name: str, region: str) -> str:
-    """Create VPC if not exists, return vpc_uuid."""
+    """Create VPC if not exists, return vpc_uuid.
+    
+    Reuses any existing VPC in the region to avoid IP range conflicts.
+    """
     existing = await do_client.list_vpcs()
+    
+    # First, try to find VPC with exact name
     for vpc in existing:
-        if vpc.get('name') == vpc_name and vpc.get('region') == region:
-            return vpc['id']
+        name = vpc.name if hasattr(vpc, 'name') else vpc.get('name')
+        vpc_region = vpc.region if hasattr(vpc, 'region') else vpc.get('region')
+        vpc_id = vpc.id if hasattr(vpc, 'id') else vpc.get('id')
+        if name == vpc_name and vpc_region == region:
+            return vpc_id
+    
+    # Otherwise, reuse any VPC in the same region (avoids IP range conflicts)
+    for vpc in existing:
+        vpc_region = vpc.region if hasattr(vpc, 'region') else vpc.get('region')
+        vpc_id = vpc.id if hasattr(vpc, 'id') else vpc.get('id')
+        if vpc_region == region:
+            return vpc_id
+    
+    # No VPC in region - create new one
     vpc = await do_client.create_vpc(name=vpc_name, region=region, ip_range="10.10.0.0/16")
-    return vpc['id']
+    return vpc.id if hasattr(vpc, 'id') else vpc['id']
 
 
 async def create_droplet(db, user_id: str, snapshot_id: str, region: str, size: str, do_token: str, name: str = None) -> Dict[str, Any]:
