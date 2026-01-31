@@ -64,11 +64,59 @@ async def create_base_snapshot(
         async with AsyncDOClient(api_token=do_token) as client:
             
             # =================================================================
+            # 0. Check if base snapshot already exists in DO
+            # =================================================================
+            stream('Checking for existing base snapshot...')
+            yield sse_log(stream._logs[-1])
+            
+            existing_snapshots = await client.list_snapshots()
+            existing_base = next(
+                (s for s in existing_snapshots if s.name == 'base'), 
+                None
+            )
+            
+            if existing_base:
+                stream(f'Found existing base snapshot in DO: {existing_base.id}')
+                yield sse_log(stream._logs[-1])
+                
+                # Check if already in DB
+                db_snap = await snapshots.get_by_do_id(db, str(existing_base.id))
+                
+                if db_snap:
+                    stream('Base snapshot already in database - nothing to do')
+                    yield sse_log(stream._logs[-1])
+                    yield sse_complete(True, db_snap.id)
+                    return
+                
+                # Exists in DO but not DB - sync it
+                stream('Syncing to local database...')
+                yield sse_log(stream._logs[-1])
+                
+                # Detect managed mode
+                server_do_token = os.environ.get('DO_TOKEN', '')
+                is_managed = do_token == server_do_token and server_do_token != ''
+                
+                snap = await snapshots.create(db, {
+                    'workspace_id': user_id,
+                    'do_snapshot_id': str(existing_base.id),
+                    'name': 'base',
+                    'region': region,
+                    'size_gigabytes': existing_base.size_gigabytes,
+                    'agent_version': AGENT_VERSION,
+                    'is_base': True,
+                    'is_managed': is_managed,
+                })
+                
+                stream('Base snapshot synced to database!')
+                yield sse_log(stream._logs[-1])
+                yield sse_complete(True, snap.id)
+                return
+            
+            # =================================================================
             # 1. Get or create template
             # =================================================================
-            existing = await client.list_snapshots()
             template = next(
-                (s for s in existing if s.name == TEMPLATE_SNAPSHOT_NAME), 
+                (s for s in existing_snapshots if s.name == TEMPLATE_SNAPSHOT_NAME), 
                 None
             )
             

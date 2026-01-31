@@ -4,7 +4,8 @@
 """FastAPI routes for deploy_api3."""
 
 import os
-from fastapi import APIRouter, Depends, HTTPException, Header
+import base64
+from fastapi import APIRouter, Depends, HTTPException, Header, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -54,6 +55,7 @@ class CreateBaseSnapshotRequest(BaseModel):
 
 class CreateCustomSnapshotRequest(BaseModel):
     git_repos: List[GitRepo] = None
+    source_zip_base64: str = None  # Base64 encoded zip file (alternative to git_repos)
     dockerfile_content: str = None
     snapshot_name: str = None
     region: str = 'lon1'
@@ -73,6 +75,7 @@ class DeployServiceRequest(BaseModel):
     image_name: str = None
     git_repos: List[GitRepo] = None
     dockerfile_content: str = None
+    source_zip_base64: str = None  # Base64 encoded zip file (alternative to git_repos)
     # Droplets:
     existing_droplet_ids: List[str] = None
     new_droplets_nb: int = 0
@@ -142,10 +145,20 @@ async def create_custom_snapshot(
     do_token = get_do_token()
     git_repos = [r.dict() for r in req.git_repos] if req.git_repos else None
     
+    # Handle base64 zip upload
+    source_zips = None
+    if req.source_zip_base64:
+        try:
+            zip_bytes = base64.b64decode(req.source_zip_base64)
+            source_zips = {'source': zip_bytes}
+        except Exception as e:
+            raise HTTPException(400, f"Invalid base64 zip: {e}")
+    
     return StreamingResponse(
         sse_stream(snapshot.create_custom_snapshot(
             db, user.id, do_token,
             git_repos=git_repos,
+            source_zips=source_zips,
             dockerfile_content=req.dockerfile_content,
             snapshot_name=req.snapshot_name,
             region=req.region,
@@ -193,10 +206,29 @@ async def deploy_service_route(
     user: UserIdentity = Depends(get_current_user),
     db=Depends(db_connection),
 ):
-    """Deploy a service from git repos or existing image."""
+    """
+    Deploy a service from git repos, base64 zip, or existing image.
+    
+    Source options (pick one):
+    - git_repos: Clone from git and build
+    - source_zip_base64: Base64 encoded zip file containing source code
+    - image_name only: Use existing image on droplet (for rollback)
+    
+    If using git_repos or source_zip_base64, dockerfile_content is optional
+    (will use Dockerfile from source if present).
+    """
     do_token = get_do_token()
     cf_token = get_cf_token()
     git_repos = [r.dict() for r in req.git_repos] if req.git_repos else None
+    
+    # Handle base64 zip upload
+    source_zips = None
+    if req.source_zip_base64:
+        try:
+            zip_bytes = base64.b64decode(req.source_zip_base64)
+            source_zips = {'source': zip_bytes}
+        except Exception as e:
+            raise HTTPException(400, f"Invalid base64 zip: {e}")
     
     return StreamingResponse(
         sse_stream(service.deploy_service(
@@ -205,12 +237,82 @@ async def deploy_service_route(
             do_token, cf_token,
             image_name=req.image_name,
             git_repos=git_repos,
+            source_zips=source_zips,
             dockerfile_content=req.dockerfile_content,
             existing_droplet_ids=req.existing_droplet_ids,
             new_droplets_nb=req.new_droplets_nb,
             new_droplets_region=req.new_droplets_region,
             new_droplets_size=req.new_droplets_size,
             new_droplets_snapshot_id=req.new_droplets_snapshot_id,
+        )),
+        media_type="text/event-stream"
+    )
+
+
+@router.post("/deploy/upload", summary="Deploy service with file upload")
+async def deploy_service_upload(
+    source_zip: UploadFile = File(..., description="Zip file containing source code"),
+    project_name: str = Form(...),
+    service_name: str = Form(...),
+    service_description: str = Form(None),
+    service_type: str = Form('webservice'),
+    env_variables: str = Form(None, description="Comma-separated: KEY1=val1,KEY2=val2"),
+    env: str = Form('prod'),
+    dockerfile_content: str = Form(None),
+    existing_droplet_ids: str = Form(None, description="Comma-separated droplet IDs"),
+    new_droplets_nb: int = Form(0),
+    new_droplets_region: str = Form('lon1'),
+    new_droplets_size: str = Form('s-1vcpu-1gb'),
+    new_droplets_snapshot_id: str = Form(None),
+    user: UserIdentity = Depends(get_current_user),
+    db=Depends(db_connection),
+):
+    """
+    Deploy a service by uploading a zip file.
+    
+    The zip should contain your source code with a Dockerfile at the root,
+    or provide dockerfile_content to specify the Dockerfile inline.
+    
+    Example curl:
+    ```
+    curl -X POST http://localhost:8000/api/v1/deploy/upload \
+      -H "Authorization: Bearer ..." \
+      -F "source_zip=@myapp.zip" \
+      -F "project_name=my-project" \
+      -F "service_name=my-api" \
+      -F "dockerfile_content=FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install -r requirements.txt\nCMD [\"uvicorn\", \"main:app\", \"--host\", \"0.0.0.0\"]" \
+      -F "new_droplets_nb=1" \
+      -F "new_droplets_snapshot_id=your-snapshot-id"
+    ```
+    """
+    do_token = get_do_token()
+    cf_token = get_cf_token()
+    
+    # Read zip file
+    zip_bytes = await source_zip.read()
+    source_zips = {'source': zip_bytes}
+    
+    # Parse comma-separated values
+    env_vars_list = []
+    if env_variables:
+        env_vars_list = [v.strip() for v in env_variables.split(',') if v.strip()]
+    
+    droplet_ids_list = []
+    if existing_droplet_ids:
+        droplet_ids_list = [v.strip() for v in existing_droplet_ids.split(',') if v.strip()]
+    
+    return StreamingResponse(
+        sse_stream(service.deploy_service(
+            db, user.id, project_name, service_name, service_description,
+            service_type, env_vars_list, env,
+            do_token, cf_token,
+            source_zips=source_zips,
+            dockerfile_content=dockerfile_content,
+            existing_droplet_ids=droplet_ids_list or None,
+            new_droplets_nb=new_droplets_nb,
+            new_droplets_region=new_droplets_region,
+            new_droplets_size=new_droplets_size,
+            new_droplets_snapshot_id=new_droplets_snapshot_id,
         )),
         media_type="text/event-stream"
     )
