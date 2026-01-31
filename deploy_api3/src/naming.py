@@ -22,8 +22,8 @@ def get_snapshot_base_name():
     return f'base_snapshot'
 
 def create_vpc_name(user_id: str, region: str) -> str:
-    """VPC name unique per user+region."""
-    return f'{user_id[:USER_LENGTH]}_{region}'
+    """VPC name unique per user+region. Uses hyphens (DO doesn't allow underscores)."""
+    return f'{user_id[:USER_LENGTH]}-{region}'
 
 
 def get_domain_name(user_id: str, project: str, service: str, env: str) -> str:
